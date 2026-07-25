@@ -1,6 +1,6 @@
 // 主JavaScript文件
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('Y2A-Auto 已加载');
+    console.log('视频搬运通道已加载');
 
     // --- 设置页面的密码保护逻辑 ---
     const settingsForm = document.querySelector('form[method="post"][enctype="multipart/form-data"]');
@@ -115,4 +115,4 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
-}); 
+});

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Y2A-Auto{% endblock %}</title>
+    <title>{% block title %}视频搬运通道{% endblock %}</title>
     <!-- 使用本地Bootstrap CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/bootstrap/bootstrap.min.css') }}">
     <!-- 使用本地Bootstrap Icons -->
@@ -19,7 +19,7 @@
         <nav class="navbar navbar-expand-lg navbar-dark">
             <div class="container navbar-shell">
                 <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
-                    <span>Y2A-Auto</span>
+                    <span>视频搬运通道</span>
                 </a>
                 <div class="navbar-utility ms-auto d-flex align-items-center gap-2">
                     {% if show_logout_in_nav %}
@@ -81,7 +81,7 @@
     
     <footer class="footer mt-5 py-3">
         <div class="container text-center">
-            <p class="text-muted">&copy; {% block year %}{{ now.year }}{% endblock %} Y2A-Auto</p>
+            <p class="text-muted">&copy; {% block year %}{{ now.year }}{% endblock %} 视频搬运通道</p>
         </div>
     </footer>
     
