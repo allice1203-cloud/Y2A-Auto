@@ -50,6 +50,11 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link {% if request.path.startswith('/transfer-center') %}active{% endif %}" href="{{ url_for('transfer_center_index') }}">
+                                <i class="bi bi-arrow-left-right nav-icon"></i> 搬运中心
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link {% if request.path.startswith('/youtube_monitor') %}active{% endif %}" href="{{ url_for('youtube_monitor_index') }}">
                                 <i class="bi bi-broadcast-pin nav-icon"></i> YouTube监控
                             </a>

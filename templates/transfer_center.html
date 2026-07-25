@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+
+{% block title %}搬运中心 - 视频搬运通道{% endblock %}
+
+{% block extra_css %}
+<style>
+    .transfer-hero {
+        background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 100%);
+        border: 1px solid #dbe8ff;
+        border-radius: 18px;
+        padding: 1.4rem;
+    }
+    .connection-card, .rule-card, .job-card {
+        border: 1px solid #e4e9f2;
+        border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(33, 68, 120, .05);
+    }
+    .connection-dot {
+        width: .65rem;
+        height: .65rem;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    .source-hint {
+        border-left: 3px solid #0d6efd;
+        background: #f7faff;
+        padding: .7rem .85rem;
+        border-radius: 0 8px 8px 0;
+    }
+    .status-discovered { color: #6c757d; }
+    .status-downloading, .status-publishing { color: #0d6efd; }
+    .status-ready { color: #d97706; }
+    .status-completed { color: #198754; }
+    .status-failed { color: #dc3545; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="transfer-hero mb-4 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+    <div>
+        <h1 class="h3 mb-2">搬运中心</h1>
+        <p class="text-muted mb-0">关注账号或一类内容，自动发现、去重、下载并发布到 X / YouTube。</p>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#connectionsModal">
+            <i class="bi bi-link-45deg me-1"></i>连接平台
+        </button>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#ruleModal">
+            <i class="bi bi-plus-lg me-1"></i>新建自动规则
+        </button>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="connection-card bg-white p-3 h-100">
+            <div class="small text-muted mb-1">B站来源</div>
+            <div class="fw-semibold">
+                <span class="connection-dot {{ 'bg-success' if transfer_config.bilibili_cookies_ready else 'bg-secondary' }}"></span>
+                {{ 'Cookie已配置' if transfer_config.bilibili_cookies_ready else '建议配置Cookie' }}
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="connection-card bg-white p-3 h-100">
+            <div class="small text-muted mb-1">抖音来源</div>
+            <div class="fw-semibold">
+                <span class="connection-dot {{ 'bg-success' if transfer_config.douyin_cookies_ready else 'bg-warning' }}"></span>
+                {{ 'Cookie已配置' if transfer_config.douyin_cookies_ready else '需要Cookie' }}
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="connection-card bg-white p-3 h-100">
+            <div class="small text-muted mb-1">发布到 X</div>
+            <div class="fw-semibold">
+                <span class="connection-dot {{ 'bg-success' if transfer_config.x_connected else 'bg-warning' }}"></span>
+                {{ '已连接' if transfer_config.x_connected else '等待授权' }}
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="connection-card bg-white p-3 h-100">
+            <div class="small text-muted mb-1">发布到 YouTube</div>
+            <div class="fw-semibold">
+                <span class="connection-dot {{ 'bg-success' if transfer_config.youtube_connected else 'bg-warning' }}"></span>
+                {{ '已连接' if transfer_config.youtube_connected else '等待授权' }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card rule-card mb-4">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+        <div>
+            <h2 class="h5 mb-1">自动发现规则</h2>
+            <div class="small text-muted">既可以关注账号，也可以按关键词发现某一类视频。</div>
+        </div>
+        <span class="badge bg-primary-subtle text-primary">{{ rules|length }} 条</span>
+    </div>
+    <div class="card-body p-0">
+        {% if rules %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>规则</th>
+                        <th>发现方式</th>
+                        <th>发布到</th>
+                        <th>最近扫描</th>
+                        <th class="text-end">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for rule in rules %}
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">{{ rule.name }}</div>
+                            <div class="small text-muted text-truncate" style="max-width: 320px;">{{ rule.source_value }}</div>
+                        </td>
+                        <td>
+                            <span class="badge {{ 'bg-info-subtle text-info-emphasis' if rule.platform == 'bilibili' else 'bg-dark-subtle text-dark' }}">
+                                {{ 'B站' if rule.platform == 'bilibili' else '抖音' }}
+                            </span>
+                            {{ '关键词/类别' if rule.discovery_mode == 'keyword' else '账号' }}
+                            <div class="small text-muted">每 {{ rule.interval_minutes }} 分钟</div>
+                        </td>
+                        <td>
+                            {% if '"x"' in rule.target_platforms %}<span class="badge bg-dark">X</span>{% endif %}
+                            {% if '"youtube"' in rule.target_platforms %}<span class="badge bg-danger">YouTube</span>{% endif %}
+                            {% if rule.auto_publish %}<div class="small text-success mt-1">自动发布</div>{% else %}<div class="small text-muted mt-1">发布前确认</div>{% endif %}
+                        </td>
+                        <td>
+                            {% if rule.last_scan_at %}
+                                <div class="small">{{ rule.last_scan_at[:19]|replace('T', ' ') }}</div>
+                                <div class="small {{ 'text-success' if rule.last_scan_status == 'success' else 'text-danger' }}">{{ rule.last_scan_message }}</div>
+                            {% else %}
+                                <span class="text-muted">尚未扫描</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-nowrap">
+                            <form method="post" action="{{ url_for('transfer_center_run_rule', rule_id=rule.id) }}" class="d-inline">
+                                <button class="btn btn-sm btn-outline-primary">立即扫描</button>
+                            </form>
+                            <form method="post" action="{{ url_for('transfer_center_toggle_rule', rule_id=rule.id) }}" class="d-inline">
+                                <button class="btn btn-sm btn-outline-secondary">{{ '暂停' if rule.enabled else '启用' }}</button>
+                            </form>
+                            <form method="post" action="{{ url_for('transfer_center_delete_rule', rule_id=rule.id) }}" class="d-inline" onsubmit="return confirm('删除这条规则？历史任务会保留。')">
+                                <button class="btn btn-sm btn-outline-danger">删除</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="p-5 text-center text-muted">
+            <i class="bi bi-radar fs-2 d-block mb-2"></i>
+            还没有自动规则。可从“新建自动规则”开始。
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card job-card">
+    <div class="card-header bg-white py-3 d-flex flex-column flex-lg-row justify-content-between gap-3">
+        <div>
+            <h2 class="h5 mb-1">搬运任务</h2>
+            <div class="small text-muted">自动发现和手动粘贴的视频都会进入这里。</div>
+        </div>
+        <form method="post" action="{{ url_for('transfer_center_add_job') }}" class="d-flex flex-wrap gap-2">
+            <input class="form-control form-control-sm" style="min-width: 280px;" name="source_url" placeholder="粘贴B站或抖音视频链接" required>
+            <label class="btn btn-sm btn-outline-dark"><input class="form-check-input me-1" type="checkbox" name="target_x" checked>X</label>
+            <label class="btn btn-sm btn-outline-danger"><input class="form-check-input me-1" type="checkbox" name="target_youtube" checked>YouTube</label>
+            <button class="btn btn-sm btn-primary">开始搬运</button>
+        </form>
+    </div>
+    <div class="card-body p-0">
+        {% if jobs %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>视频</th>
+                        <th>来源</th>
+                        <th>状态</th>
+                        <th>发布结果</th>
+                        <th class="text-end">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for job in jobs %}
+                    <tr>
+                        <td style="max-width: 420px;">
+                            <a href="{{ job.source_url }}" target="_blank" rel="noopener" class="fw-semibold text-decoration-none">
+                                {{ job.title or '等待获取视频信息' }}
+                            </a>
+                            {% if job.source_uploader %}<div class="small text-muted">{{ job.source_uploader }}</div>{% endif %}
+                            {% if job.error_message %}<div class="small text-danger mt-1">{{ job.error_message }}</div>{% endif %}
+                        </td>
+                        <td>{{ 'B站' if job.source_platform == 'bilibili' else '抖音' }}</td>
+                        <td><span class="status-{{ job.status }} fw-semibold">{{ {
+                            'discovered':'已发现',
+                            'downloading':'下载中',
+                            'ready':'待发布',
+                            'publishing':'发布中',
+                            'completed':'已完成',
+                            'failed':'失败',
+                            'skipped':'已跳过'
+                        }.get(job.status, job.status) }}</span></td>
+                        <td>
+                            {% if job.x_post_id %}<a href="https://x.com/i/status/{{ job.x_post_id }}" target="_blank" rel="noopener" class="badge bg-dark text-decoration-none">X</a>{% endif %}
+                            {% if job.youtube_video_id %}<a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank" rel="noopener" class="badge bg-danger text-decoration-none">YouTube</a>{% endif %}
+                            {% if not job.x_post_id and not job.youtube_video_id %}<span class="text-muted">—</span>{% endif %}
+                        </td>
+                        <td class="text-end text-nowrap">
+                            {% if job.status in ('discovered', 'failed') %}
+                            <form method="post" action="{{ url_for('transfer_center_prepare_job', job_id=job.id) }}" class="d-inline">
+                                <button class="btn btn-sm btn-outline-primary">下载/重试</button>
+                            </form>
+                            {% endif %}
+                            {% if job.status == 'ready' %}
+                            <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
+                                <button class="btn btn-sm btn-success">发布</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="p-5 text-center text-muted">暂无搬运任务。</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="modal fade" id="ruleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <form method="post" action="{{ url_for('transfer_center_save_rule') }}" class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title h5">新建自动发现规则</h3>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="source-hint small mb-3">
+                    “账号”适合持续跟踪一个发布者；“关键词/类别”适合发现一类内容。B站和抖音的自动扫描都建议配置有效 Cookie，并且仅搬运你拥有或已获授权发布的内容。
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">规则名称</label>
+                        <input class="form-control" name="name" placeholder="例如：AI工具热门视频" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">来源平台</label>
+                        <select class="form-select" name="platform" id="transferPlatform" required>
+                            <option value="bilibili">B站</option>
+                            <option value="douyin">国内抖音</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">发现方式</label>
+                        <select class="form-select" name="discovery_mode" id="transferMode" required>
+                            <option value="keyword">关键词/类别</option>
+                            <option value="account">指定账号</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" id="sourceValueLabel">关键词或类别</label>
+                        <input class="form-control" name="source_value" id="sourceValue" placeholder="例如：AI工具, 人工智能" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">结果必须包含（可选）</label>
+                        <input class="form-control" name="include_keywords" placeholder="多个词用逗号分隔">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">排除内容（可选）</label>
+                        <input class="form-control" name="exclude_keywords" placeholder="广告, 直播回放">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">扫描间隔</label>
+                        <select class="form-select" name="interval_minutes">
+                            <option value="5">5分钟</option>
+                            <option value="15" selected>15分钟</option>
+                            <option value="30">30分钟</option>
+                            <option value="60">1小时</option>
+                            <option value="360">6小时</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">每次检查数量</label>
+                        <input class="form-control" type="number" name="max_items" value="10" min="1" max="50">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label d-block">发布目标</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="target_x" id="ruleTargetX" checked>
+                            <label class="form-check-label" for="ruleTargetX">X</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="target_youtube" id="ruleTargetYoutube" checked>
+                            <label class="form-check-label" for="ruleTargetYoutube">YouTube</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="auto_prepare" id="autoPrepare" checked>
+                            <label class="form-check-label" for="autoPrepare">发现后自动下载并准备视频</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="auto_publish" id="autoPublish">
+                            <label class="form-check-label" for="autoPublish">准备完成后自动发布（建议完成影子测试后再开启）</label>
+                        </div>
+                        <input type="hidden" name="enabled" value="on">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" name="scan_now" value="on">保存并立即扫描</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="connectionsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <form method="post" action="{{ url_for('transfer_center_save_connections') }}" enctype="multipart/form-data" class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title h5">连接来源与发布平台</h3>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info small">所有凭据只保存在这台 Mac mini，不需要开放公网端口，也不要通过聊天发送密码或令牌。</div>
+                <h4 class="h6 mt-3">来源平台</h4>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">B站来源 Cookie（Netscape TXT，可选）</label>
+                        <input class="form-control" type="file" name="bilibili_source_cookies" accept=".txt">
+                        <div class="form-text">单条公开链接可能无需 Cookie；稳定的账号和关键词扫描建议配置。</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">抖音 Cookie（Netscape TXT）</label>
+                        <input class="form-control" type="file" name="douyin_cookies" accept=".txt">
+                        <div class="form-text">账号和关键词扫描通常需要有效 Cookie。</div>
+                    </div>
+                </div>
+                <h4 class="h6">发布平台</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">X 用户访问令牌</label>
+                        <input class="form-control" type="password" name="x_access_token" placeholder="{{ '已连接，留空保持不变' if transfer_config.x_connected else '从 X Developer Console 获取' }}">
+                        <div class="form-text">高级会员不等于 API 权限，需要开发者应用的用户令牌。</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">YouTube OAuth 客户端 JSON</label>
+                        <input class="form-control" type="file" name="youtube_client_secret" accept=".json">
+                        <div class="form-text">上传后保存，再点击页面中的 YouTube 连接按钮完成一次授权。</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">YouTube 默认可见性</label>
+                        <select class="form-select" name="youtube_privacy">
+                            <option value="private" {% if transfer_config.youtube_privacy == 'private' %}selected{% endif %}>私密（推荐测试）</option>
+                            <option value="unlisted" {% if transfer_config.youtube_privacy == 'unlisted' %}selected{% endif %}>不公开</option>
+                            <option value="public" {% if transfer_config.youtube_privacy == 'public' %}selected{% endif %}>公开</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">YouTube 分类ID</label>
+                        <input class="form-control" name="youtube_category_id" value="{{ transfer_config.youtube_category_id }}" placeholder="22">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                {% if transfer_config.youtube_connected %}
+                    <span class="text-success me-auto"><i class="bi bi-check-circle"></i> YouTube 已授权</span>
+                {% else %}
+                    <a class="btn btn-outline-danger me-auto" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube</a>
+                {% endif %}
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary">保存连接</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const mode = document.getElementById('transferMode');
+    const platform = document.getElementById('transferPlatform');
+    const label = document.getElementById('sourceValueLabel');
+    const input = document.getElementById('sourceValue');
+    const syncHint = () => {
+        const isAccount = mode.value === 'account';
+        label.textContent = isAccount ? '账号主页链接' : '关键词或类别';
+        input.placeholder = isAccount
+            ? (platform.value === 'bilibili' ? 'https://space.bilibili.com/...' : 'https://www.douyin.com/user/...')
+            : '例如：AI工具, 人工智能';
+    };
+    mode.addEventListener('change', syncHint);
+    platform.addEventListener('change', syncHint);
+    syncHint();
+});
+</script>
+{% endblock %}

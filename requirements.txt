@@ -24,6 +24,7 @@ alibabacloud_tea_openapi==0.3.15
 alibabacloud_tea_util==0.3.13
 curl_cffi~=0.10.0
 google-api-python-client>=2.116,<3.0
+google-auth-oauthlib>=1.2,<2.0
 PySocks~=1.7.1
 APScheduler~=3.11.0
 cryptography>=46.0.7,<47.0

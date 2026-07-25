@@ -29,6 +29,7 @@ from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
+from modules.transfer_center import get_transfer_center
 from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_CHECKBOXES,
     SPEECH_PIPELINE_FLOAT_FIELDS,
@@ -3389,6 +3390,246 @@ def schedule_download_cleanup():
         return None
 
 
+# 搬运中心
+def _transfer_center():
+    return get_transfer_center(config_provider=load_config)
+
+
+def _transfer_target_list(form):
+    return [
+        target
+        for target in ('x', 'youtube')
+        if str(form.get(f'target_{target}', '')).lower() in ('1', 'true', 'on', 'yes')
+    ]
+
+
+@app.route('/transfer-center')
+@login_required
+def transfer_center_index():
+    center = _transfer_center()
+    config = load_config()
+    return render_template(
+        'transfer_center.html',
+        rules=center.list_rules(),
+        jobs=center.list_jobs(limit=100),
+        transfer_config={
+            'x_connected': bool(str(config.get('TRANSFER_X_ACCESS_TOKEN') or '').strip()),
+            'youtube_connected': os.path.isfile(
+                os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
+            ),
+            'bilibili_cookies_ready': os.path.isfile(
+                os.path.join(get_app_subdir('cookies'), 'bilibili_source_cookies.txt')
+            ),
+            'douyin_cookies_ready': os.path.isfile(
+                os.path.join(get_app_subdir('cookies'), 'douyin_cookies.txt')
+            ),
+            'youtube_privacy': config.get('TRANSFER_YOUTUBE_PRIVACY', 'private'),
+            'youtube_category_id': config.get('TRANSFER_YOUTUBE_CATEGORY_ID', '22'),
+        },
+    )
+
+
+@app.route('/transfer-center/rules', methods=['POST'])
+@login_required
+def transfer_center_save_rule():
+    try:
+        payload = {
+            'name': request.form.get('name'),
+            'platform': request.form.get('platform'),
+            'discovery_mode': request.form.get('discovery_mode'),
+            'source_value': request.form.get('source_value'),
+            'include_keywords': request.form.get('include_keywords'),
+            'exclude_keywords': request.form.get('exclude_keywords'),
+            'target_platforms': _transfer_target_list(request.form),
+            'interval_minutes': request.form.get('interval_minutes', 15),
+            'max_items': request.form.get('max_items', 10),
+            'auto_prepare': request.form.get('auto_prepare', 'on'),
+            'auto_publish': request.form.get('auto_publish'),
+            'enabled': request.form.get('enabled', 'on'),
+        }
+        rule_id = _transfer_center().save_rule(payload)
+        flash('监控规则已保存；首次扫描可手动运行，之后会按间隔自动执行。', 'success')
+        if request.form.get('scan_now') == 'on':
+            result = _transfer_center().scan_rule(rule_id)
+            flash(result.get('message', '扫描完成'), 'success' if result.get('success') else 'warning')
+    except Exception as e:
+        flash(f'保存监控规则失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/rules/<rule_id>/run', methods=['POST'])
+@login_required
+def transfer_center_run_rule(rule_id):
+    result = _transfer_center().scan_rule(rule_id)
+    flash(result.get('message', '扫描完成'), 'success' if result.get('success') else 'warning')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/rules/<rule_id>/toggle', methods=['POST'])
+@login_required
+def transfer_center_toggle_rule(rule_id):
+    rule = _transfer_center().get_rule(rule_id)
+    if not rule:
+        flash('监控规则不存在。', 'warning')
+    else:
+        _transfer_center().set_rule_enabled(rule_id, not bool(rule.get('enabled')))
+        flash('监控规则已启用。' if not rule.get('enabled') else '监控规则已暂停。', 'success')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/rules/<rule_id>/delete', methods=['POST'])
+@login_required
+def transfer_center_delete_rule(rule_id):
+    if _transfer_center().delete_rule(rule_id):
+        flash('监控规则已删除，历史搬运任务仍保留。', 'success')
+    else:
+        flash('监控规则不存在。', 'warning')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/jobs', methods=['POST'])
+@login_required
+def transfer_center_add_job():
+    try:
+        job_id = _transfer_center().add_manual_job(
+            request.form.get('source_url', ''),
+            _transfer_target_list(request.form),
+        )
+        _transfer_center().prepare_job_async(
+            job_id,
+            publish_after=request.form.get('auto_publish') == 'on',
+        )
+        flash('搬运任务已创建，正在后台下载和准备视频。', 'success')
+    except Exception as e:
+        flash(f'创建搬运任务失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/jobs/<job_id>/prepare', methods=['POST'])
+@login_required
+def transfer_center_prepare_job(job_id):
+    if not _transfer_center().get_job(job_id):
+        flash('搬运任务不存在。', 'warning')
+    else:
+        _transfer_center().prepare_job_async(job_id)
+        flash('已重新开始下载和准备。', 'success')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/jobs/<job_id>/publish', methods=['POST'])
+@login_required
+def transfer_center_publish_job(job_id):
+    if not _transfer_center().get_job(job_id):
+        flash('搬运任务不存在。', 'warning')
+    else:
+        _transfer_center().publish_job_async(job_id)
+        flash('发布任务已提交。', 'success')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/connections', methods=['POST'])
+@login_required
+def transfer_center_save_connections():
+    messages = []
+    config_updates = {
+        'TRANSFER_YOUTUBE_PRIVACY': (
+            request.form.get('youtube_privacy')
+            if request.form.get('youtube_privacy') in ('private', 'unlisted', 'public')
+            else 'private'
+        ),
+        'TRANSFER_YOUTUBE_CATEGORY_ID': str(request.form.get('youtube_category_id') or '22').strip(),
+    }
+    x_token = str(request.form.get('x_access_token') or '').strip()
+    if x_token:
+        config_updates['TRANSFER_X_ACCESS_TOKEN'] = x_token
+        messages.append('X 用户访问令牌已保存')
+
+    upload_specs = (
+        ('bilibili_source_cookies', get_app_subdir('cookies'), 'bilibili_source_cookies.txt', 'B站来源 Cookie'),
+        ('douyin_cookies', get_app_subdir('cookies'), 'douyin_cookies.txt', '抖音 Cookie'),
+        ('youtube_client_secret', get_app_subdir('config'), 'youtube_transfer_client_secret.json', 'YouTube OAuth 客户端'),
+    )
+    for field_name, directory, filename, label in upload_specs:
+        file_obj = request.files.get(field_name)
+        if not file_obj or not file_obj.filename:
+            continue
+        os.makedirs(directory, exist_ok=True)
+        target_path = os.path.join(directory, filename)
+        file_obj.save(target_path)
+        try:
+            os.chmod(target_path, 0o600)
+        except Exception:
+            pass
+        messages.append(f'{label}已保存')
+
+    try:
+        update_config(config_updates)
+        flash('；'.join(messages) if messages else '发布偏好已保存。', 'success')
+    except Exception as e:
+        flash(f'保存连接配置失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/youtube/connect')
+@login_required
+def transfer_center_youtube_connect():
+    client_secret_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_client_secret.json')
+    if not os.path.isfile(client_secret_path):
+        flash('请先上传从 Google Cloud 下载的 YouTube OAuth 客户端 JSON。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    try:
+        from google_auth_oauthlib.flow import Flow
+
+        redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
+        flow = Flow.from_client_secrets_file(
+            client_secret_path,
+            scopes=['https://www.googleapis.com/auth/youtube.upload'],
+            redirect_uri=redirect_uri,
+        )
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent',
+        )
+        session['transfer_youtube_oauth_state'] = state
+        return redirect(authorization_url)
+    except Exception as e:
+        flash(f'启动 YouTube 授权失败：{e}', 'danger')
+        return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/youtube/callback')
+@login_required
+def transfer_center_youtube_callback():
+    client_secret_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_client_secret.json')
+    state = session.pop('transfer_youtube_oauth_state', None)
+    if not state:
+        flash('YouTube 授权状态已失效，请重新连接。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    try:
+        from google_auth_oauthlib.flow import Flow
+
+        redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
+        flow = Flow.from_client_secrets_file(
+            client_secret_path,
+            scopes=['https://www.googleapis.com/auth/youtube.upload'],
+            state=state,
+            redirect_uri=redirect_uri,
+        )
+        flow.fetch_token(authorization_response=request.url)
+        token_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
+        with open(token_path, 'w', encoding='utf-8') as handle:
+            handle.write(flow.credentials.to_json())
+        try:
+            os.chmod(token_path, 0o600)
+        except Exception:
+            pass
+        flash('YouTube 频道授权成功。', 'success')
+    except Exception as e:
+        flash(f'YouTube 授权失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
 # YouTube监控系统路由
 @app.route('/youtube_monitor')
 @login_required
@@ -3842,6 +4083,9 @@ if __name__ == '__main__':
     get_global_task_processor(config)
     logger.info("全局任务处理器已初始化")
 
+    transfer_center_service = get_transfer_center(config_provider=load_config)
+    transfer_center_service.start()
+
     # 自动启动所有pending任务（如果启用了自动模式）
     if config.get('AUTO_MODE_ENABLED', False):
         logger.info("自动模式已启用，正在启动所有pending任务...")
@@ -3888,4 +4132,5 @@ if __name__ == '__main__':
             log_cleanup_scheduler.shutdown()
         if download_cleanup_scheduler:
             download_cleanup_scheduler.shutdown()
+        transfer_center_service.shutdown()
         logger.info("服务已关闭")
