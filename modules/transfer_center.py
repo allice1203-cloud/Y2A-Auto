@@ -22,13 +22,20 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
 import requests
 
+from .content_recreation import (
+    deserialize_plan,
+    generate_recreation_plan,
+    serialize_plan,
+    validate_review_payload,
+)
+from .media_preflight import prepare_platform_variants
 from .utils import get_app_subdir
 
 
@@ -40,12 +47,15 @@ TARGETS = {"x", "youtube"}
 JOB_STATUSES = {
     "DISCOVERED": "discovered",
     "DOWNLOADING": "downloading",
+    "REVIEW": "review",
     "READY": "ready",
     "PUBLISHING": "publishing",
     "COMPLETED": "completed",
     "FAILED": "failed",
     "SKIPPED": "skipped",
 }
+RETRY_DELAYS_SECONDS = (60, 300, 1800)
+RIGHTS_CONFIRMED_VALUES = {"owned", "licensed", "cc", "public_domain"}
 
 
 def _utc_now() -> str:
@@ -89,6 +99,8 @@ class TransferCenter:
         self._config_provider = config_provider or (lambda: {})
         self._lock = threading.RLock()
         self._worker_lock = threading.Lock()
+        self._active_jobs_lock = threading.Lock()
+        self._active_jobs: set[str] = set()
         self._scheduler = None
         self.db_path = os.path.join(get_app_subdir("db"), "transfer_center.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -99,6 +111,8 @@ class TransferCenter:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_db(self) -> None:
@@ -116,6 +130,12 @@ class TransferCenter:
                     target_platforms TEXT NOT NULL,
                     interval_minutes INTEGER NOT NULL DEFAULT 15,
                     max_items INTEGER NOT NULL DEFAULT 10,
+                    max_age_hours INTEGER NOT NULL DEFAULT 48,
+                    daily_limit INTEGER NOT NULL DEFAULT 3,
+                    first_scan_preview INTEGER NOT NULL DEFAULT 1,
+                    first_scan_completed INTEGER NOT NULL DEFAULT 0,
+                    recreation_mode TEXT NOT NULL DEFAULT 'commentary',
+                    require_review INTEGER NOT NULL DEFAULT 1,
                     auto_prepare INTEGER NOT NULL DEFAULT 1,
                     auto_publish INTEGER NOT NULL DEFAULT 0,
                     enabled INTEGER NOT NULL DEFAULT 1,
@@ -142,6 +162,26 @@ class TransferCenter:
                     status TEXT NOT NULL,
                     local_video_path TEXT DEFAULT '',
                     local_metadata_path TEXT DEFAULT '',
+                    media_probe_json TEXT DEFAULT '{}',
+                    platform_variants_json TEXT DEFAULT '{}',
+                    rights_basis TEXT DEFAULT 'unconfirmed',
+                    rights_note TEXT DEFAULT '',
+                    recreation_mode TEXT DEFAULT 'commentary',
+                    recreation_status TEXT DEFAULT 'pending',
+                    recreation_plan_json TEXT DEFAULT '{}',
+                    original_angle TEXT DEFAULT '',
+                    original_contribution TEXT DEFAULT '',
+                    x_text TEXT DEFAULT '',
+                    youtube_title TEXT DEFAULT '',
+                    youtube_description TEXT DEFAULT '',
+                    reviewed_at TEXT,
+                    prepare_attempts INTEGER NOT NULL DEFAULT 0,
+                    x_publish_status TEXT DEFAULT 'pending',
+                    youtube_publish_status TEXT DEFAULT 'pending',
+                    x_publish_attempts INTEGER NOT NULL DEFAULT 0,
+                    youtube_publish_attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    last_retry_stage TEXT DEFAULT '',
                     x_post_id TEXT DEFAULT '',
                     youtube_video_id TEXT DEFAULT '',
                     error_message TEXT DEFAULT '',
@@ -157,6 +197,82 @@ class TransferCenter:
                     ON transfer_jobs(rule_id, created_at DESC);
                 """
             )
+            self._migrate_schema(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transfer_jobs_retry "
+                "ON transfer_jobs(next_retry_at, status)"
+            )
+            conn.execute(
+                "UPDATE transfer_rules SET auto_publish = 0, require_review = 1 "
+                "WHERE auto_publish <> 0 OR require_review <> 1"
+            )
+            conn.execute(
+                """
+                UPDATE transfer_jobs
+                SET status = CASE
+                        WHEN local_video_path <> '' THEN 'review'
+                        ELSE 'failed'
+                    END,
+                    next_retry_at = ?,
+                    last_retry_stage = CASE
+                        WHEN local_video_path <> '' THEN 'publish'
+                        ELSE 'prepare'
+                    END,
+                    error_message = CASE
+                        WHEN error_message = '' THEN '服务重启后任务已恢复，等待重新处理'
+                        ELSE error_message
+                    END,
+                    updated_at = ?
+                WHERE status IN ('downloading', 'publishing')
+                """,
+                (_utc_now(), _utc_now()),
+            )
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection) -> None:
+        rule_columns = {
+            "max_age_hours": "INTEGER NOT NULL DEFAULT 48",
+            "daily_limit": "INTEGER NOT NULL DEFAULT 3",
+            "first_scan_preview": "INTEGER NOT NULL DEFAULT 1",
+            "first_scan_completed": "INTEGER NOT NULL DEFAULT 0",
+            "recreation_mode": "TEXT NOT NULL DEFAULT 'commentary'",
+            "require_review": "INTEGER NOT NULL DEFAULT 1",
+        }
+        job_columns = {
+            "media_probe_json": "TEXT DEFAULT '{}'",
+            "platform_variants_json": "TEXT DEFAULT '{}'",
+            "rights_basis": "TEXT DEFAULT 'unconfirmed'",
+            "rights_note": "TEXT DEFAULT ''",
+            "recreation_mode": "TEXT DEFAULT 'commentary'",
+            "recreation_status": "TEXT DEFAULT 'pending'",
+            "recreation_plan_json": "TEXT DEFAULT '{}'",
+            "original_angle": "TEXT DEFAULT ''",
+            "original_contribution": "TEXT DEFAULT ''",
+            "x_text": "TEXT DEFAULT ''",
+            "youtube_title": "TEXT DEFAULT ''",
+            "youtube_description": "TEXT DEFAULT ''",
+            "reviewed_at": "TEXT",
+            "prepare_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "x_publish_status": "TEXT DEFAULT 'pending'",
+            "youtube_publish_status": "TEXT DEFAULT 'pending'",
+            "x_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "youtube_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "next_retry_at": "TEXT",
+            "last_retry_stage": "TEXT DEFAULT ''",
+        }
+        for table_name, additions in (
+            ("transfer_rules", rule_columns),
+            ("transfer_jobs", job_columns),
+        ):
+            existing = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            }
+            for column_name, definition in additions.items():
+                if column_name not in existing:
+                    conn.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+                    )
 
     def _config(self) -> dict:
         config = self._config_provider()
@@ -194,6 +310,9 @@ class TransferCenter:
             host in source_value.lower() for host in ("bilibili.com", "b23.tv")
         ):
             raise ValueError("B站账号监控需要填写个人空间链接")
+        recreation_mode = str(payload.get("recreation_mode") or "commentary").strip().lower()
+        if recreation_mode not in {"commentary", "localized", "authorized_repost"}:
+            recreation_mode = "commentary"
 
         now = _utc_now()
         rid = rule_id or str(uuid.uuid4())
@@ -208,8 +327,13 @@ class TransferCenter:
             "target_platforms": json.dumps(targets, ensure_ascii=False),
             "interval_minutes": max(5, min(1440, int(payload.get("interval_minutes") or 15))),
             "max_items": max(1, min(50, int(payload.get("max_items") or 10))),
+            "max_age_hours": max(1, min(720, int(payload.get("max_age_hours") or 48))),
+            "daily_limit": max(1, min(50, int(payload.get("daily_limit") or 3))),
+            "first_scan_preview": int(_as_bool(payload.get("first_scan_preview", True))),
+            "recreation_mode": recreation_mode,
+            "require_review": 1,
             "auto_prepare": int(_as_bool(payload.get("auto_prepare", True))),
-            "auto_publish": int(_as_bool(payload.get("auto_publish", False))),
+            "auto_publish": 0,
             "enabled": int(_as_bool(payload.get("enabled", True))),
             "updated_at": now,
         }
@@ -223,6 +347,9 @@ class TransferCenter:
                         source_value=:source_value, include_keywords=:include_keywords,
                         exclude_keywords=:exclude_keywords, target_platforms=:target_platforms,
                         interval_minutes=:interval_minutes, max_items=:max_items,
+                        max_age_hours=:max_age_hours, daily_limit=:daily_limit,
+                        first_scan_preview=:first_scan_preview,
+                        recreation_mode=:recreation_mode, require_review=:require_review,
                         auto_prepare=:auto_prepare, auto_publish=:auto_publish,
                         enabled=:enabled, updated_at=:updated_at
                     WHERE id=:id
@@ -236,13 +363,15 @@ class TransferCenter:
                     INSERT INTO transfer_rules (
                         id, name, platform, discovery_mode, source_value,
                         include_keywords, exclude_keywords, target_platforms,
-                        interval_minutes, max_items, auto_prepare, auto_publish,
-                        enabled, created_at, updated_at
+                        interval_minutes, max_items, max_age_hours, daily_limit,
+                        first_scan_preview, recreation_mode, require_review,
+                        auto_prepare, auto_publish, enabled, created_at, updated_at
                     ) VALUES (
                         :id, :name, :platform, :discovery_mode, :source_value,
                         :include_keywords, :exclude_keywords, :target_platforms,
-                        :interval_minutes, :max_items, :auto_prepare, :auto_publish,
-                        :enabled, :created_at, :updated_at
+                        :interval_minutes, :max_items, :max_age_hours, :daily_limit,
+                        :first_scan_preview, :recreation_mode, :require_review,
+                        :auto_prepare, :auto_publish, :enabled, :created_at, :updated_at
                     )
                     """,
                     values,
@@ -396,10 +525,41 @@ class TransferCenter:
             return False
         return not any(part in haystack for part in excludes)
 
+    @staticmethod
+    def _is_recent_enough(rule: dict, item: dict) -> bool:
+        raw_value = item.get("timestamp")
+        if raw_value in (None, "", 0, "0"):
+            return True
+        try:
+            if isinstance(raw_value, (int, float)) or str(raw_value).isdigit():
+                published = datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+            else:
+                published = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+                if published.tzinfo is None:
+                    published = published.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - published.astimezone(timezone.utc)
+            return age <= timedelta(hours=max(1, int(rule.get("max_age_hours") or 48)))
+        except Exception:
+            return True
+
+    def _jobs_created_today(self, rule_id: str) -> int:
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM transfer_jobs
+                WHERE rule_id = ? AND substr(created_at, 1, 10) = ?
+                """,
+                (rule_id, today),
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
     def _insert_discovered_job(self, rule: dict, item: dict) -> tuple[str, bool]:
         now = _utc_now()
         source_id = str(item.get("id") or hashlib.sha256(item["url"].encode()).hexdigest()[:24])
         job_id = str(uuid.uuid4())
+        targets = _json_list(rule["target_platforms"])
         with self._connect() as conn:
             try:
                 conn.execute(
@@ -408,8 +568,9 @@ class TransferCenter:
                         id, rule_id, source_platform, source_id, source_url,
                         source_uploader, title, description, thumbnail_url,
                         duration, published_at, target_platforms, status,
+                        recreation_mode, x_publish_status, youtube_publish_status,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -425,6 +586,9 @@ class TransferCenter:
                         str(item.get("timestamp") or ""),
                         rule["target_platforms"],
                         JOB_STATUSES["DISCOVERED"],
+                        str(rule.get("recreation_mode") or "commentary"),
+                        "pending" if "x" in targets else "skipped",
+                        "pending" if "youtube" in targets else "skipped",
                         now,
                         now,
                     ),
@@ -443,19 +607,43 @@ class TransferCenter:
             raise ValueError("监控规则不存在")
         try:
             items = self._discover_items(rule)
+            candidates = [
+                item
+                for item in items
+                if self._matches_filters(rule, item) and self._is_recent_enough(rule, item)
+            ]
+            remaining = max(
+                0,
+                int(rule.get("daily_limit") or 3) - self._jobs_created_today(rule_id),
+            )
             added_ids = []
-            for item in items:
-                if not self._matches_filters(rule, item):
-                    continue
+            for item in candidates[:remaining]:
                 job_id, created = self._insert_discovered_job(rule, item)
                 if created:
                     added_ids.append(job_id)
-            message = f"发现 {len(items)} 条，新增 {len(added_ids)} 条"
+            first_scan_preview = bool(rule.get("first_scan_preview")) and not bool(
+                rule.get("first_scan_completed")
+            )
+            message = (
+                f"发现 {len(items)} 条，符合时效和关键词 {len(candidates)} 条，"
+                f"今日新增 {len(added_ids)} 条"
+            )
+            if remaining <= 0:
+                message += "；已达到今日上限"
+            if first_scan_preview:
+                message += "；首次扫描仅进入审核区，不自动下载"
             self._mark_rule_scan(rule_id, "success", message)
-            if rule["auto_prepare"]:
+            if rule["auto_prepare"] and not first_scan_preview:
                 for job_id in added_ids:
-                    self.prepare_job_async(job_id, publish_after=bool(rule["auto_publish"]))
-            return {"success": True, "found": len(items), "added": len(added_ids), "message": message}
+                    self.prepare_job_async(job_id, publish_after=False)
+            return {
+                "success": True,
+                "found": len(items),
+                "eligible": len(candidates),
+                "added": len(added_ids),
+                "preview": first_scan_preview,
+                "message": message,
+            }
         except Exception as exc:
             message = _safe_error(exc)
             self._mark_rule_scan(rule_id, "failed", message)
@@ -467,10 +655,12 @@ class TransferCenter:
             conn.execute(
                 """
                 UPDATE transfer_rules
-                SET last_scan_at=?, last_scan_status=?, last_scan_message=?, updated_at=?
+                SET last_scan_at=?, last_scan_status=?, last_scan_message=?,
+                    first_scan_completed=CASE WHEN ?='success' THEN 1 ELSE first_scan_completed END,
+                    updated_at=?
                 WHERE id=?
                 """,
-                (_utc_now(), status, _safe_error(message), _utc_now(), rule_id),
+                (_utc_now(), status, _safe_error(message), status, _utc_now(), rule_id),
             )
 
     def scan_due_rules(self) -> None:
@@ -501,6 +691,21 @@ class TransferCenter:
                 (max(1, min(500, int(limit))),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_dashboard_stats(self) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS total FROM transfer_jobs GROUP BY status"
+            ).fetchall()
+        counts = {str(row["status"]): int(row["total"]) for row in rows}
+        return {
+            "total": sum(counts.values()),
+            "discovered": counts.get("discovered", 0),
+            "review": counts.get("review", 0),
+            "ready": counts.get("ready", 0),
+            "failed": counts.get("failed", 0),
+            "completed": counts.get("completed", 0),
+        }
 
     def get_job(self, job_id: str) -> dict | None:
         with self._connect() as conn:
@@ -538,6 +743,26 @@ class TransferCenter:
             "duration",
             "local_video_path",
             "local_metadata_path",
+            "media_probe_json",
+            "platform_variants_json",
+            "rights_basis",
+            "rights_note",
+            "recreation_mode",
+            "recreation_status",
+            "recreation_plan_json",
+            "original_angle",
+            "original_contribution",
+            "x_text",
+            "youtube_title",
+            "youtube_description",
+            "reviewed_at",
+            "prepare_attempts",
+            "x_publish_status",
+            "youtube_publish_status",
+            "x_publish_attempts",
+            "youtube_publish_attempts",
+            "next_retry_at",
+            "last_retry_stage",
             "x_post_id",
             "youtube_video_id",
             "error_message",
@@ -553,7 +778,20 @@ class TransferCenter:
                 (*updates.values(), job_id),
             )
 
-    def prepare_job_async(self, job_id: str, publish_after: bool = False) -> None:
+    def _claim_active_job(self, job_id: str) -> bool:
+        with self._active_jobs_lock:
+            if job_id in self._active_jobs:
+                return False
+            self._active_jobs.add(job_id)
+            return True
+
+    def _release_active_job(self, job_id: str) -> None:
+        with self._active_jobs_lock:
+            self._active_jobs.discard(job_id)
+
+    def prepare_job_async(self, job_id: str, publish_after: bool = False) -> bool:
+        if not self._claim_active_job(job_id):
+            return False
         thread = threading.Thread(
             target=self._prepare_job_guarded,
             args=(job_id, publish_after),
@@ -561,6 +799,7 @@ class TransferCenter:
             daemon=True,
         )
         thread.start()
+        return True
 
     def _prepare_job_guarded(self, job_id: str, publish_after: bool) -> None:
         try:
@@ -568,18 +807,110 @@ class TransferCenter:
             if publish_after:
                 self.publish_job(job_id)
         except Exception as exc:
-            self._update_job(
+            job = self.get_job(job_id) or {}
+            self._schedule_retry(
                 job_id,
-                status=JOB_STATUSES["FAILED"],
-                error_message=_safe_error(exc),
+                "prepare",
+                int(job.get("prepare_attempts") or 1),
+                exc,
             )
             logger.exception("搬运任务处理失败 %s", job_id)
+        finally:
+            self._release_active_job(job_id)
+
+    def _schedule_retry(
+        self,
+        job_id: str,
+        stage: str,
+        attempts: int,
+        error: Any,
+    ) -> None:
+        safe_message = _safe_error(error)
+        retry_at = None
+        if attempts <= len(RETRY_DELAYS_SECONDS):
+            retry_at = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=RETRY_DELAYS_SECONDS[attempts - 1])
+            ).isoformat(timespec="seconds")
+        self._update_job(
+            job_id,
+            status=(
+                JOB_STATUSES["FAILED"]
+                if stage == "prepare"
+                else JOB_STATUSES["READY"]
+            ),
+            next_retry_at=retry_at,
+            last_retry_stage=stage,
+            error_message=(
+                f"{safe_message}；系统将在后台自动重试"
+                if retry_at
+                else f"{safe_message}；自动重试已用完，请人工处理"
+            ),
+        )
+        if not retry_at:
+            self._emit_failure_notification(job_id, safe_message)
+
+    def _emit_failure_notification(self, job_id: str, error_message: str) -> None:
+        try:
+            from .notifications import (
+                EVENT_TASK_FAILED,
+                NotificationEvent,
+                emit_notification_event,
+            )
+
+            job = self.get_job(job_id) or {}
+            emit_notification_event(
+                NotificationEvent(
+                    event_type=EVENT_TASK_FAILED,
+                    payload={
+                        "task_id": job_id,
+                        "title": job.get("title") or "视频搬运任务",
+                        "status": job.get("status") or "failed",
+                        "upload_target": ",".join(_json_list(job.get("target_platforms"))),
+                        "error_message": error_message,
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("搬运任务失败通知未启用或不可用", exc_info=True)
+
+    def retry_due_jobs(self) -> None:
+        now = _utc_now()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, last_retry_stage
+                FROM transfer_jobs
+                WHERE next_retry_at IS NOT NULL
+                  AND next_retry_at <= ?
+                  AND status IN ('failed', 'ready')
+                ORDER BY next_retry_at ASC
+                LIMIT 10
+                """,
+                (now,),
+            ).fetchall()
+        for row in rows:
+            if row["last_retry_stage"] == "prepare":
+                self.prepare_job_async(row["id"], publish_after=False)
+            elif row["last_retry_stage"] == "publish":
+                self.publish_job_async(row["id"])
 
     def prepare_job(self, job_id: str) -> dict:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
-        self._update_job(job_id, status=JOB_STATUSES["DOWNLOADING"], error_message="")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE transfer_jobs
+                SET status=?, prepare_attempts=prepare_attempts+1,
+                    next_retry_at=NULL, last_retry_stage='prepare',
+                    error_message='', updated_at=?
+                WHERE id=?
+                """,
+                (JOB_STATUSES["DOWNLOADING"], _utc_now(), job_id),
+            )
+        job = self.get_job(job_id) or job
         output_dir = Path(get_app_subdir("downloads")) / "transfer" / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
         output_template = str(output_dir / "video.%(ext)s")
@@ -591,6 +922,12 @@ class TransferCenter:
             "--write-thumbnail",
             "--convert-thumbnails",
             "jpg",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "zh.*,en.*,ja.*,ko.*",
+            "--sub-format",
+            "vtt/srt/best",
             "--merge-output-format",
             "mp4",
             "-o",
@@ -618,22 +955,162 @@ class TransferCenter:
             except Exception:
                 metadata = {}
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        prepared_fields = {
+            "title": str(metadata.get("title") or job.get("title") or "")[:500],
+            "description": str(metadata.get("description") or job.get("description") or "")[:8000],
+            "source_uploader": str(metadata.get("uploader") or job.get("source_uploader") or "")[:300],
+            "thumbnail_url": str(metadata.get("thumbnail") or job.get("thumbnail_url") or "")[:1500],
+            "duration": metadata.get("duration") or job.get("duration"),
+            "local_video_path": str(videos[0]),
+            "local_metadata_path": str(metadata_path),
+        }
+        targets = _json_list(job["target_platforms"])
+        media_info, variants = prepare_platform_variants(
+            str(videos[0]),
+            str(output_dir),
+            targets,
+        )
+        recreation_job = {**job, **prepared_fields}
+        plan = generate_recreation_plan(
+            recreation_job,
+            self._config(),
+            mode=str(job.get("recreation_mode") or "commentary"),
+        )
         self._update_job(
             job_id,
-            status=JOB_STATUSES["READY"],
-            title=str(metadata.get("title") or job.get("title") or "")[:500],
-            description=str(metadata.get("description") or job.get("description") or "")[:8000],
-            source_uploader=str(metadata.get("uploader") or job.get("source_uploader") or "")[:300],
-            thumbnail_url=str(metadata.get("thumbnail") or job.get("thumbnail_url") or "")[:1500],
-            duration=metadata.get("duration") or job.get("duration"),
-            local_video_path=str(videos[0]),
-            local_metadata_path=str(metadata_path),
+            status=JOB_STATUSES["REVIEW"],
+            **prepared_fields,
+            media_probe_json=json.dumps(media_info, ensure_ascii=False),
+            platform_variants_json=json.dumps(variants, ensure_ascii=False),
+            recreation_status="draft",
+            recreation_plan_json=serialize_plan(plan),
+            original_angle=str(plan.get("original_angle") or ""),
+            original_contribution=str(plan.get("original_contribution") or ""),
+            x_text=str(plan.get("x_text") or ""),
+            youtube_title=str(plan.get("youtube_title") or ""),
+            youtube_description=str(plan.get("youtube_description") or ""),
+            next_retry_at=None,
+            last_retry_stage="",
+            error_message="",
+        )
+        return self.get_job(job_id) or {}
+
+    def generate_recreation_draft(self, job_id: str) -> dict:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        if not job.get("local_video_path"):
+            raise ValueError("请先完成视频下载和媒体体检")
+        plan = generate_recreation_plan(
+            job,
+            self._config(),
+            mode=str(job.get("recreation_mode") or "commentary"),
+        )
+        self._update_job(
+            job_id,
+            status=JOB_STATUSES["REVIEW"],
+            recreation_status="draft",
+            recreation_plan_json=serialize_plan(plan),
+            original_angle=str(plan.get("original_angle") or ""),
+            original_contribution=str(plan.get("original_contribution") or ""),
+            x_text=str(plan.get("x_text") or ""),
+            youtube_title=str(plan.get("youtube_title") or ""),
+            youtube_description=str(plan.get("youtube_description") or ""),
+            reviewed_at=None,
+            error_message="",
+        )
+        return self.get_job(job_id) or {}
+
+    def replace_recreated_media(self, job_id: str, video_path: str) -> dict:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        if job.get("x_post_id") or job.get("youtube_video_id"):
+            raise ValueError("已有平台发布结果，不能替换成片")
+        if not os.path.isfile(video_path):
+            raise ValueError("再创作成片文件不存在")
+        targets = _json_list(job.get("target_platforms"))
+        media_info, variants = prepare_platform_variants(
+            video_path,
+            str(Path(video_path).parent),
+            targets,
+        )
+        self._update_job(
+            job_id,
+            status=JOB_STATUSES["REVIEW"],
+            local_video_path=video_path,
+            media_probe_json=json.dumps(media_info, ensure_ascii=False),
+            platform_variants_json=json.dumps(variants, ensure_ascii=False),
+            recreation_status="draft",
+            reviewed_at=None,
+            x_publish_status="pending" if "x" in targets else "skipped",
+            youtube_publish_status="pending" if "youtube" in targets else "skipped",
+            next_retry_at=None,
+            last_retry_stage="",
+            error_message="",
+        )
+        return self.get_job(job_id) or {}
+
+    def save_recreation_review(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        approve: bool = False,
+    ) -> dict:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        normalized = validate_review_payload(payload)
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        plan.update(
+            {
+                "original_angle": normalized["original_angle"],
+                "original_contribution": normalized["original_contribution"],
+                "x_text": normalized["x_text"],
+                "youtube_title": normalized["youtube_title"],
+                "youtube_description": normalized["youtube_description"],
+            }
+        )
+        status = JOB_STATUSES["REVIEW"]
+        recreation_status = "draft"
+        reviewed_at = None
+        if approve:
+            variants = deserialize_plan(job.get("platform_variants_json"))
+            blockers = []
+            for target in _json_list(job.get("target_platforms")):
+                target_state = variants.get(target) if isinstance(variants, dict) else None
+                if not isinstance(target_state, dict) or target_state.get("status") != "ready":
+                    issues = target_state.get("issues") if isinstance(target_state, dict) else []
+                    detail = "、".join(str(item) for item in (issues or []))
+                    blockers.append(f"{target.upper()}媒体版本未就绪{f'：{detail}' if detail else ''}")
+            if blockers:
+                raise ValueError("；".join(blockers))
+            status = JOB_STATUSES["READY"]
+            recreation_status = "approved"
+            reviewed_at = _utc_now()
+        self._update_job(
+            job_id,
+            status=status,
+            rights_basis=normalized["rights_basis"],
+            rights_note=normalized["rights_note"],
+            recreation_mode=normalized["recreation_mode"],
+            recreation_status=recreation_status,
+            recreation_plan_json=serialize_plan(plan),
+            original_angle=normalized["original_angle"],
+            original_contribution=normalized["original_contribution"],
+            x_text=normalized["x_text"],
+            youtube_title=normalized["youtube_title"],
+            youtube_description=normalized["youtube_description"],
+            reviewed_at=reviewed_at,
             error_message="",
         )
         return self.get_job(job_id) or {}
 
     # ---- publishing ----------------------------------------------------
-    def publish_job_async(self, job_id: str) -> None:
+    def publish_job_async(self, job_id: str) -> bool:
+        if not self._claim_active_job(job_id):
+            return False
         thread = threading.Thread(
             target=self._publish_job_guarded,
             args=(job_id,),
@@ -641,17 +1118,41 @@ class TransferCenter:
             daemon=True,
         )
         thread.start()
+        return True
 
     def _publish_job_guarded(self, job_id: str) -> None:
         try:
             self.publish_job(job_id)
         except Exception as exc:
-            self._update_job(
-                job_id,
-                status=JOB_STATUSES["FAILED"],
-                error_message=_safe_error(exc),
-            )
+            if isinstance(exc, ValueError):
+                self._update_job(
+                    job_id,
+                    status=JOB_STATUSES["REVIEW"],
+                    next_retry_at=None,
+                    last_retry_stage="",
+                    error_message=_safe_error(exc),
+                )
+            else:
+                job = self.get_job(job_id) or {}
+                attempts = max(
+                    int(job.get("x_publish_attempts") or 0),
+                    int(job.get("youtube_publish_attempts") or 0),
+                    1,
+                )
+                self._schedule_retry(job_id, "publish", attempts, exc)
             logger.exception("搬运任务发布失败 %s", job_id)
+        finally:
+            self._release_active_job(job_id)
+
+    @staticmethod
+    def _target_video_path(job: dict, target: str) -> str:
+        variants = deserialize_plan(job.get("platform_variants_json"))
+        target_state = variants.get(target) if isinstance(variants, dict) else None
+        if isinstance(target_state, dict) and target_state.get("status") == "ready":
+            path = str(target_state.get("path") or "")
+            if path and os.path.isfile(path):
+                return path
+        return ""
 
     def _publish_x(self, job: dict, token: str) -> str:
         video_path = job["local_video_path"]
@@ -718,7 +1219,7 @@ class TransferCenter:
             processing = (status.json().get("data") or {}).get("processing_info") or {}
         else:
             raise RuntimeError("X 视频处理超时")
-        text = str(job.get("title") or "新视频").strip()[:260]
+        text = str(job.get("x_text") or job.get("title") or "新视频").strip()[:260]
         post = requests.post(
             "https://api.x.com/2/tweets",
             headers={**headers, "Content-Type": "application/json"},
@@ -750,8 +1251,10 @@ class TransferCenter:
         youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
         body = {
             "snippet": {
-                "title": str(job.get("title") or "新视频")[:100],
-                "description": str(job.get("description") or "")[:5000],
+                "title": str(job.get("youtube_title") or job.get("title") or "新视频")[:100],
+                "description": str(
+                    job.get("youtube_description") or job.get("description") or ""
+                )[:5000],
                 "categoryId": str(self._config().get("TRANSFER_YOUTUBE_CATEGORY_ID") or "22"),
             },
             "status": {
@@ -776,34 +1279,83 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
+        if str(job.get("rights_basis") or "") not in RIGHTS_CONFIRMED_VALUES:
+            raise ValueError("版权或授权依据尚未确认，禁止发布")
+        if str(job.get("recreation_status") or "") != "approved":
+            raise ValueError("再创作方案和实际成片尚未人工批准，禁止发布")
         if not job.get("local_video_path") or not os.path.isfile(job["local_video_path"]):
             raise ValueError("视频尚未准备完成")
         targets = _json_list(job["target_platforms"])
         config = self._config()
-        self._update_job(job_id, status=JOB_STATUSES["PUBLISHING"], error_message="")
+        self._update_job(
+            job_id,
+            status=JOB_STATUSES["PUBLISHING"],
+            next_retry_at=None,
+            last_retry_stage="publish",
+            error_message="",
+        )
         errors = []
+        retryable_errors = []
         x_post_id = job.get("x_post_id") or ""
         youtube_video_id = job.get("youtube_video_id") or ""
         if "x" in targets and not x_post_id:
+            x_path = self._target_video_path(job, "x")
             token = str(config.get("TRANSFER_X_ACCESS_TOKEN") or "").strip()
-            if not token:
+            if not x_path:
+                self._update_job(job_id, x_publish_status="blocked")
+                errors.append("X 媒体版本未就绪，请先完成原创剪辑或重新体检")
+            elif not token:
+                self._update_job(job_id, x_publish_status="waiting_auth")
                 errors.append("X 尚未授权")
             else:
+                x_attempts = int(job.get("x_publish_attempts") or 0) + 1
+                self._update_job(
+                    job_id,
+                    x_publish_status="publishing",
+                    x_publish_attempts=x_attempts,
+                )
                 try:
-                    x_post_id = self._publish_x(job, token)
-                    self._update_job(job_id, x_post_id=x_post_id)
+                    x_job = {**job, "local_video_path": x_path}
+                    x_post_id = self._publish_x(x_job, token)
+                    self._update_job(
+                        job_id,
+                        x_post_id=x_post_id,
+                        x_publish_status="completed",
+                    )
                 except Exception as exc:
-                    errors.append(f"X: {_safe_error(exc)}")
+                    message = f"X: {_safe_error(exc)}"
+                    self._update_job(job_id, x_publish_status="failed")
+                    errors.append(message)
+                    retryable_errors.append((message, x_attempts))
         if "youtube" in targets and not youtube_video_id:
+            youtube_path = self._target_video_path(job, "youtube")
             token_path = os.path.join(get_app_subdir("config"), "youtube_transfer_token.json")
-            if not os.path.isfile(token_path):
+            if not youtube_path:
+                self._update_job(job_id, youtube_publish_status="blocked")
+                errors.append("YouTube媒体版本未就绪")
+            elif not os.path.isfile(token_path):
+                self._update_job(job_id, youtube_publish_status="waiting_auth")
                 errors.append("YouTube 尚未授权")
             else:
+                youtube_attempts = int(job.get("youtube_publish_attempts") or 0) + 1
+                self._update_job(
+                    job_id,
+                    youtube_publish_status="publishing",
+                    youtube_publish_attempts=youtube_attempts,
+                )
                 try:
-                    youtube_video_id = self._publish_youtube(job, token_path)
-                    self._update_job(job_id, youtube_video_id=youtube_video_id)
+                    youtube_job = {**job, "local_video_path": youtube_path}
+                    youtube_video_id = self._publish_youtube(youtube_job, token_path)
+                    self._update_job(
+                        job_id,
+                        youtube_video_id=youtube_video_id,
+                        youtube_publish_status="completed",
+                    )
                 except Exception as exc:
-                    errors.append(f"YouTube: {_safe_error(exc)}")
+                    message = f"YouTube: {_safe_error(exc)}"
+                    self._update_job(job_id, youtube_publish_status="failed")
+                    errors.append(message)
+                    retryable_errors.append((message, youtube_attempts))
         completed = all(
             (target == "x" and x_post_id) or (target == "youtube" and youtube_video_id)
             for target in targets
@@ -812,7 +1364,17 @@ class TransferCenter:
             job_id,
             status=JOB_STATUSES["COMPLETED"] if completed else JOB_STATUSES["READY"],
             error_message="；".join(errors),
+            next_retry_at=None,
+            last_retry_stage="",
         )
+        if retryable_errors and not completed:
+            max_attempts = max(item[1] for item in retryable_errors)
+            self._schedule_retry(
+                job_id,
+                "publish",
+                max_attempts,
+                "；".join(item[0] for item in retryable_errors),
+            )
         return self.get_job(job_id) or {}
 
     # ---- lifecycle -----------------------------------------------------
@@ -830,6 +1392,17 @@ class TransferCenter:
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=30,
+        )
+        self._scheduler.add_job(
+            self.retry_due_jobs,
+            "interval",
+            seconds=60,
+            id="transfer-center-retry",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=30,
         )
         self._scheduler.start()
         logger.info("搬运中心调度器已启动")

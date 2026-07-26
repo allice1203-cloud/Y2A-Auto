@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}再创作审核 - 视频搬运通道{% endblock %}
+
+{% block extra_css %}
+<style>
+    .review-hero {
+        background: linear-gradient(135deg, #fff8e8 0%, #fffdf8 100%);
+        border: 1px solid #f4dfae;
+        border-radius: 18px;
+        padding: 1.35rem;
+    }
+    .review-card {
+        border: 1px solid #e5e9f0;
+        border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(33, 68, 120, .05);
+    }
+    .review-video {
+        width: 100%;
+        max-height: 480px;
+        border-radius: 12px;
+        background: #101827;
+    }
+    .safety-step {
+        border-left: 3px solid #f59e0b;
+        padding-left: .8rem;
+        margin-bottom: .9rem;
+    }
+    .probe-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .65rem;
+    }
+    .probe-item {
+        border: 1px solid #edf0f5;
+        border-radius: 10px;
+        padding: .65rem;
+        background: #fafbfc;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="review-hero mb-4 d-flex flex-column flex-lg-row justify-content-between gap-3">
+    <div>
+        <a class="small text-decoration-none" href="{{ url_for('transfer_center_index') }}">
+            <i class="bi bi-arrow-left"></i> 返回搬运中心
+        </a>
+        <h1 class="h3 mt-2 mb-2">版权与再创作审核</h1>
+        <p class="text-muted mb-0">批准代表你已经核对授权依据，并确认实际成片具有实质性原创贡献。</p>
+    </div>
+    <div class="align-self-lg-center">
+        <span class="badge {{ 'bg-success' if job.recreation_status == 'approved' else 'bg-warning text-dark' }} fs-6">
+            {{ '已批准发布' if job.recreation_status == 'approved' else '尚未批准发布' }}
+        </span>
+    </div>
+</div>
+
+<div class="alert alert-danger">
+    <strong>重要：</strong>更换标题、加字幕、裁切画面、去水印、加边框或片头片尾，都不等于实质性再创作。
+    必须在实际视频中加入原创观点、口播/出镜评论、事实核验、案例分析或新的叙事结构。
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card review-card mb-4">
+            <div class="card-body">
+                <div class="d-flex justify-content-between gap-3 mb-3">
+                    <div>
+                        <h2 class="h5 mb-1">{{ job.title or '等待获取视频标题' }}</h2>
+                        <div class="small text-muted">{{ job.source_uploader or '来源作者待识别' }}</div>
+                    </div>
+                    <a href="{{ job.source_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary align-self-start">
+                        查看原视频
+                    </a>
+                </div>
+                {% if job.local_video_path %}
+                <video class="review-video" controls preload="metadata">
+                    <source src="{{ url_for('transfer_center_review_media', job_id=job.id) }}">
+                </video>
+                {% else %}
+                <div class="p-5 text-center text-muted bg-light rounded">视频尚未下载完成。</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" class="card review-card">
+            <div class="card-header bg-white py-3">
+                <h2 class="h5 mb-1">审核表</h2>
+                <div class="small text-muted">所有字段只记录在本机；系统不会替你判断版权或合理使用成立。</div>
+            </div>
+            <div class="card-body">
+                <h3 class="h6 mb-3">1. 版权或授权依据</h3>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">依据类型</label>
+                        <select class="form-select" name="rights_basis" required>
+                            <option value="">请选择真实依据</option>
+                            {% for value, label in rights_bases.items() %}
+                            <option value="{{ value }}" {% if job.rights_basis == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">再创作方式</label>
+                        <select class="form-select" name="recreation_mode">
+                            {% for value, label in recreation_modes.items() %}
+                            <option value="{{ value }}" {% if job.recreation_mode == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">授权范围、许可来源或原创归属说明</label>
+                        <textarea class="form-control" name="rights_note" rows="3" required placeholder="例如：本人原创；或书面授权文件日期、授权平台和商业使用范围。">{{ job.rights_note or '' }}</textarea>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <h3 class="h6 mb-0">2. 实质性再创作方案</h3>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">新的原创角度</label>
+                    <textarea class="form-control" name="original_angle" rows="3" placeholder="这条成片要表达什么不同于原视频的新观点？">{{ job.original_angle or '' }}</textarea>
+                </div>
+                <div class="mb-4">
+                    <label class="form-label">实际成片增加的原创贡献</label>
+                    <textarea class="form-control" name="original_contribution" rows="5" required placeholder="具体写明新增口播、观点、核验、案例、重组叙事和删除了哪些非必要片段。">{{ job.original_contribution or '' }}</textarea>
+                    <div class="form-text">请按实际已经完成的成片填写，不要只复制AI建议。</div>
+                </div>
+
+                <h3 class="h6 mb-3">3. 分平台文案</h3>
+                <div class="mb-3">
+                    <label class="form-label">X 发布文字</label>
+                    <textarea class="form-control" name="x_text" rows="3" maxlength="260">{{ job.x_text or '' }}</textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">YouTube 标题</label>
+                    <input class="form-control" name="youtube_title" maxlength="100" value="{{ job.youtube_title or '' }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">YouTube 简介</label>
+                    <textarea class="form-control" name="youtube_description" rows="7" maxlength="5000">{{ job.youtube_description or '' }}</textarea>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
+                <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
+                <button class="btn btn-success" name="action" value="approve">
+                    <i class="bi bi-shield-check me-1"></i>确认版权与实际成片，批准发布
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card review-card mb-4">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">媒体体检</h2></div>
+            <div class="card-body">
+                {% if media_probe %}
+                <div class="probe-grid mb-3">
+                    <div class="probe-item"><div class="small text-muted">时长</div><strong>{{ media_probe.duration|round(1) }} 秒</strong></div>
+                    <div class="probe-item"><div class="small text-muted">画面</div><strong>{{ media_probe.width }}×{{ media_probe.height }}</strong></div>
+                    <div class="probe-item"><div class="small text-muted">视频编码</div><strong>{{ media_probe.video_codec|upper }}</strong></div>
+                    <div class="probe-item"><div class="small text-muted">音频编码</div><strong>{{ media_probe.audio_codec|upper or '无' }}</strong></div>
+                </div>
+                {% else %}
+                <div class="text-muted">下载后自动进行体检。</div>
+                {% endif %}
+                {% for target in ['x', 'youtube'] %}
+                    {% if target in platform_variants %}
+                    {% set variant = platform_variants[target] %}
+                    <div class="d-flex justify-content-between align-items-center border-top py-2">
+                        <strong>{{ target|upper }}</strong>
+                        <span class="badge {{ 'bg-success' if variant.status == 'ready' else 'bg-danger' }}">
+                            {{ '媒体已就绪' if variant.status == 'ready' else '需要处理' }}
+                        </span>
+                    </div>
+                    {% if variant.issues %}
+                    <div class="small text-muted mb-2">{{ variant.issues|join('；') }}</div>
+                    {% endif %}
+                    {% endif %}
+                {% endfor %}
+                <form method="post" action="{{ url_for('transfer_center_replace_review_media', job_id=job.id) }}" enctype="multipart/form-data" class="border-top pt-3 mt-2">
+                    <label class="form-label fw-semibold">上传已完成再创作的成片</label>
+                    <input class="form-control form-control-sm mb-2" type="file" name="recreated_video" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" required>
+                    <div class="form-text mb-2">替换后会重新体检，并自动撤销之前的发布批准。</div>
+                    <button class="btn btn-sm btn-outline-primary w-100">替换成片并重新体检</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card review-card mb-4">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">AI再创作草案</h2></div>
+            <div class="card-body">
+                <p class="small text-muted">根据现有AI配置生成结构和文案建议；不会自动把建议视为实际成片。</p>
+                <form method="post" action="{{ url_for('transfer_center_generate_review', job_id=job.id) }}">
+                    <button class="btn btn-outline-warning w-100" {% if not job.local_video_path %}disabled{% endif %}>
+                        <i class="bi bi-stars me-1"></i>重新生成安全草案
+                    </button>
+                </form>
+                {% if recreation_plan.commentary_outline %}
+                <ol class="small mt-3 mb-0 ps-3">
+                    {% for item in recreation_plan.commentary_outline %}
+                    <li class="mb-2">{{ item }}</li>
+                    {% endfor %}
+                </ol>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card review-card">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">批准前必须满足</h2></div>
+            <div class="card-body small">
+                <div class="safety-step">授权依据真实、可追溯，并覆盖目标平台和商业使用范围。</div>
+                <div class="safety-step">实际成片已经加入原创观点、口播/出镜、核验、案例或新叙事。</div>
+                <div class="safety-step">平台专用媒体版本体检通过。</div>
+                <div class="safety-step mb-0">标题、简介和素材署名与实际内容一致，不误导观众。</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

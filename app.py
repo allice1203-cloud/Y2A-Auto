@@ -30,6 +30,11 @@ from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import get_transfer_center
+from modules.content_recreation import (
+    RECREATION_MODES,
+    RIGHTS_BASES,
+    deserialize_plan,
+)
 from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_CHECKBOXES,
     SPEECH_PIPELINE_FLOAT_FIELDS,
@@ -3412,6 +3417,7 @@ def transfer_center_index():
         'transfer_center.html',
         rules=center.list_rules(),
         jobs=center.list_jobs(limit=100),
+        stats=center.get_dashboard_stats(),
         transfer_config={
             'x_connected': bool(str(config.get('TRANSFER_X_ACCESS_TOKEN') or '').strip()),
             'youtube_connected': os.path.isfile(
@@ -3443,8 +3449,11 @@ def transfer_center_save_rule():
             'target_platforms': _transfer_target_list(request.form),
             'interval_minutes': request.form.get('interval_minutes', 15),
             'max_items': request.form.get('max_items', 10),
-            'auto_prepare': request.form.get('auto_prepare', 'on'),
-            'auto_publish': request.form.get('auto_publish'),
+            'max_age_hours': request.form.get('max_age_hours', 48),
+            'daily_limit': request.form.get('daily_limit', 3),
+            'first_scan_preview': request.form.get('first_scan_preview'),
+            'recreation_mode': request.form.get('recreation_mode', 'commentary'),
+            'auto_prepare': request.form.get('auto_prepare'),
             'enabled': request.form.get('enabled', 'on'),
         }
         rule_id = _transfer_center().save_rule(payload)
@@ -3497,9 +3506,9 @@ def transfer_center_add_job():
         )
         _transfer_center().prepare_job_async(
             job_id,
-            publish_after=request.form.get('auto_publish') == 'on',
+            publish_after=False,
         )
-        flash('搬运任务已创建，正在后台下载和准备视频。', 'success')
+        flash('任务已创建；下载完成后会进入版权与再创作审核，不会直接发布。', 'success')
     except Exception as e:
         flash(f'创建搬运任务失败：{e}', 'danger')
     return redirect(url_for('transfer_center_index'))
@@ -3511,8 +3520,8 @@ def transfer_center_prepare_job(job_id):
     if not _transfer_center().get_job(job_id):
         flash('搬运任务不存在。', 'warning')
     else:
-        _transfer_center().prepare_job_async(job_id)
-        flash('已重新开始下载和准备。', 'success')
+        started = _transfer_center().prepare_job_async(job_id)
+        flash('已重新开始下载和准备。' if started else '该任务正在处理中，请稍候。', 'success')
     return redirect(url_for('transfer_center_index'))
 
 
@@ -3522,9 +3531,119 @@ def transfer_center_publish_job(job_id):
     if not _transfer_center().get_job(job_id):
         flash('搬运任务不存在。', 'warning')
     else:
-        _transfer_center().publish_job_async(job_id)
-        flash('发布任务已提交。', 'success')
+        started = _transfer_center().publish_job_async(job_id)
+        flash('发布任务已提交。' if started else '该任务正在处理中，请稍候。', 'success')
     return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/jobs/<job_id>/review')
+@login_required
+def transfer_center_review_job(job_id):
+    job = _transfer_center().get_job(job_id)
+    if not job:
+        flash('搬运任务不存在。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    return render_template(
+        'transfer_review.html',
+        job=job,
+        rights_bases=RIGHTS_BASES,
+        recreation_modes=RECREATION_MODES,
+        recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
+        media_probe=deserialize_plan(job.get('media_probe_json')),
+        platform_variants=deserialize_plan(job.get('platform_variants_json')),
+    )
+
+
+@app.route('/transfer-center/jobs/<job_id>/media')
+@login_required
+def transfer_center_review_media(job_id):
+    job = _transfer_center().get_job(job_id)
+    video_path = str((job or {}).get('local_video_path') or '')
+    downloads_root = os.path.realpath(get_app_subdir('downloads'))
+    resolved_path = os.path.realpath(video_path)
+    if (
+        not job
+        or not video_path
+        or not os.path.isfile(resolved_path)
+        or os.path.commonpath((downloads_root, resolved_path)) != downloads_root
+    ):
+        return '媒体文件不存在', 404
+    return send_file(resolved_path, conditional=True)
+
+
+@app.route('/transfer-center/jobs/<job_id>/review/generate', methods=['POST'])
+@login_required
+def transfer_center_generate_review(job_id):
+    try:
+        _transfer_center().generate_recreation_draft(job_id)
+        flash('再创作方案已生成；它只是制作草案，必须按实际成片修改并人工批准。', 'success')
+    except Exception as e:
+        flash(f'生成再创作方案失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_review_job', job_id=job_id))
+
+
+@app.route('/transfer-center/jobs/<job_id>/review/media', methods=['POST'])
+@login_required
+def transfer_center_replace_review_media(job_id):
+    job = _transfer_center().get_job(job_id)
+    if not job:
+        flash('搬运任务不存在。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    file_obj = request.files.get('recreated_video')
+    extension = os.path.splitext(str((file_obj or {}).filename if file_obj else ''))[1].lower()
+    if not file_obj or not file_obj.filename or extension not in ('.mp4', '.mov', '.mkv', '.webm', '.m4v'):
+        flash('请选择 MP4、MOV、MKV、WEBM 或 M4V 格式的再创作成片。', 'danger')
+        return redirect(url_for('transfer_center_review_job', job_id=job_id))
+    output_dir = os.path.join(get_app_subdir('downloads'), 'transfer', job_id)
+    os.makedirs(output_dir, exist_ok=True)
+    target_path = os.path.join(output_dir, f'recreated-upload{extension}')
+    try:
+        file_obj.save(target_path)
+        _transfer_center().replace_recreated_media(job_id, target_path)
+        flash('再创作成片已替换并重新完成媒体体检，请再次核对后批准。', 'success')
+    except Exception as e:
+        if os.path.isfile(target_path):
+            try:
+                os.remove(target_path)
+            except OSError:
+                pass
+        flash(f'替换再创作成片失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_review_job', job_id=job_id))
+
+
+@app.route('/transfer-center/jobs/<job_id>/review', methods=['POST'])
+@login_required
+def transfer_center_save_review(job_id):
+    approve = request.form.get('action') == 'approve'
+    try:
+        _transfer_center().save_recreation_review(
+            job_id,
+            {
+                'rights_basis': request.form.get('rights_basis'),
+                'rights_note': request.form.get('rights_note'),
+                'recreation_mode': request.form.get('recreation_mode'),
+                'original_angle': request.form.get('original_angle'),
+                'original_contribution': request.form.get('original_contribution'),
+                'x_text': request.form.get('x_text'),
+                'youtube_title': request.form.get('youtube_title'),
+                'youtube_description': request.form.get('youtube_description'),
+            },
+            approve=approve,
+        )
+        flash(
+            '版权与再创作审核已批准，可以进入发布。'
+            if approve
+            else '审核草稿已保存，尚未允许发布。',
+            'success',
+        )
+    except Exception as e:
+        flash(f'保存审核失败：{e}', 'danger')
+        return redirect(url_for('transfer_center_review_job', job_id=job_id))
+    return redirect(
+        url_for('transfer_center_index')
+        if approve
+        else url_for('transfer_center_review_job', job_id=job_id)
+    )
 
 
 @app.route('/transfer-center/connections', methods=['POST'])
