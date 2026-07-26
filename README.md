@@ -149,6 +149,9 @@ docker compose up -d
 
 ## 部署与运行
 
+Mac mini 通过 Cloudflare Tunnel 提供私有源站、公网 HTTPS 入口的部署方式，见
+[公网访问运维说明](docs/public-access.md)。公网部署前必须启用系统登录保护。
+
 ### 方案 A：Docker（推荐）
 
 - 启动：`docker compose up -d`
