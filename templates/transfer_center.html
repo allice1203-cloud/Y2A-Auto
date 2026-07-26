@@ -106,9 +106,10 @@
         <div class="connection-card bg-white p-3 h-100">
             <div class="small text-muted mb-1">发布到 X</div>
             <div class="fw-semibold">
-                <span class="connection-dot {{ 'bg-success' if transfer_config.x_connected else 'bg-warning' }}"></span>
-                {{ '已连接' if transfer_config.x_connected else '等待授权' }}
+                <span class="connection-dot bg-primary"></span>
+                免费半自动
             </div>
+            <div class="small text-muted mt-1">系统准备视频和文案，你在 X 网页确认发布</div>
         </div>
     </div>
     <div class="col-6 col-lg-3">
@@ -259,8 +260,8 @@
                             {% if job.youtube_video_id %}<a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank" rel="noopener" class="badge bg-danger text-decoration-none">YouTube</a>{% endif %}
                             {% if not job.x_post_id and '"x"' in job.target_platforms %}
                                 <span class="badge bg-light text-dark border">X {{ {
-                                    'pending':'待发布','waiting_auth':'待授权','publishing':'发布中',
-                                    'failed':'失败','blocked':'媒体未就绪'
+                                    'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待授权',
+                                    'publishing':'发布中','failed':'失败','blocked':'媒体未就绪'
                                 }.get(job.x_publish_status, job.x_publish_status) }}</span>
                             {% endif %}
                             {% if not job.youtube_video_id and '"youtube"' in job.target_platforms %}
@@ -285,6 +286,19 @@
                             <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
                                 <button class="btn btn-sm btn-success">发布</button>
                             </form>
+                            {% endif %}
+                            {% if job.x_publish_status == 'manual_ready' %}
+                            <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_x_video', job_id=job.id) }}">
+                                下载X视频
+                            </a>
+                            <button
+                                class="btn btn-sm btn-outline-secondary js-copy-x-text"
+                                type="button"
+                                data-copy-text="{{ (job.x_text or job.title or '新视频')|e }}"
+                            >复制X文案</button>
+                            <a class="btn btn-sm btn-dark" href="https://x.com/compose/post" target="_blank" rel="noopener">
+                                打开X发布
+                            </a>
                             {% endif %}
                         </td>
                     </tr>
@@ -478,9 +492,11 @@
                 <h4 class="h6">发布平台</h4>
                 <div class="row g-3">
                     <div class="col-md-6">
-                        <label class="form-label">X 用户访问令牌</label>
-                        <input class="form-control" type="password" name="x_access_token" placeholder="{{ '已连接，留空保持不变' if transfer_config.x_connected else '从 X Developer Console 获取' }}">
-                        <div class="form-text">高级会员不等于 API 权限，需要开发者应用的用户令牌。</div>
+                        <label class="form-label">X 免费半自动发布</label>
+                        <div class="border rounded p-3 bg-light">
+                            <div class="fw-semibold text-primary mb-1">无需 Premium，也无需付费 API</div>
+                            <div class="small text-muted">系统会准备合规尺寸的视频和发布文案；你下载视频后，在 X 网页完成最后上传和发布。</div>
+                        </div>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">YouTube OAuth 客户端 JSON</label>
@@ -513,6 +529,22 @@
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('click', async function (event) {
+    const button = event.target.closest('.js-copy-x-text');
+    if (!button) return;
+    const originalText = button.textContent;
+    try {
+        await navigator.clipboard.writeText(button.dataset.copyText || '');
+        button.textContent = '已复制';
+        setTimeout(() => { button.textContent = originalText; }, 1600);
+    } catch (error) {
+        button.textContent = '复制失败';
+        setTimeout(() => { button.textContent = originalText; }, 1600);
+    }
+});
+</script>
 {% endblock %}
 
 {% block extra_js %}

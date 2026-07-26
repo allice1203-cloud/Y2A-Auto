@@ -3447,7 +3447,7 @@ def transfer_center_index():
         jobs=center.list_jobs(limit=100),
         stats=center.get_dashboard_stats(),
         transfer_config={
-            'x_connected': bool(str(config.get('TRANSFER_X_ACCESS_TOKEN') or '').strip()),
+            'x_mode': 'manual_free',
             'youtube_connected': os.path.isfile(
                 os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
             ),
@@ -3672,6 +3672,33 @@ def transfer_center_review_media(job_id):
     return send_file(resolved_path, conditional=True)
 
 
+@app.route('/transfer-center/jobs/<job_id>/x-video')
+@login_required
+def transfer_center_x_video(job_id):
+    job = _transfer_center().get_job(job_id)
+    variants = deserialize_plan((job or {}).get('platform_variants_json'))
+    x_variant = variants.get('x') if isinstance(variants, dict) else None
+    video_path = str((x_variant or {}).get('path') or '')
+    downloads_root = os.path.realpath(get_app_subdir('downloads'))
+    resolved_path = os.path.realpath(video_path)
+    if (
+        not job
+        or not isinstance(x_variant, dict)
+        or x_variant.get('status') != 'ready'
+        or not video_path
+        or not os.path.isfile(resolved_path)
+        or os.path.commonpath((downloads_root, resolved_path)) != downloads_root
+    ):
+        return 'X 发布视频不存在', 404
+    extension = os.path.splitext(resolved_path)[1] or '.mp4'
+    return send_file(
+        resolved_path,
+        as_attachment=True,
+        download_name=f'x-video-{job_id[:8]}{extension}',
+        conditional=True,
+    )
+
+
 @app.route('/transfer-center/jobs/<job_id>/review/generate', methods=['POST'])
 @login_required
 def transfer_center_generate_review(job_id):
@@ -3759,10 +3786,6 @@ def transfer_center_save_connections():
         ),
         'TRANSFER_YOUTUBE_CATEGORY_ID': str(request.form.get('youtube_category_id') or '22').strip(),
     }
-    x_token = str(request.form.get('x_access_token') or '').strip()
-    if x_token:
-        config_updates['TRANSFER_X_ACCESS_TOKEN'] = x_token
-        messages.append('X 用户访问令牌已保存')
 
     upload_specs = (
         ('bilibili_source_cookies', get_app_subdir('cookies'), 'bilibili_source_cookies.txt', 'B站来源 Cookie'),

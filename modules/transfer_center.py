@@ -1300,33 +1300,11 @@ class TransferCenter:
         youtube_video_id = job.get("youtube_video_id") or ""
         if "x" in targets and not x_post_id:
             x_path = self._target_video_path(job, "x")
-            token = str(config.get("TRANSFER_X_ACCESS_TOKEN") or "").strip()
             if not x_path:
                 self._update_job(job_id, x_publish_status="blocked")
                 errors.append("X 媒体版本未就绪，请先完成原创剪辑或重新体检")
-            elif not token:
-                self._update_job(job_id, x_publish_status="waiting_auth")
-                errors.append("X 尚未授权")
             else:
-                x_attempts = int(job.get("x_publish_attempts") or 0) + 1
-                self._update_job(
-                    job_id,
-                    x_publish_status="publishing",
-                    x_publish_attempts=x_attempts,
-                )
-                try:
-                    x_job = {**job, "local_video_path": x_path}
-                    x_post_id = self._publish_x(x_job, token)
-                    self._update_job(
-                        job_id,
-                        x_post_id=x_post_id,
-                        x_publish_status="completed",
-                    )
-                except Exception as exc:
-                    message = f"X: {_safe_error(exc)}"
-                    self._update_job(job_id, x_publish_status="failed")
-                    errors.append(message)
-                    retryable_errors.append((message, x_attempts))
+                self._update_job(job_id, x_publish_status="manual_ready")
         if "youtube" in targets and not youtube_video_id:
             youtube_path = self._target_video_path(job, "youtube")
             token_path = os.path.join(get_app_subdir("config"), "youtube_transfer_token.json")

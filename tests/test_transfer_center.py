@@ -53,7 +53,7 @@ def test_manual_job_detects_douyin_and_deduplicates(center):
         center.add_manual_job(url, ["youtube"])
 
 
-def test_publish_without_authorization_returns_to_ready(center, tmp_path):
+def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1test12345",
         ["x", "youtube"],
@@ -79,9 +79,9 @@ def test_publish_without_authorization_returns_to_ready(center, tmp_path):
     result = center.publish_job(job_id)
 
     assert result["status"] == "ready"
-    assert "X 尚未授权" in result["error_message"]
     assert "YouTube 尚未授权" in result["error_message"]
-    assert result["x_publish_status"] == "waiting_auth"
+    assert "X 尚未授权" not in result["error_message"]
+    assert result["x_publish_status"] == "manual_ready"
     assert result["youtube_publish_status"] == "waiting_auth"
 
 
