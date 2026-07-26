@@ -4,134 +4,88 @@
 
 {% block extra_css %}
 <style>
-    .transfer-hero {
-        background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 100%);
-        border: 1px solid #dbe8ff;
-        border-radius: 18px;
-        padding: 1.4rem;
-    }
-    .connection-card, .rule-card, .job-card {
-        border: 1px solid #e4e9f2;
-        border-radius: 14px;
-        box-shadow: 0 6px 18px rgba(33, 68, 120, .05);
-    }
-    .metric-card {
-        border: 1px solid #e4e9f2;
-        border-radius: 12px;
-        background: #fff;
-        padding: .85rem 1rem;
-    }
-    .metric-value { font-size: 1.35rem; font-weight: 700; }
-    .connection-dot {
-        width: .65rem;
-        height: .65rem;
-        border-radius: 50%;
-        display: inline-block;
-    }
-    .source-hint {
-        border-left: 3px solid #0d6efd;
-        background: #f7faff;
-        padding: .7rem .85rem;
-        border-radius: 0 8px 8px 0;
-    }
     .status-discovered { color: #6c757d; }
-    .status-downloading, .status-publishing { color: #0d6efd; }
+    .status-downloading, .status-publishing { color: #655cf6; }
     .status-review { color: #b45309; }
     .status-ready { color: #d97706; }
-    .status-completed { color: #198754; }
+    .status-completed { color: #1e9c73; }
     .status-failed { color: #dc3545; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="transfer-hero mb-4 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+<div class="transfer-page">
+<section class="page-intro transfer-intro">
     <div>
-        <h1 class="h3 mb-2">搬运中心</h1>
-        <p class="text-muted mb-0">自动发现、去重和准备素材；完成版权确认与实质性再创作审核后才允许发布。</p>
+        <h1>搬运中心</h1>
+        <p>自动发现、去重和准备素材；完成版权确认与实质性再创作审核后才允许发布。</p>
     </div>
-    <div class="d-flex gap-2">
-        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#connectionsModal">
-            <i class="bi bi-link-45deg me-1"></i>连接平台
+    <div class="page-actions">
+        <button class="btn btn-secondary-premium" data-bs-toggle="modal" data-bs-target="#connectionsModal">
+            <i class="bi bi-link-45deg"></i>连接平台
         </button>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#ruleModal">
-            <i class="bi bi-plus-lg me-1"></i>新建自动规则
+            <i class="bi bi-plus-lg"></i>新建自动规则
         </button>
     </div>
-</div>
+</section>
 
-<div class="row g-2 mb-4">
-    <div class="col-6 col-lg">
-        <div class="metric-card"><div class="small text-muted">全部任务</div><div class="metric-value">{{ stats.total }}</div></div>
-    </div>
-    <div class="col-6 col-lg">
-        <div class="metric-card"><div class="small text-muted">待下载</div><div class="metric-value">{{ stats.discovered }}</div></div>
-    </div>
-    <div class="col-6 col-lg">
-        <div class="metric-card"><div class="small text-muted">待再创作审核</div><div class="metric-value text-warning">{{ stats.review }}</div></div>
-    </div>
-    <div class="col-6 col-lg">
-        <div class="metric-card"><div class="small text-muted">可发布</div><div class="metric-value text-primary">{{ stats.ready }}</div></div>
-    </div>
-    <div class="col-6 col-lg">
-        <div class="metric-card"><div class="small text-muted">已完成</div><div class="metric-value text-success">{{ stats.completed }}</div></div>
-    </div>
-</div>
+<section class="metric-rail transfer-metrics" aria-label="任务状态概览">
+    <div class="metric-cell"><span>全部任务</span><strong>{{ stats.total }}</strong></div>
+    <div class="metric-cell"><span>待下载</span><strong>{{ stats.discovered }}</strong></div>
+    <div class="metric-cell metric-warning"><span>待再创作审核</span><strong>{{ stats.review }}</strong></div>
+    <div class="metric-cell metric-primary"><span>可发布</span><strong>{{ stats.ready }}</strong></div>
+    <div class="metric-cell metric-success"><span>已完成</span><strong>{{ stats.completed }}</strong></div>
+</section>
 
-<div class="row g-3 mb-4">
-    <div class="col-6 col-lg-3">
-        <div class="connection-card bg-white p-3 h-100">
-            <div class="small text-muted mb-1">B站来源</div>
-            <div class="fw-semibold">
-                <span class="connection-dot {{ 'bg-success' if transfer_config.bilibili_cookies_ready else 'bg-secondary' }}"></span>
+<section class="platform-band">
+    <div class="platform-band-head">
+        <h2>平台连接</h2>
+        <span>所有状态均为实时检测</span>
+    </div>
+    <div class="platform-band-grid">
+        <article class="platform-cell">
+            <div class="platform-label">B站来源</div>
+            <div class="platform-state">
+                <span class="connection-dot {{ 'is-success' if transfer_config.bilibili_cookies_ready else 'is-neutral' }}"></span>
                 {{ 'Cookie已配置' if transfer_config.bilibili_cookies_ready else '建议配置Cookie' }}
             </div>
-            <button class="btn btn-sm btn-link px-0 mt-1" data-bs-toggle="modal" data-bs-target="#connectionsModal">
-                {{ '重新登录' if transfer_config.bilibili_cookies_ready else '扫码登录' }}
-            </button>
-        </div>
-    </div>
-    <div class="col-6 col-lg-3">
-        <div class="connection-card bg-white p-3 h-100">
-            <div class="small text-muted mb-1">抖音来源</div>
-            <div class="fw-semibold">
-                <span class="connection-dot {{ 'bg-success' if transfer_config.douyin_cookies_ready else 'bg-warning' }}"></span>
+            <button class="platform-link" data-bs-toggle="modal" data-bs-target="#connectionsModal">{{ '重新登录' if transfer_config.bilibili_cookies_ready else '扫码登录' }} <i class="bi bi-arrow-right"></i></button>
+        </article>
+        <article class="platform-cell">
+            <div class="platform-label">抖音来源</div>
+            <div class="platform-state">
+                <span class="connection-dot {{ 'is-success' if transfer_config.douyin_cookies_ready else 'is-warning' }}"></span>
                 {{ 'Cookie已配置' if transfer_config.douyin_cookies_ready else '需要Cookie' }}
             </div>
-            <a class="btn btn-sm btn-link px-0 mt-1" href="{{ url_for('transfer_center_douyin_login') }}">
-                {{ '刷新登录' if transfer_config.douyin_cookies_ready else '打开登录窗口' }}
-            </a>
-        </div>
-    </div>
-    <div class="col-6 col-lg-3">
-        <div class="connection-card bg-white p-3 h-100">
-            <div class="small text-muted mb-1">发布到 X</div>
-            <div class="fw-semibold">
-                <span class="connection-dot bg-primary"></span>
-                免费半自动
-            </div>
-            <div class="small text-muted mt-1">系统准备视频和文案，你在 X 网页确认发布</div>
-        </div>
-    </div>
-    <div class="col-6 col-lg-3">
-        <div class="connection-card bg-white p-3 h-100">
-            <div class="small text-muted mb-1">发布到 YouTube</div>
-            <div class="fw-semibold">
-                <span class="connection-dot {{ 'bg-success' if transfer_config.youtube_connected else 'bg-warning' }}"></span>
+            <a class="platform-link" href="{{ url_for('transfer_center_douyin_login') }}">{{ '刷新登录' if transfer_config.douyin_cookies_ready else '打开登录窗口' }} <i class="bi bi-arrow-right"></i></a>
+        </article>
+        <article class="platform-cell">
+            <div class="platform-label">发布到 X</div>
+            <div class="platform-state"><span class="connection-dot is-primary"></span>免费半自动</div>
+            <p>系统准备视频和文案，你在 X 网页确认发布</p>
+        </article>
+        <article class="platform-cell">
+            <div class="platform-label">发布到 YouTube</div>
+            <div class="platform-state">
+                <span class="connection-dot {{ 'is-success' if transfer_config.youtube_connected else 'is-warning' }}"></span>
                 {{ '已连接' if transfer_config.youtube_connected else '等待授权' }}
             </div>
-        </div>
+            <p>默认以私密方式上传</p>
+        </article>
     </div>
-</div>
+</section>
 
-<div class="card rule-card mb-4">
-    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+<section class="transfer-work-grid">
+<div class="workspace-panel rule-card">
+    <div class="workspace-panel-head">
         <div>
-            <h2 class="h5 mb-1">自动发现规则</h2>
-            <div class="small text-muted">既可以关注账号，也可以按关键词发现某一类视频。</div>
+            <h2>自动发现规则</h2>
+            <p>既可以关注账号，也可以按关键词发现某一类视频。</p>
         </div>
-        <span class="badge bg-primary-subtle text-primary">{{ rules|length }} 条</span>
+        <span class="workspace-count">{{ rules|length }} 条规则</span>
     </div>
-    <div class="card-body p-0">
+    <div class="workspace-panel-body">
         {% if rules %}
         <div class="table-responsive">
             <table class="table align-middle mb-0">
@@ -191,28 +145,38 @@
             </table>
         </div>
         {% else %}
-        <div class="p-5 text-center text-muted">
-            <i class="bi bi-radar fs-2 d-block mb-2"></i>
-            还没有自动规则。可从“新建自动规则”开始。
+        <div class="premium-empty premium-empty-radar">
+            <div class="signal-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <strong>还没有自动规则</strong>
+            <span>从“新建自动规则”开始构建内容雷达</span>
         </div>
         {% endif %}
     </div>
 </div>
 
-<div class="card job-card">
-    <div class="card-header bg-white py-3 d-flex flex-column flex-lg-row justify-content-between gap-3">
-        <div>
-            <h2 class="h5 mb-1">搬运任务</h2>
-            <div class="small text-muted">自动发现和手动粘贴的视频都会进入这里。</div>
+<aside class="transfer-compose-panel">
+    <div class="compose-kicker">快速创建</div>
+    <h2>搬运一条视频</h2>
+    <p>粘贴 B站或抖音视频链接，系统会完成素材准备与再创作审核。</p>
+    <form method="post" action="{{ url_for('transfer_center_add_job') }}">
+        <input class="form-control" name="source_url" placeholder="粘贴B站或抖音视频链接" required>
+        <div class="compose-targets">
+            <label><input class="form-check-input" type="checkbox" name="target_x" checked><span>X</span></label>
+            <label><input class="form-check-input" type="checkbox" name="target_youtube" checked><span>YouTube</span></label>
         </div>
-        <form method="post" action="{{ url_for('transfer_center_add_job') }}" class="d-flex flex-wrap gap-2">
-            <input class="form-control form-control-sm" style="min-width: 280px;" name="source_url" placeholder="粘贴B站或抖音视频链接" required>
-            <label class="btn btn-sm btn-outline-dark"><input class="form-check-input me-1" type="checkbox" name="target_x" checked>X</label>
-            <label class="btn btn-sm btn-outline-danger"><input class="form-check-input me-1" type="checkbox" name="target_youtube" checked>YouTube</label>
-            <button class="btn btn-sm btn-primary">开始搬运</button>
-        </form>
+        <button class="btn btn-primary w-100">开始搬运</button>
+    </form>
+</aside>
+</section>
+
+<section class="workspace-panel job-card">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>搬运任务</h2>
+            <p>自动发现和手动粘贴的视频都会进入这里。</p>
+        </div>
     </div>
-    <div class="card-body p-0">
+    <div class="workspace-panel-body">
         {% if jobs %}
         <div class="table-responsive">
             <table class="table align-middle mb-0">
@@ -307,9 +271,13 @@
             </table>
         </div>
         {% else %}
-        <div class="p-5 text-center text-muted">暂无搬运任务。</div>
+        <div class="premium-empty premium-empty-jobs">
+            <span class="empty-frame" aria-hidden="true"></span>
+            <div><strong>暂无搬运任务</strong><span>新任务将按时间顺序显示</span></div>
+        </div>
         {% endif %}
     </div>
+</section>
 </div>
 
 <div class="modal fade" id="ruleModal" tabindex="-1" aria-hidden="true">

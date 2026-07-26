@@ -2,45 +2,53 @@
 
 {% block title %}登录 - 视频搬运通道{% endblock %}
 
-{% block extra_css %}{% endblock %}
-
 {% block content %}
-<div class="login-wrapper">
-    <div class="login-card card shadow-sm">
-        <div class="card-body">
-            <div class="login-brand">
-                <img src="{{ url_for('static', filename='img/favicon.png') }}" alt="logo">
-                <div>
-                    <div class="title">视频搬运通道</div>
-                </div>
-            </div>
-
-            <div class="text-center login-subtitle">请输入管理员密码以继续访问控制台</div>
-
-            <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
-                <div class="form-floating mb-3">
-                    <input type="password" class="form-control" id="password" name="password" placeholder="密码" required>
-                    <label for="password">密码</label>
-                </div>
-
-                <div class="d-grid">
-                    <button class="btn btn-login" type="submit">登录</button>
-                </div>
-            </form>
-
-            <div class="login-help">忘记密码请联系系统管理员</div>
+<div class="login-layout">
+    <section class="login-story">
+        <a class="login-brand" href="{{ url_for('login') }}">
+            <span class="app-brand-mark" aria-hidden="true"><span></span></span>
+            <span class="app-brand-copy">
+                <strong>视频搬运通道</strong>
+                <small>Content Relay Studio</small>
+            </span>
+        </a>
+        <div class="login-story-copy">
+            <h1>把内容流动，<br>变成可控的<br>创作系统。</h1>
+            <p>从发现到再创作，从人工审核到跨平台发布，每一步都清晰、审慎且可回溯。</p>
         </div>
-    </div>
-    
+        <div class="login-signal" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="login-story-foot">
+            <span><i></i>Mac mini 运行正常</span>
+            <span>Secure relay via Cloudflare</span>
+        </div>
+    </section>
+
+    <section class="login-panel">
+        <div class="login-card">
+            <div class="login-card-head">
+                <span class="login-lock"><i class="bi bi-shield-lock"></i></span>
+                <h2>欢迎回来</h2>
+                <p>使用管理员密码进入内容工作台</p>
+            </div>
+            <form method="post" action="{{ url_for('login', next=request.args.get('next')) }}">
+                <label for="password">管理员密码</label>
+                <div class="login-input-wrap">
+                    <i class="bi bi-key"></i>
+                    <input type="password" id="password" name="password" placeholder="输入管理员密码" autocomplete="current-password" required>
+                </div>
+                <button class="btn btn-primary login-submit" type="submit">进入工作台 <i class="bi bi-arrow-right"></i></button>
+            </form>
+            <div class="login-security"><i class="bi bi-lock"></i>此连接已通过 HTTPS 加密</div>
+        </div>
+    </section>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-    // 聚焦密码输入框，若元素存在
     const pwd = document.getElementById('password');
-    if(pwd){ pwd.focus(); pwd.select(); }
-    // 给 body 添加登录专用类以启用全屏布局样式（在 base.html 中不会干扰其他页面）
-    if(document && document.body) document.body.classList.add('login-fullscreen');
+    if (pwd) pwd.focus();
 </script>
 {% endblock %}
