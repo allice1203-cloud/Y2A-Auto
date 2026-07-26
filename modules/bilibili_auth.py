@@ -231,8 +231,22 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
 
     try:
         os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
-        with open(cookie_file, "w", encoding="utf-8") as f:
-            json.dump(cookie_items, f, ensure_ascii=False, indent=2)
+        if str(cookie_file).lower().endswith(".txt"):
+            from .source_login import write_netscape_cookie_file
+
+            netscape_items = [
+                {
+                    **item,
+                    "secure": True,
+                    "httpOnly": item["name"] == "SESSDATA",
+                    "expires": 0,
+                }
+                for item in cookie_items
+            ]
+            write_netscape_cookie_file(netscape_items, "bilibili", cookie_file)
+        else:
+            with open(cookie_file, "w", encoding="utf-8") as f:
+                json.dump(cookie_items, f, ensure_ascii=False, indent=2)
     except (OSError, TypeError, ValueError) as exc:
         logger.error("保存 Bilibili 登录 Cookie 失败: %s", exc)
         return False

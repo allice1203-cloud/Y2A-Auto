@@ -14,6 +14,7 @@ import uuid
 import threading
 
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
@@ -35,6 +36,7 @@ from modules.content_recreation import (
     RIGHTS_BASES,
     deserialize_plan,
 )
+from modules.source_login import create_login_authorization
 from modules.speech_pipeline_settings import (
     SPEECH_PIPELINE_CHECKBOXES,
     SPEECH_PIPELINE_FLOAT_FIELDS,
@@ -3400,6 +3402,32 @@ def _transfer_center():
     return get_transfer_center(config_provider=load_config)
 
 
+def _source_cookie_path(platform):
+    filenames = {
+        'bilibili': 'bilibili_source_cookies.txt',
+        'douyin': 'douyin_cookies.txt',
+    }
+    filename = filenames.get(str(platform or '').strip().lower())
+    if not filename:
+        raise ValueError('不支持的来源平台')
+    return os.path.join(get_app_subdir('cookies'), filename)
+
+
+def _source_cookie_ready(platform):
+    cookie_path = _source_cookie_path(platform)
+    return os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 40
+
+
+def _source_login_helper_secret():
+    secret_path = os.path.join(get_app_subdir('config'), 'source_login_helper_secret')
+    try:
+        with open(secret_path, 'r', encoding='utf-8') as file_obj:
+            secret = file_obj.read().strip()
+        return secret if len(secret) >= 32 else ''
+    except OSError:
+        return ''
+
+
 def _transfer_target_list(form):
     return [
         target
@@ -3423,16 +3451,89 @@ def transfer_center_index():
             'youtube_connected': os.path.isfile(
                 os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
             ),
-            'bilibili_cookies_ready': os.path.isfile(
-                os.path.join(get_app_subdir('cookies'), 'bilibili_source_cookies.txt')
-            ),
-            'douyin_cookies_ready': os.path.isfile(
-                os.path.join(get_app_subdir('cookies'), 'douyin_cookies.txt')
-            ),
+            'bilibili_cookies_ready': _source_cookie_ready('bilibili'),
+            'douyin_cookies_ready': _source_cookie_ready('douyin'),
+            'source_login_helper_ready': bool(_source_login_helper_secret()),
             'youtube_privacy': config.get('TRANSFER_YOUTUBE_PRIVACY', 'private'),
             'youtube_category_id': config.get('TRANSFER_YOUTUBE_CATEGORY_ID', '22'),
         },
     )
+
+
+@app.route('/transfer-center/source/bilibili/qrcode/start', methods=['POST'])
+@login_required
+def transfer_center_bilibili_qrcode_start():
+    try:
+        session_id, qr_session = _create_bilibili_qr_session()
+        qr_data = qr_session.generate()
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'image_base64': qr_data.get('image_base64', ''),
+            'mime_type': qr_data.get('mime_type', 'image/png'),
+            'expires_in': _BILIBILI_QR_SESSION_TTL_SECONDS,
+        })
+    except Exception as exc:
+        logger.warning('发起B站来源二维码登录失败: %s', exc)
+        return jsonify({'success': False, 'message': 'B站二维码生成失败，请稍后重试'}), 500
+
+
+@app.route('/transfer-center/source/bilibili/qrcode/status/<session_id>')
+@login_required
+def transfer_center_bilibili_qrcode_status(session_id):
+    qr_session = _get_bilibili_qr_session(session_id)
+    if not qr_session:
+        return jsonify({'success': False, 'message': '二维码会话不存在或已过期'}), 404
+    try:
+        status_data = qr_session.check_status(
+            cookie_file=_source_cookie_path('bilibili')
+        )
+        _emit_qr_login_event_once(
+            _BILIBILI_QR_SESSIONS,
+            _BILIBILI_QR_SESSION_LOCK,
+            session_id,
+            'B站来源',
+            status_data,
+        )
+        if status_data.get('status') in ('done', 'timeout', 'failed'):
+            with _BILIBILI_QR_SESSION_LOCK:
+                _BILIBILI_QR_SESSIONS.pop(session_id, None)
+        return jsonify({'success': True, **status_data})
+    except Exception as exc:
+        logger.warning('查询B站来源二维码登录失败: %s', exc)
+        return jsonify({'success': False, 'message': '查询登录状态失败，请稍后重试'}), 500
+
+
+@app.route('/transfer-center/source/douyin/login')
+@login_required
+def transfer_center_douyin_login():
+    helper_secret = _source_login_helper_secret()
+    if not helper_secret:
+        flash('本机登录助手尚未就绪，请稍后重试。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    return_path = url_for(
+        'transfer_center_source_login_result',
+        platform='douyin',
+    )
+    return_url = f'http://127.0.0.1:5188{return_path}'
+    query = urlencode(
+        create_login_authorization(helper_secret, 'douyin', return_url)
+    )
+    return redirect(f'http://127.0.0.1:5191/connect?{query}')
+
+
+@app.route('/transfer-center/source-login/result')
+@login_required
+def transfer_center_source_login_result():
+    platform = str(request.args.get('platform') or '').strip().lower()
+    labels = {'bilibili': 'B站', 'douyin': '抖音'}
+    if platform not in labels:
+        flash('来源登录结果无效。', 'warning')
+    elif _source_cookie_ready(platform):
+        flash(f'{labels[platform]}登录成功，Cookie 已安全保存到本机。', 'success')
+    else:
+        flash(f'{labels[platform]}登录尚未完成，请重新尝试。', 'warning')
+    return redirect(url_for('transfer_center_index'))
 
 
 @app.route('/transfer-center/rules', methods=['POST'])

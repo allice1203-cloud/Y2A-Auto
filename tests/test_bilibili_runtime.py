@@ -96,6 +96,28 @@ class BilibiliAuthTests(unittest.TestCase):
             self.assertEqual(cookies["DedeUserID"], "123")
             self.assertEqual(cookies["buvid3"], "buvid")
 
+    def test_save_credential_writes_netscape_source_cookie_file(self):
+        from modules.bilibili_auth import save_credential_to_file
+
+        credential = mock.Mock()
+        credential.get_cookies.return_value = {
+            "SESSDATA": "sess",
+            "bili_jct": "csrf",
+            "DedeUserID": "123",
+            "buvid3": "buvid",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookie_path = pathlib.Path(temp_dir) / "cookies" / "bilibili_source_cookies.txt"
+
+            self.assertTrue(save_credential_to_file(credential, str(cookie_path)))
+
+            content = cookie_path.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("# Netscape HTTP Cookie File"))
+            self.assertIn("\tSESSDATA\tsess", content)
+            self.assertIn("\tbili_jct\tcsrf", content)
+            self.assertIn("\tDedeUserID\t123", content)
+
     def test_save_credential_does_not_write_when_cookie_extraction_fails(self):
         from modules.bilibili_auth import save_credential_to_file
 
