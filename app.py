@@ -3826,6 +3826,19 @@ def transfer_center_youtube_callback():
     if not state:
         flash('YouTube 授权状态已失效，请重新连接。', 'warning')
         return redirect(url_for('transfer_center_index'))
+    callback_state = str(request.args.get('state') or '')
+    if not callback_state or not secrets.compare_digest(callback_state, str(state)):
+        flash('YouTube 授权状态校验失败，请重新连接。', 'danger')
+        return redirect(url_for('transfer_center_index'))
+    authorization_code = str(request.args.get('code') or '').strip()
+    if not authorization_code:
+        error_description = str(
+            request.args.get('error_description')
+            or request.args.get('error')
+            or 'Google 未返回授权码'
+        ).strip()
+        flash(f'YouTube 授权未完成：{error_description}', 'warning')
+        return redirect(url_for('transfer_center_index'))
     try:
         from google_auth_oauthlib.flow import Flow
 
@@ -3836,7 +3849,10 @@ def transfer_center_youtube_callback():
             state=state,
             redirect_uri=redirect_uri,
         )
-        flow.fetch_token(authorization_response=request.url)
+        # The callback is intentionally loopback HTTP, while the token exchange
+        # still goes to Google's HTTPS endpoint. Passing the verified code avoids
+        # globally disabling OAuthlib transport checks for the whole process.
+        flow.fetch_token(code=authorization_code)
         token_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
         with open(token_path, 'w', encoding='utf-8') as handle:
             handle.write(flow.credentials.to_json())
