@@ -3812,6 +3812,7 @@ def transfer_center_youtube_connect():
             prompt='consent',
         )
         session['transfer_youtube_oauth_state'] = state
+        session['transfer_youtube_oauth_code_verifier'] = flow.code_verifier
         return redirect(authorization_url)
     except Exception as e:
         flash(f'启动 YouTube 授权失败：{e}', 'danger')
@@ -3823,7 +3824,8 @@ def transfer_center_youtube_connect():
 def transfer_center_youtube_callback():
     client_secret_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_client_secret.json')
     state = session.pop('transfer_youtube_oauth_state', None)
-    if not state:
+    code_verifier = session.pop('transfer_youtube_oauth_code_verifier', None)
+    if not state or not code_verifier:
         flash('YouTube 授权状态已失效，请重新连接。', 'warning')
         return redirect(url_for('transfer_center_index'))
     callback_state = str(request.args.get('state') or '')
@@ -3848,6 +3850,8 @@ def transfer_center_youtube_callback():
             scopes=['https://www.googleapis.com/auth/youtube.upload'],
             state=state,
             redirect_uri=redirect_uri,
+            code_verifier=code_verifier,
+            autogenerate_code_verifier=False,
         )
         # The callback is intentionally loopback HTTP, while the token exchange
         # still goes to Google's HTTPS endpoint. Passing the verified code avoids
