@@ -1,3 +1,5 @@
+name: video-transfer-channel
+
 services:
   video-transfer-channel:
     image: video-transfer-channel:0.5.0
