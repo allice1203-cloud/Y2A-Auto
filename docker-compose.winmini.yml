@@ -1,0 +1,28 @@
+services:
+  video-transfer-channel:
+    image: video-transfer-channel:0.5.0
+    container_name: video-transfer-channel
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:15188:5000"
+    volumes:
+      - ./config:/app/config
+      - ./db:/app/db
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+      - ./cookies:/app/cookies
+      - ./temp:/app/temp
+    environment:
+      TZ: Asia/Shanghai
+      PYTHONIOENCODING: utf-8
+    cpus: 6.0
+    mem_limit: 8g
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
