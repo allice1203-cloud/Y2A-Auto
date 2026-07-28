@@ -1,0 +1,11 @@
+tunnel: cfbc1aa7-1c2d-48e0-bf18-52514808c0a3
+credentials-file: /home/allice/.cloudflared/cfbc1aa7-1c2d-48e0-bf18-52514808c0a3.json
+protocol: http2
+
+ingress:
+  - hostname: transfer.sg99.online
+    service: http://127.0.0.1:15188
+    originRequest:
+      connectTimeout: 10s
+      httpHostHeader: transfer.sg99.online
+  - service: http_status:404

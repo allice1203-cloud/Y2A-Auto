@@ -1,0 +1,17 @@
+[Unit]
+Description=Video Transfer Channel Cloudflare Tunnel
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=notify
+User=allice
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /home/allice/.cloudflared/video-transfer-channel.yml tunnel run
+Restart=always
+RestartSec=5s
+TimeoutStartSec=30s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
