@@ -53,6 +53,7 @@ desktop.ini
 # Dockerfile
 
 # Backup files
+backups/
 *.bak
 *.backup
 *~
