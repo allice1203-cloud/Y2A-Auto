@@ -150,12 +150,23 @@ class SourceLoginApplication:
         secret_file: Path,
         chrome_path: Path,
         timeout_seconds: int = 600,
+        success_url: str = "",
     ):
         self.cookie_dir = cookie_dir.resolve()
         self.profile_dir = profile_dir.resolve()
         self.secret_file = secret_file.resolve()
         self.chrome_path = chrome_path.resolve()
         self.timeout_seconds = max(120, min(int(timeout_seconds), 1200))
+        self.success_url = str(success_url or "").strip()
+        if self.success_url:
+            parsed_success = urlparse(self.success_url)
+            if (
+                parsed_success.scheme != "https"
+                or parsed_success.hostname != "transfer.sg99.online"
+                or parsed_success.username
+                or parsed_success.password
+            ):
+                raise RuntimeError("登录成功返回地址无效")
         self.secret = _read_secret(self.secret_file)
         self._lock = threading.RLock()
         self._sessions: dict[str, dict[str, Any]] = {}
@@ -187,7 +198,7 @@ class SourceLoginApplication:
                 "platform": normalized,
                 "status": "opening",
                 "message": "正在打开官方登录页面…",
-                "return_url": safe_return,
+                "return_url": self.success_url or safe_return,
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
@@ -367,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
     )
     parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--success-url", default="")
     parser.add_argument("--check", action="store_true")
     return parser
 
@@ -383,6 +395,7 @@ def main() -> int:
         secret_file=args.secret_file,
         chrome_path=args.chrome_path,
         timeout_seconds=args.timeout_seconds,
+        success_url=args.success_url,
     )
     application.check_runtime()
     if args.check:
