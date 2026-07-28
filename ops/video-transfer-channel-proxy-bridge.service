@@ -1,0 +1,17 @@
+[Unit]
+Description=Video Transfer Channel Docker Proxy Bridge
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=allice
+WorkingDirectory=/home/allice/系统开发/视频搬运通道
+ExecStart=/usr/bin/python3 /home/allice/系统开发/视频搬运通道/ops/docker_proxy_bridge.py
+Restart=always
+RestartSec=3s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
