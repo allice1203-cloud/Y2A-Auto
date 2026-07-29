@@ -3857,6 +3857,17 @@ def transfer_center_send_to_money_printer(job_id):
     return redirect(url_for('transfer_center_review_job', job_id=job_id))
 
 
+@app.route('/transfer-center/jobs/<job_id>/money-printer/sync', methods=['POST'])
+@login_required
+def transfer_center_sync_money_printer(job_id):
+    try:
+        _transfer_center().sync_money_printer_render(job_id)
+        flash('加工成片已同步并完成媒体体检，请核对画面、原声和来源标识后批准。', 'success')
+    except Exception as e:
+        flash(str(e), 'warning')
+    return redirect(url_for('transfer_center_review_job', job_id=job_id))
+
+
 @app.route('/transfer-center/connections', methods=['POST'])
 @login_required
 def transfer_center_save_connections():

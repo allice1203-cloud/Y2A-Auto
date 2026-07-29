@@ -414,3 +414,80 @@ def test_send_to_money_printer_creates_project_uploads_and_analyzes(
     assert calls[0][0] == "POST"
     assert calls[1][2]["files"]["file"][0] == "source.mp4"
     assert calls[2][2]["json"] == {"asset_id": "asset-456"}
+
+
+def test_sync_money_printer_render_downloads_and_rechecks_media(
+    center, tmp_path, monkeypatch
+):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1mptsync",
+        ["x", "youtube"],
+    )
+    center._update_job(
+        job_id,
+        mpt_project_id="project-123",
+        mpt_workflow="quick",
+        mpt_status="ready",
+    )
+
+    class FakeResponse:
+        def __init__(self, *, payload=None, content=b""):
+            self._payload = payload
+            self._content = content
+            self.headers = {"Content-Length": str(len(content))} if content else {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+        def iter_content(self, chunk_size):
+            yield self._content
+
+    class FakeSession:
+        trust_env = True
+
+        def get(self, url, **kwargs):
+            if url.endswith("/api/v1/projects/project-123/renders"):
+                return FakeResponse(
+                    payload={
+                        "status": 200,
+                        "data": {
+                            "renders": [
+                                {
+                                    "render_id": "render-456",
+                                    "status": "ready",
+                                    "output_asset": {
+                                        "content_url": "/api/v1/assets/asset-789/content"
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                )
+            if url.endswith("/api/v1/assets/asset-789/content"):
+                return FakeResponse(content=b"finished-video")
+            raise AssertionError(url)
+
+    monkeypatch.setattr(transfer_module.requests, "Session", FakeSession)
+    monkeypatch.setattr(
+        transfer_module,
+        "prepare_platform_variants",
+        lambda source_path, output_dir, targets: (
+            {"duration": 65, "width": 1920, "height": 1080, "has_audio": True},
+            {
+                "x": {"status": "ready", "path": source_path, "issues": []},
+                "youtube": {"status": "ready", "path": source_path, "issues": []},
+            },
+        ),
+    )
+
+    result = center.sync_money_printer_render(job_id)
+
+    assert result["mpt_status"] == "imported"
+    assert result["processing_mode"] == "quick"
+    assert result["recreation_completed"] == 1
+    assert result["recreation_status"] == "draft"
+    assert result["local_video_path"].endswith("mpt-render-render-456.mp4")
+    assert open(result["local_video_path"], "rb").read() == b"finished-video"

@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin
 
 import requests
 
@@ -1514,6 +1514,100 @@ class TransferCenter:
                 }
             )
         )
+
+    def sync_money_printer_render(self, job_id: str) -> dict:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        project_id = str(job.get("mpt_project_id") or "").strip()
+        if not project_id:
+            raise ValueError("尚未建立超级印钞机加工项目")
+        if job.get("x_post_id") or job.get("youtube_video_id"):
+            raise ValueError("已有平台发布结果，不能替换成片")
+
+        base_url = str(
+            self._config().get("TRANSFER_MPT_INTERNAL_URL")
+            or "http://172.17.0.1:18081"
+        ).rstrip("/")
+        session = requests.Session()
+        session.trust_env = False
+        try:
+            response = session.get(
+                f"{base_url}/api/v1/projects/{quote(project_id)}/renders",
+                params={"page": 1, "page_size": 20},
+                timeout=(5, 30),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if int(payload.get("status") or 500) != 200:
+                raise RuntimeError(str(payload.get("message") or "读取成片列表失败"))
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            render = next(
+                (
+                    item
+                    for item in data.get("renders") or []
+                    if item.get("status") == "ready"
+                    and isinstance(item.get("output_asset"), dict)
+                    and item["output_asset"].get("content_url")
+                ),
+                None,
+            )
+            if not render:
+                raise ValueError("超级印钞机尚未生成可同步的成片")
+
+            content_url = urljoin(
+                f"{base_url}/",
+                str(render["output_asset"]["content_url"]),
+            )
+            media_response = session.get(
+                content_url,
+                stream=True,
+                timeout=(5, 300),
+            )
+            media_response.raise_for_status()
+            content_length = int(media_response.headers.get("Content-Length") or 0)
+            if content_length > 10 * 1024 * 1024 * 1024:
+                raise ValueError("加工成片超过 10GB，无法自动同步")
+
+            output_dir = Path(get_app_subdir("downloads")) / "transfer" / job_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            render_id = str(render.get("render_id") or uuid.uuid4().hex)
+            target_path = output_dir / f"mpt-render-{render_id[:12]}.mp4"
+            partial_path = target_path.with_suffix(".mp4.part")
+            downloaded = 0
+            with open(partial_path, "wb") as output:
+                for chunk in media_response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    downloaded += len(chunk)
+                    if downloaded > 10 * 1024 * 1024 * 1024:
+                        raise ValueError("加工成片超过 10GB，无法自动同步")
+                    output.write(chunk)
+            if downloaded <= 0:
+                raise ValueError("超级印钞机返回了空成片")
+            os.replace(partial_path, target_path)
+            result = self.replace_recreated_media(job_id, str(target_path))
+            self._update_job(
+                job_id,
+                processing_mode=str(job.get("mpt_workflow") or "quick"),
+                mpt_status="imported",
+                mpt_message="加工成片已自动同步，请完成最终确认",
+            )
+            return self.get_job(job_id) or result
+        except Exception as exc:
+            for candidate in (
+                locals().get("partial_path"),
+                locals().get("target_path"),
+            ):
+                if candidate and Path(candidate).is_file():
+                    try:
+                        Path(candidate).unlink()
+                    except OSError:
+                        pass
+            if isinstance(exc, ValueError):
+                raise
+            message = _safe_error(exc, limit=500)
+            raise RuntimeError(f"同步超级印钞机成片失败：{message}") from exc
 
     # ---- publishing ----------------------------------------------------
     def publish_job_async(self, job_id: str) -> bool:

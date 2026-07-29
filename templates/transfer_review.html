@@ -341,7 +341,8 @@
                 <div class="production-state mb-3">
                     <div class="small">联动状态</div>
                     <div class="fw-semibold mt-1">
-                        {% if job.mpt_status == 'ready' %}项目已建立，原片已就绪
+                        {% if job.mpt_status == 'imported' %}加工成片已同步，等待最终确认
+                        {% elif job.mpt_status == 'ready' %}项目已建立，原片已就绪
                         {% elif job.mpt_status == 'failed' %}联动失败，可以重试
                         {% elif job.mpt_status == 'sending' %}正在送入超级印钞机
                         {% else %}尚未建立加工项目{% endif %}
@@ -352,6 +353,11 @@
                 <a class="btn btn-light w-100 mb-2" href="{{ money_printer_quick_url }}">
                     <i class="bi bi-lightning-charge me-1"></i>简单加工
                 </a>
+                <form method="post" action="{{ url_for('transfer_center_sync_money_printer', job_id=job.id) }}" class="mb-2">
+                    <button class="btn btn-success w-100">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>同步加工成片
+                    </button>
+                </form>
                 <a class="btn btn-outline-light w-100" href="{{ money_printer_professional_url }}">
                     <i class="bi bi-sliders me-1"></i>专业加工
                 </a>
