@@ -110,16 +110,22 @@
                             </td>
                             <td>
                                 <div class="task-stage">
-                                    <div><strong data-transfer-stage-label>{{ {
-                                        'discovered':'等待下载',
-                                        'downloading':'下载素材',
-                                        'review':'待确认处理',
-                                        'ready':'等待发布',
-                                        'publishing':'正在发布',
-                                        'completed':'已完成',
-                                        'failed':'下载或处理失败',
-                                        'skipped':'已跳过'
-                                    }.get(job.status, job.status) }}</strong><span data-transfer-progress-value>{{ progress }}%</span></div>
+                                    <div><strong data-transfer-stage-label>
+                                        {% if job.status == 'ready' and job.youtube_publish_status == 'waiting_auth' %}
+                                            等待频道连接
+                                        {% else %}
+                                            {{ {
+                                                'discovered':'等待下载',
+                                                'downloading':'下载素材',
+                                                'review':'待确认处理',
+                                                'ready':'等待发布',
+                                                'publishing':'正在发布',
+                                                'completed':'已完成',
+                                                'failed':'下载或处理失败',
+                                                'skipped':'已跳过'
+                                            }.get(job.status, job.status) }}
+                                        {% endif %}
+                                    </strong><span data-transfer-progress-value>{{ progress }}%</span></div>
                                     <div class="task-progress"><i data-transfer-progress-bar style="width: {{ progress }}%"></i></div>
                                     <small data-transfer-progress-message>{{ job.progress_message or ('系统将在后台自动重试' if job.next_retry_at else '') }}</small>
                                     {% if job.error_message %}
@@ -161,9 +167,13 @@
                                 <a class="btn btn-sm btn-outline-warning" href="{{ url_for('transfer_center_review_job', job_id=job.id) }}">审核</a>
                                 {% endif %}
                                 {% if job.status == 'ready' %}
-                                <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
-                                    <button class="btn btn-sm btn-success">发布</button>
-                                </form>
+                                    {% if job.youtube_publish_status == 'waiting_auth' %}
+                                    <a class="btn btn-sm btn-danger" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube</a>
+                                    {% else %}
+                                    <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
+                                        <button class="btn btn-sm btn-success">发布</button>
+                                    </form>
+                                    {% endif %}
                                 {% endif %}
                                 {% if job.x_publish_status == 'manual_ready' %}
                                 <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_x_video', job_id=job.id) }}">下载 X 素材</a>
