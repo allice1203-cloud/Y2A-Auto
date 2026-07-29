@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=video-transfer-channel:0.5.0
+FROM ${BASE_IMAGE}
+
+USER root
+WORKDIR /app
+
+# Small production releases reuse the already validated runtime dependencies
+# and replace only version-controlled application files. Runtime data and
+# credentials are excluded by .dockerignore and remain mounted from winmini.
+COPY --chown=y2a:y2a . .
+
+RUN python -m py_compile \
+        app.py \
+        modules/content_recreation.py \
+        modules/media_preflight.py \
+        modules/transfer_center.py \
+    && chown -R y2a:y2a /app
+
+USER y2a
