@@ -1,0 +1,9 @@
+FROM video-transfer-channel:0.7.0
+
+# Fast, deterministic release path for winmini when Python/system dependencies
+# are unchanged. Persistent data remains outside the image through bind mounts.
+WORKDIR /app
+COPY app.py /app/app.py
+COPY modules /app/modules
+COPY templates /app/templates
+COPY static /app/static
