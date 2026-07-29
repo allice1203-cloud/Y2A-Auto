@@ -53,6 +53,30 @@ def test_manual_job_detects_douyin_and_deduplicates(center):
         center.add_manual_job(url, ["youtube"])
 
 
+def test_manual_job_normalizes_missing_protocol(center):
+    job_id = center.add_manual_job(
+        "bilibili.com/video/BV1protocol",
+        ["x", "youtube"],
+    )
+
+    job = center.get_job(job_id)
+    assert job["source_url"] == "https://bilibili.com/video/BV1protocol"
+    assert job["source_platform"] == "bilibili"
+
+
+def test_chinese_source_download_bypasses_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:17890")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:17890")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+
+    env = transfer_module._source_direct_env("bilibili")
+
+    assert "HTTP_PROXY" not in env
+    assert "HTTPS_PROXY" not in env
+    assert ".bilivideo.com" in env["NO_PROXY"]
+    assert ".b23.tv" in env["NO_PROXY"]
+
+
 def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1test12345",

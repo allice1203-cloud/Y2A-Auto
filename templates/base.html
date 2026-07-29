@@ -7,7 +7,7 @@
     <title>{% block title %}视频搬运通道{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/bootstrap/bootstrap.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/icons/bootstrap-icons.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=0.5.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=0.7.0">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='img/favicon.ico') }}">
     {% block extra_css %}{% endblock %}
@@ -25,14 +25,14 @@
             </a>
             <nav class="app-nav" aria-label="主要导航">
                 <a class="app-nav-link {% if request.path == url_for('index') %}active{% endif %}" href="{{ url_for('index') }}"><i class="bi bi-grid-1x2"></i><span>首页</span></a>
-                <a class="app-nav-link {% if request.path == url_for('tasks') %}active{% endif %}" href="{{ url_for('tasks') }}"><i class="bi bi-collection-play"></i><span>任务列表</span></a>
+                <a class="app-nav-link {% if request.path.startswith('/tasks') %}active{% endif %}" href="{{ url_for('tasks') }}"><i class="bi bi-collection-play"></i><span>任务中心</span></a>
                 <a class="app-nav-link {% if request.path == url_for('manual_review') %}active{% endif %}" href="{{ url_for('manual_review') }}"><i class="bi bi-patch-check"></i><span>人工审核</span></a>
                 <a class="app-nav-link {% if request.path.startswith('/transfer-center') %}active{% endif %}" href="{{ url_for('transfer_center_index') }}"><i class="bi bi-arrow-left-right"></i><span>搬运中心</span></a>
                 <a class="app-nav-link {% if request.path.startswith('/youtube_monitor') %}active{% endif %}" href="{{ url_for('youtube_monitor_index') }}"><i class="bi bi-broadcast-pin"></i><span>YouTube监控</span></a>
                 <a class="app-nav-link {% if request.path == url_for('settings') %}active{% endif %}" href="{{ url_for('settings') }}"><i class="bi bi-sliders2"></i><span>设置</span></a>
             </nav>
             <div class="app-sidebar-foot">
-                <div class="app-machine-state"><span></span>Mac mini · 运行正常</div>
+                <div class="app-machine-state"><span></span>Win mini · 运行正常</div>
                 {% if show_logout_in_nav %}
                     <a class="app-logout" href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>退出登录</a>
                 {% endif %}
@@ -48,7 +48,7 @@
                         {% if request.path == url_for('index') %}首页
                         {% elif request.path.startswith('/transfer-center') %}搬运中心
                         {% elif request.path.startswith('/youtube_monitor') %}YouTube监控
-                        {% elif request.path == url_for('tasks') %}任务列表
+                        {% elif request.path.startswith('/tasks') %}任务中心
                         {% elif request.path == url_for('manual_review') %}人工审核
                         {% elif request.path == url_for('settings') %}设置
                         {% else %}工作区{% endif %}

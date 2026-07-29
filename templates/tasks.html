@@ -7,32 +7,202 @@
      data-tasks-stream="{{ url_for('tasks_event_stream') }}"
      data-task-fragment-template="{{ url_for('task_fragment', task_id='__TASK_ID__') }}">
     {% set failed_tasks = tasks|selectattr('status', 'equalto', 'failed')|list if tasks else [] %}
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
-        <div class="d-flex align-items-center gap-2">
-            <h2 class="mb-0">任务列表</h2>
-            <div id="tasksRefreshIndicator" class="d-none" aria-hidden="true">
-                <span class="spinner-border spinner-border-sm text-primary" role="status" aria-label="正在刷新"></span>
+    {% set failed_transfer_jobs = transfer_jobs|selectattr('status', 'equalto', 'failed')|list if transfer_jobs else [] %}
+    <section class="page-intro task-center-intro">
+        <div>
+            <div class="d-flex align-items-center gap-2">
+                <h1 class="mb-0">任务中心</h1>
+                <div id="tasksRefreshIndicator" class="d-none" aria-hidden="true">
+                    <span class="spinner-border spinner-border-sm text-primary" role="status" aria-label="正在刷新"></span>
+                </div>
             </div>
+            <p>手动创建、下载进度、再创作审核与多平台发布结果统一在这里完成。</p>
+        </div>
+        <div class="page-actions">
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addTaskModal">
+                <i class="bi bi-plus-lg"></i> 新建搬运任务
+            </button>
+        </div>
+    </section>
+
+    <section class="metric-rail task-status-rail" aria-label="搬运任务状态概览">
+        <div class="metric-cell is-active"><span>全部</span><strong>{{ transfer_stats.total }}</strong></div>
+        <div class="metric-cell metric-primary"><span>下载中</span><strong>{{ transfer_stats.downloading }}</strong></div>
+        <div class="metric-cell metric-warning"><span>待审核</span><strong>{{ transfer_stats.review }}</strong></div>
+        <div class="metric-cell"><span>可发布</span><strong>{{ transfer_stats.ready }}</strong></div>
+        <div class="metric-cell metric-primary"><span>发布中</span><strong>{{ transfer_stats.publishing }}</strong></div>
+        <div class="metric-cell metric-success"><span>已完成</span><strong>{{ transfer_stats.completed }}</strong></div>
+        <div class="metric-cell metric-danger"><span>失败</span><strong>{{ transfer_stats.failed }}</strong></div>
+    </section>
+
+    <section class="workspace-panel unified-task-panel">
+        <div class="workspace-panel-head">
+            <div>
+                <h2>搬运任务</h2>
+                <p>B站 / 抖音发布到 X、YouTube 的全部进度与结果。</p>
+            </div>
+            <span class="workspace-count">{{ transfer_jobs|length }} 条任务</span>
+        </div>
+        <div class="task-filter-bar">
+            <label class="task-search"><i class="bi bi-search"></i><input type="search" placeholder="搜索视频标题或任务 ID" data-transfer-task-search></label>
+            <select class="form-select" data-transfer-task-source>
+                <option value="">全部来源</option>
+                <option value="bilibili">B站</option>
+                <option value="douyin">抖音</option>
+            </select>
+            <select class="form-select" data-transfer-task-status>
+                <option value="">全部状态</option>
+                <option value="downloading">下载中</option>
+                <option value="review">待审核</option>
+                <option value="ready">可发布</option>
+                <option value="publishing">发布中</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败</option>
+            </select>
+        </div>
+        <div class="workspace-panel-body p-0">
+        {% if transfer_jobs %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0 unified-task-table">
+                    <thead>
+                        <tr>
+                            <th>视频</th>
+                            <th>搬运路径</th>
+                            <th>当前阶段</th>
+                            <th>发布状态</th>
+                            <th>更新时间</th>
+                            <th class="text-end">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for job in transfer_jobs %}
+                        {% set status_progress = {
+                            'discovered': 2,
+                            'downloading': (job.progress_percent or 8),
+                            'review': 72,
+                            'ready': 86,
+                            'publishing': 93,
+                            'completed': 100,
+                            'failed': (job.progress_percent or 8),
+                            'skipped': 100
+                        } %}
+                        {% set progress = status_progress.get(job.status, 0)|int %}
+                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
+                            <td>
+                                <div class="task-video-cell">
+                                    <span class="task-video-thumb">
+                                        {% if job.thumbnail_url %}<img src="{{ job.thumbnail_url }}" alt="">{% else %}<i class="bi bi-play-fill"></i>{% endif %}
+                                    </span>
+                                    <div>
+                                        <a href="{{ job.source_url }}" target="_blank" rel="noopener">{{ job.title or '正在获取视频信息' }}</a>
+                                        <span>{{ job.source_uploader or ('任务 ' ~ job.id[:8]) }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="relay-path">
+                                    <span class="source source-{{ job.source_platform }}">{{ 'B站' if job.source_platform == 'bilibili' else '抖音' }}</span>
+                                    <i class="bi bi-arrow-right"></i>
+                                    {% if '"x"' in job.target_platforms %}<span class="target target-x">X</span>{% endif %}
+                                    {% if '"youtube"' in job.target_platforms %}<span class="target target-youtube">YouTube</span>{% endif %}
+                                </div>
+                            </td>
+                            <td>
+                                <div class="task-stage">
+                                    <div><strong data-transfer-stage-label>{{ {
+                                        'discovered':'等待下载',
+                                        'downloading':'下载素材',
+                                        'review':'待再创作审核',
+                                        'ready':'等待发布',
+                                        'publishing':'正在发布',
+                                        'completed':'已完成',
+                                        'failed':'下载或处理失败',
+                                        'skipped':'已跳过'
+                                    }.get(job.status, job.status) }}</strong><span data-transfer-progress-value>{{ progress }}%</span></div>
+                                    <div class="task-progress"><i data-transfer-progress-bar style="width: {{ progress }}%"></i></div>
+                                    <small data-transfer-progress-message>{{ job.progress_message or ('系统将在后台自动重试' if job.next_retry_at else '') }}</small>
+                                    {% if job.error_message %}
+                                    <button class="task-error-summary" type="button"
+                                            data-error-message="{{ job.error_message|e }}"
+                                            data-task-title="{{ (job.title or '搬运任务')|e }}"
+                                            data-task-id="{{ job.id }}">
+                                        <i class="bi bi-exclamation-circle"></i>
+                                        {{ job.error_message|truncate(54, True, '…') }}
+                                    </button>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td>
+                                <div class="publish-state-stack">
+                                    {% if '"x"' in job.target_platforms %}
+                                    <span><i class="platform-mini x">X</i>{{ {
+                                        'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待授权',
+                                        'publishing':'发布中','completed':'已发布','failed':'失败','blocked':'媒体未就绪',
+                                        'skipped':'未选择'
+                                    }.get(job.x_publish_status, job.x_publish_status) }}</span>
+                                    {% endif %}
+                                    {% if '"youtube"' in job.target_platforms %}
+                                    <span><i class="platform-mini youtube"><i class="bi bi-youtube"></i></i>{{ {
+                                        'pending':'待发布','waiting_auth':'待授权','publishing':'发布中',
+                                        'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
+                                    }.get(job.youtube_publish_status, job.youtube_publish_status) }}</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td><span class="task-updated">{{ job.updated_at[:16]|replace('T', ' ') }}</span></td>
+                            <td class="text-end text-nowrap">
+                                {% if job.status in ('discovered', 'failed') %}
+                                <form method="post" action="{{ url_for('transfer_center_prepare_job', job_id=job.id) }}" class="d-inline">
+                                    <button class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-repeat"></i> 重试</button>
+                                </form>
+                                {% endif %}
+                                {% if job.local_video_path %}
+                                <a class="btn btn-sm btn-outline-warning" href="{{ url_for('transfer_center_review_job', job_id=job.id) }}">审核</a>
+                                {% endif %}
+                                {% if job.status == 'ready' %}
+                                <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
+                                    <button class="btn btn-sm btn-success">发布</button>
+                                </form>
+                                {% endif %}
+                                {% if job.x_publish_status == 'manual_ready' %}
+                                <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_x_video', job_id=job.id) }}">下载 X 素材</a>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="premium-empty premium-empty-jobs">
+                <span class="empty-frame" aria-hidden="true"></span>
+                <div><strong>还没有搬运任务</strong><span>点击“新建搬运任务”，支持 B站、抖音和 YouTube 链接</span></div>
+            </div>
+        {% endif %}
+        </div>
+    </section>
+
+    <div class="legacy-task-heading">
+        <div>
+            <h2>YouTube 同步任务</h2>
+            <p>兼容原有 YouTube → B站 / AcFun 工作流。</p>
         </div>
         <div class="d-flex gap-2 flex-wrap align-items-center">
-            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addTaskModal">
-                <i class="bi bi-plus-circle"></i> 新建任务
-            </button>
             {% if failed_tasks %}
-            <button type="button" class="btn btn-outline-danger" id="retryFailedTasksBtn" onclick="confirmRetryFailed()">
+            <button type="button" class="btn btn-outline-danger btn-sm" id="retryFailedTasksBtn" onclick="confirmRetryFailed()">
                 <i class="bi bi-arrow-repeat"></i> 重试失败任务
                 <span class="badge bg-danger ms-1">{{ failed_tasks|length }}</span>
             </button>
             {% endif %}
             {% if tasks %}
-            <button type="button" class="btn btn-danger" onclick="confirmClearAll()">
-                <i class="bi bi-trash"></i> 清除所有任务
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="confirmClearAll()">
+                <i class="bi bi-trash"></i> 清除旧版任务
             </button>
             {% endif %}
         </div>
     </div>
 
-    <div id="tasksContent">
+    <div id="tasksContent" class="workspace-panel legacy-task-panel">
     {% if tasks %}
     <div class="modern-list">
         <!-- 桌面端表格（md及以上显示） -->
@@ -138,39 +308,88 @@
     </div>
 </div>
 
-<!-- 新建任务对话框 -->
+<!-- 统一新建任务对话框 -->
 <div class="modal fade" id="addTaskModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 新建任务</h5>
+                <div>
+                    <div class="modal-kicker">智能路由</div>
+                    <h5 class="modal-title">新建搬运任务</h5>
+                </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
             </div>
             <form method="post" action="{{ url_for('add_task_route') }}">
                 <div class="modal-body">
-                    <div class="mb-3">
-                        <label for="youtube_url" class="form-label">YouTube视频URL</label>
-                        <input type="text" class="form-control" id="youtube_url" name="youtube_url" required 
-                               placeholder="https://www.youtube.com/watch?v=...">
-                        <div class="form-text">支持标准YouTube视频链接</div>
+                    <div class="mb-4">
+                        <label for="source_url" class="form-label">视频链接</label>
+                        <div class="unified-source-input">
+                            <i class="bi bi-link-45deg"></i>
+                            <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
+                                   placeholder="粘贴 B站、抖音或 YouTube 视频链接">
+                        </div>
+                        <div class="form-text">系统会自动识别来源，并切换到对应的发布目标。</div>
                     </div>
-                    <div class="mb-3">
-                        <label for="upload_target" class="form-label">目标平台</label>
+
+                    <div class="source-detection-card" id="sourceDetectionCard">
+                        <span class="source-detection-icon"><i class="bi bi-stars"></i></span>
+                        <div><small>来源识别</small><strong id="sourceDetectionLabel">等待粘贴视频链接</strong></div>
+                        <span class="settings-status-badge is-neutral" id="sourceDetectionBadge">未识别</span>
+                    </div>
+
+                    <div class="route-panel mt-4" id="relayTargetsPanel">
+                        <div class="route-panel-head">
+                            <div><small>发布到</small><strong>B站 / 抖音来源</strong></div>
+                            <span>可多选</span>
+                        </div>
+                        <div class="route-target-grid">
+                            <label class="route-target">
+                                <input type="checkbox" name="target_x" checked>
+                                <span class="route-target-icon x">X</span>
+                                <span><strong>X</strong><small>免费半自动发布</small></span>
+                                <i class="bi bi-check-circle-fill"></i>
+                            </label>
+                            <label class="route-target">
+                                <input type="checkbox" name="target_youtube" checked>
+                                <span class="route-target-icon youtube"><i class="bi bi-youtube"></i></span>
+                                <span><strong>YouTube</strong><small>授权后私密上传</small></span>
+                                <i class="bi bi-check-circle-fill"></i>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="route-panel mt-4 d-none" id="youtubeTargetsPanel">
+                        <div class="route-panel-head">
+                            <div><small>发布到</small><strong>YouTube 来源</strong></div>
+                            <span>兼容原工作流</span>
+                        </div>
                         {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
-                        <select class="form-select" id="upload_target" name="upload_target">
+                        <select class="form-select" id="youtube_upload_target" name="youtube_upload_target">
                             <option value="acfun" {% if default_target == 'acfun' %}selected{% endif %}>AcFun</option>
-                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>bilibili</option>
-                            <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（AcFun + bilibili）</option>
+                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
+                            <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（B站 + AcFun）</option>
                         </select>
-                        <div class="form-text">不选择时将使用系统默认平台</div>
+                    </div>
+
+                    <div class="route-note mt-4">
+                        <i class="bi bi-signpost-split"></i>
+                        <div><strong>搬运路径说明</strong><span>B站 / 抖音 → X、YouTube；YouTube → B站、AcFun。抖音目前作为来源平台，不是发布目标。</span></div>
+                    </div>
+
+                    <label class="creation-mode-card mt-4">
+                        <input type="radio" checked disabled>
+                        <span><strong>进入再创作审核（推荐）</strong><small>素材下载后先确认版权、实质性再创作与水印风险，再允许发布。</small></span>
+                    </label>
+                    <div class="form-text mt-2">
+                        创建任务不会直接公开发布。
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
-                        <i class="bi bi-x-circle"></i> 取消
+                        取消
                     </button>
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-plus-circle"></i> 添加任务
+                        <i class="bi bi-plus-lg"></i> 创建任务
                     </button>
                 </div>
             </form>
@@ -470,6 +689,104 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             }
         }
     }
+
+    function detectRelaySource(value) {
+        const url = String(value || '').trim().toLowerCase();
+        if (url.includes('bilibili.com') || url.includes('b23.tv')) return 'bilibili';
+        if (url.includes('douyin.com')) return 'douyin';
+        if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
+        return '';
+    }
+
+    function updateRelayRoutePreview() {
+        const input = document.getElementById('source_url');
+        const label = document.getElementById('sourceDetectionLabel');
+        const badge = document.getElementById('sourceDetectionBadge');
+        const relayTargets = document.getElementById('relayTargetsPanel');
+        const youtubeTargets = document.getElementById('youtubeTargetsPanel');
+        if (!input || !label || !badge || !relayTargets || !youtubeTargets) return;
+
+        const source = detectRelaySource(input.value);
+        const names = { bilibili: '已识别：B站', douyin: '已识别：抖音', youtube: '已识别：YouTube' };
+        label.textContent = names[source] || (input.value.trim() ? '暂未识别，请检查链接' : '等待粘贴视频链接');
+        badge.textContent = source ? '已识别' : '未识别';
+        badge.classList.toggle('is-success', Boolean(source));
+        badge.classList.toggle('is-neutral', !source);
+        relayTargets.classList.toggle('d-none', source === 'youtube');
+        youtubeTargets.classList.toggle('d-none', source !== 'youtube');
+    }
+
+    function applyTransferTaskFilters() {
+        const search = (document.querySelector('[data-transfer-task-search]')?.value || '').trim().toLowerCase();
+        const source = document.querySelector('[data-transfer-task-source]')?.value || '';
+        const status = document.querySelector('[data-transfer-task-status]')?.value || '';
+        document.querySelectorAll('[data-transfer-task-row]').forEach(function(row) {
+            const matchesSearch = !search || (row.dataset.search || '').includes(search);
+            const matchesSource = !source || row.dataset.source === source;
+            const matchesStatus = !status || row.dataset.status === status;
+            row.classList.toggle('d-none', !(matchesSearch && matchesSource && matchesStatus));
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const sourceInput = document.getElementById('source_url');
+        if (sourceInput) {
+            sourceInput.addEventListener('input', updateRelayRoutePreview);
+            sourceInput.addEventListener('paste', function() {
+                window.setTimeout(updateRelayRoutePreview, 0);
+            });
+        }
+        document.querySelectorAll('[data-transfer-task-search], [data-transfer-task-source], [data-transfer-task-status]')
+            .forEach(function(control) {
+                control.addEventListener(control.matches('input') ? 'input' : 'change', applyTransferTaskFilters);
+            });
+        document.querySelectorAll('.task-error-summary').forEach(function(button) {
+            button.addEventListener('click', function() {
+                showTaskErrorMessage(
+                    button.dataset.taskId || '',
+                    button.dataset.taskTitle || '搬运任务',
+                    button.dataset.errorMessage || '未知错误'
+                );
+            });
+        });
+        updateRelayRoutePreview();
+
+        window.setInterval(async function() {
+            if (document.hidden || document.querySelector('.modal.show')) return;
+            try {
+                const response = await fetch('{{ url_for("transfer_task_state") }}', {
+                    cache: 'no-store',
+                    headers: { 'Accept': 'application/json' }
+                });
+                if (!response.ok) return;
+                const payload = await response.json();
+                if (!payload.success) return;
+                let needsReload = false;
+                (payload.jobs || []).forEach(function(job) {
+                    const row = document.querySelector(`[data-transfer-task-id="${job.id}"]`);
+                    if (!row) {
+                        needsReload = true;
+                        return;
+                    }
+                    if (row.dataset.status !== job.status) {
+                        needsReload = true;
+                        return;
+                    }
+                    const rawProgress = Number(job.progress_percent || 0);
+                    const progress = Math.max(0, Math.min(100, rawProgress));
+                    const bar = row.querySelector('[data-transfer-progress-bar]');
+                    const value = row.querySelector('[data-transfer-progress-value]');
+                    const message = row.querySelector('[data-transfer-progress-message]');
+                    if (bar && rawProgress) bar.style.width = progress + '%';
+                    if (value && rawProgress) value.textContent = Math.round(progress) + '%';
+                    if (message && job.progress_message) message.textContent = job.progress_message;
+                });
+                if (needsReload) window.location.reload();
+            } catch (error) {
+                // 网络短暂抖动时保留当前页面，下一轮继续更新。
+            }
+        }, 5000);
+    });
 
     // 删除任务确认框
     function confirmDelete(taskId, taskTitle) {
@@ -1209,4 +1526,3 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     });
 </script>
 {% endblock %} 
-

@@ -18,24 +18,19 @@
 <section class="page-intro transfer-intro">
     <div>
         <h1>搬运中心</h1>
-        <p>自动发现、去重和准备素材；完成版权确认与实质性再创作审核后才允许发布。</p>
+        <p>管理平台连接与自动发现规则；手动创建、下载进度和发布结果已统一移至任务中心。</p>
     </div>
     <div class="page-actions">
         <button class="btn btn-secondary-premium" data-bs-toggle="modal" data-bs-target="#connectionsModal">
             <i class="bi bi-link-45deg"></i>连接平台
         </button>
+        <a class="btn btn-secondary-premium" href="{{ url_for('tasks') }}">
+            <i class="bi bi-collection-play"></i>查看任务进度
+        </a>
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#ruleModal">
             <i class="bi bi-plus-lg"></i>新建自动规则
         </button>
     </div>
-</section>
-
-<section class="metric-rail transfer-metrics" aria-label="任务状态概览">
-    <div class="metric-cell"><span>全部任务</span><strong>{{ stats.total }}</strong></div>
-    <div class="metric-cell"><span>待下载</span><strong>{{ stats.discovered }}</strong></div>
-    <div class="metric-cell metric-warning"><span>待再创作审核</span><strong>{{ stats.review }}</strong></div>
-    <div class="metric-cell metric-primary"><span>可发布</span><strong>{{ stats.ready }}</strong></div>
-    <div class="metric-cell metric-success"><span>已完成</span><strong>{{ stats.completed }}</strong></div>
 </section>
 
 <section class="platform-band">
@@ -76,7 +71,7 @@
     </div>
 </section>
 
-<section class="transfer-work-grid">
+<section class="transfer-work-grid transfer-work-grid-single">
 <div class="workspace-panel rule-card">
     <div class="workspace-panel-head">
         <div>
@@ -154,129 +149,6 @@
     </div>
 </div>
 
-<aside class="transfer-compose-panel">
-    <div class="compose-kicker">快速创建</div>
-    <h2>搬运一条视频</h2>
-    <p>粘贴 B站或抖音视频链接，系统会完成素材准备与再创作审核。</p>
-    <form method="post" action="{{ url_for('transfer_center_add_job') }}">
-        <input class="form-control" name="source_url" placeholder="粘贴B站或抖音视频链接" required>
-        <div class="compose-targets">
-            <label><input class="form-check-input" type="checkbox" name="target_x" checked><span>X</span></label>
-            <label><input class="form-check-input" type="checkbox" name="target_youtube" checked><span>YouTube</span></label>
-        </div>
-        <button class="btn btn-primary w-100">开始搬运</button>
-    </form>
-</aside>
-</section>
-
-<section class="workspace-panel job-card">
-    <div class="workspace-panel-head">
-        <div>
-            <h2>搬运任务</h2>
-            <p>自动发现和手动粘贴的视频都会进入这里。</p>
-        </div>
-    </div>
-    <div class="workspace-panel-body">
-        {% if jobs %}
-        <div class="table-responsive">
-            <table class="table align-middle mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th>视频</th>
-                        <th>来源</th>
-                        <th>状态</th>
-                        <th>发布结果</th>
-                        <th class="text-end">操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                {% for job in jobs %}
-                    <tr>
-                        <td style="max-width: 420px;">
-                            <a href="{{ job.source_url }}" target="_blank" rel="noopener" class="fw-semibold text-decoration-none">
-                                {{ job.title or '等待获取视频信息' }}
-                            </a>
-                            {% if job.source_uploader %}<div class="small text-muted">{{ job.source_uploader }}</div>{% endif %}
-                            {% if job.error_message %}<div class="small text-danger mt-1">{{ job.error_message }}</div>{% endif %}
-                        </td>
-                        <td>{{ 'B站' if job.source_platform == 'bilibili' else '抖音' }}</td>
-                        <td><span class="status-{{ job.status }} fw-semibold">{{ {
-                            'discovered':'已发现',
-                            'downloading':'下载中',
-                            'review':'待版权/再创作审核',
-                            'ready':'待发布',
-                            'publishing':'发布中',
-                            'completed':'已完成',
-                            'failed':'失败',
-                            'skipped':'已跳过'
-                        }.get(job.status, job.status) }}</span>
-                            {% if job.next_retry_at %}
-                                <div class="small text-warning">计划自动重试</div>
-                            {% endif %}
-                            {% if job.recreation_status == 'approved' %}
-                                <div class="small text-success">再创作已批准</div>
-                            {% elif job.local_video_path %}
-                                <div class="small text-warning">尚未批准成片</div>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if job.x_post_id %}<a href="https://x.com/i/status/{{ job.x_post_id }}" target="_blank" rel="noopener" class="badge bg-dark text-decoration-none">X</a>{% endif %}
-                            {% if job.youtube_video_id %}<a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank" rel="noopener" class="badge bg-danger text-decoration-none">YouTube</a>{% endif %}
-                            {% if not job.x_post_id and '"x"' in job.target_platforms %}
-                                <span class="badge bg-light text-dark border">X {{ {
-                                    'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待授权',
-                                    'publishing':'发布中','failed':'失败','blocked':'媒体未就绪'
-                                }.get(job.x_publish_status, job.x_publish_status) }}</span>
-                            {% endif %}
-                            {% if not job.youtube_video_id and '"youtube"' in job.target_platforms %}
-                                <span class="badge bg-light text-dark border">YouTube {{ {
-                                    'pending':'待发布','waiting_auth':'待授权','publishing':'发布中',
-                                    'failed':'失败','blocked':'媒体未就绪'
-                                }.get(job.youtube_publish_status, job.youtube_publish_status) }}</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-end text-nowrap">
-                            {% if job.status in ('discovered', 'failed') %}
-                            <form method="post" action="{{ url_for('transfer_center_prepare_job', job_id=job.id) }}" class="d-inline">
-                                <button class="btn btn-sm btn-outline-primary">下载/重试</button>
-                            </form>
-                            {% endif %}
-                            {% if job.local_video_path %}
-                            <a class="btn btn-sm btn-outline-warning" href="{{ url_for('transfer_center_review_job', job_id=job.id) }}">
-                                再创作审核
-                            </a>
-                            {% endif %}
-                            {% if job.status == 'ready' %}
-                            <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
-                                <button class="btn btn-sm btn-success">发布</button>
-                            </form>
-                            {% endif %}
-                            {% if job.x_publish_status == 'manual_ready' %}
-                            <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_x_video', job_id=job.id) }}">
-                                下载X视频
-                            </a>
-                            <button
-                                class="btn btn-sm btn-outline-secondary js-copy-x-text"
-                                type="button"
-                                data-copy-text="{{ (job.x_text or job.title or '新视频')|e }}"
-                            >复制X文案</button>
-                            <a class="btn btn-sm btn-dark" href="https://x.com/compose/post" target="_blank" rel="noopener">
-                                打开X发布
-                            </a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="premium-empty premium-empty-jobs">
-            <span class="empty-frame" aria-hidden="true"></span>
-            <div><strong>暂无搬运任务</strong><span>新任务将按时间顺序显示</span></div>
-        </div>
-        {% endif %}
-    </div>
 </section>
 </div>
 

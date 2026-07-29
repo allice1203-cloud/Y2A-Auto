@@ -85,6 +85,13 @@ def _safe_error(value: Any, limit: int = 900) -> str:
     return text.strip()[:limit]
 
 
+def _normalize_source_url(value: str) -> str:
+    url = str(value or "").strip()
+    if url and not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = f"https://{url.lstrip('/')}"
+    return url
+
+
 def _detect_platform(url: str) -> str:
     lowered = str(url or "").lower()
     if "bilibili.com" in lowered or "b23.tv" in lowered:
@@ -92,6 +99,52 @@ def _detect_platform(url: str) -> str:
     if "douyin.com" in lowered:
         return "douyin"
     return ""
+
+
+def _source_direct_env(platform: str) -> dict[str, str]:
+    """Keep Chinese source/CDN traffic off the YouTube proxy bridge."""
+    env = os.environ.copy()
+    if platform not in PLATFORMS:
+        return env
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        env.pop(key, None)
+    direct_hosts = (
+        "localhost",
+        "127.0.0.1",
+        ".bilibili.com",
+        ".bilivideo.com",
+        ".b23.tv",
+        ".douyin.com",
+        ".bytedance.com",
+        ".amemv.com",
+        ".douyinvod.com",
+    )
+    existing = str(env.get("NO_PROXY") or env.get("no_proxy") or "")
+    merged = ",".join(dict.fromkeys([*filter(None, existing.split(",")), *direct_hosts]))
+    env["NO_PROXY"] = merged
+    env["no_proxy"] = merged
+    return env
+
+
+def _friendly_download_error(value: Any) -> str:
+    message = _safe_error(value)
+    lowered = message.lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        if "bilivideo" in lowered:
+            return "B站视频分片网络超时，已切换国内直连；请稍后重试"
+        return "视频下载网络超时，请稍后重试"
+    if "unsupported url" in lowered:
+        return "视频链接格式无法识别，请确认链接完整后重试"
+    if "cookies" in lowered and any(token in lowered for token in ("expired", "login", "sign in")):
+        return "来源平台登录已失效，请刷新登录后重试"
+    return message
 
 
 class TransferCenter:
@@ -265,6 +318,8 @@ class TransferCenter:
             "youtube_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "next_retry_at": "TEXT",
             "last_retry_stage": "TEXT DEFAULT ''",
+            "progress_percent": "REAL NOT NULL DEFAULT 0",
+            "progress_message": "TEXT DEFAULT ''",
         }
         for table_name, additions in (
             ("transfer_rules", rule_columns),
@@ -431,6 +486,7 @@ class TransferCenter:
             text=True,
             timeout=120,
             check=False,
+            env=_source_direct_env(platform),
         )
         if completed.returncode != 0:
             raise RuntimeError(_safe_error(completed.stderr or completed.stdout or "yt-dlp发现失败"))
@@ -441,6 +497,8 @@ class TransferCenter:
 
     def _requests_session(self, platform: str) -> requests.Session:
         session = requests.Session()
+        if platform in PLATFORMS:
+            session.trust_env = False
         session.headers.update(
             {
                 "User-Agent": (
@@ -707,8 +765,10 @@ class TransferCenter:
         return {
             "total": sum(counts.values()),
             "discovered": counts.get("discovered", 0),
+            "downloading": counts.get("downloading", 0),
             "review": counts.get("review", 0),
             "ready": counts.get("ready", 0),
+            "publishing": counts.get("publishing", 0),
             "failed": counts.get("failed", 0),
             "completed": counts.get("completed", 0),
         }
@@ -719,6 +779,7 @@ class TransferCenter:
         return dict(row) if row else None
 
     def add_manual_job(self, source_url: str, targets: list[str]) -> str:
+        source_url = _normalize_source_url(source_url)
         platform = _detect_platform(source_url)
         if platform not in PLATFORMS:
             raise ValueError("当前只支持B站和国内抖音链接")
@@ -730,10 +791,10 @@ class TransferCenter:
             "platform": platform,
             "target_platforms": json.dumps(valid_targets, ensure_ascii=False),
         }
-        source_id = hashlib.sha256(source_url.strip().encode()).hexdigest()[:24]
+        source_id = hashlib.sha256(source_url.encode()).hexdigest()[:24]
         job_id, created = self._insert_discovered_job(
             rule,
-            {"id": source_id, "url": source_url.strip(), "title": ""},
+            {"id": source_id, "url": source_url, "title": ""},
         )
         if not created:
             raise ValueError("这个视频已经在搬运任务中")
@@ -775,6 +836,8 @@ class TransferCenter:
             "x_post_id",
             "youtube_video_id",
             "error_message",
+            "progress_percent",
+            "progress_message",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
@@ -855,6 +918,11 @@ class TransferCenter:
                 if retry_at
                 else f"{safe_message}；自动重试已用完，请人工处理"
             ),
+            progress_message=(
+                "下载失败，等待自动重试"
+                if stage == "prepare" and retry_at
+                else "处理失败，需要人工检查"
+            ),
         )
         if not retry_at:
             self._emit_failure_notification(job_id, safe_message)
@@ -914,7 +982,8 @@ class TransferCenter:
                 UPDATE transfer_jobs
                 SET status=?, prepare_attempts=prepare_attempts+1,
                     next_retry_at=NULL, last_retry_stage='prepare',
-                    error_message='', updated_at=?
+                    error_message='', progress_percent=3,
+                    progress_message='正在解析视频信息', updated_at=?
                 WHERE id=?
                 """,
                 (JOB_STATUSES["DOWNLOADING"], _utc_now(), job_id),
@@ -927,6 +996,19 @@ class TransferCenter:
         cmd = [
             "yt-dlp",
             "--no-playlist",
+            "--newline",
+            "--no-colors",
+            "--force-ipv4",
+            "--socket-timeout",
+            "60",
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
+            "--retry-sleep",
+            "exp=1:20",
+            "--progress-template",
+            "download:%(progress._percent_str)s",
             "--write-info-json",
             "--write-thumbnail",
             "--convert-thumbnails",
@@ -946,9 +1028,48 @@ class TransferCenter:
         if cookie_path:
             cmd.extend(["--cookies", cookie_path])
         cmd.append(job["source_url"])
-        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, check=False)
-        if completed.returncode != 0:
-            raise RuntimeError(_safe_error(completed.stderr or completed.stdout or "下载失败"))
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=_source_direct_env(job["source_platform"]),
+        )
+        output_lines: list[str] = []
+        last_progress = 3
+        started_at = time.monotonic()
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                output_lines.append(line)
+                output_lines = output_lines[-80:]
+                match = re.search(r"download:\s*([0-9]+(?:\.[0-9]+)?)%", line)
+                if match:
+                    percent = max(3, min(88, int(float(match.group(1)) * 0.85) + 3))
+                    if percent >= last_progress + 2:
+                        last_progress = percent
+                        self._update_job(
+                            job_id,
+                            progress_percent=percent,
+                            progress_message=f"正在下载视频素材 {match.group(1)}%",
+                        )
+                if time.monotonic() - started_at > 7200:
+                    process.terminate()
+                    raise RuntimeError("视频下载超过两小时，已停止并等待重试")
+            return_code = process.wait(timeout=30)
+        except Exception:
+            if process.poll() is None:
+                process.terminate()
+            raise
+        if return_code != 0:
+            raw_error = "".join(output_lines) or "下载失败"
+            logger.warning("搬运任务下载失败 %s: %s", job_id, _safe_error(raw_error, limit=2400))
+            raise RuntimeError(_friendly_download_error(raw_error))
+        self._update_job(
+            job_id,
+            progress_percent=90,
+            progress_message="下载完成，正在进行媒体体检",
+        )
         videos = sorted(
             path
             for path in output_dir.glob("video.*")
@@ -989,6 +1110,8 @@ class TransferCenter:
         self._update_job(
             job_id,
             status=JOB_STATUSES["REVIEW"],
+            progress_percent=100,
+            progress_message="素材已就绪，等待再创作审核",
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),

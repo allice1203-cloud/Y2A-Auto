@@ -1697,7 +1697,7 @@ def index():
 @app.route('/tasks')
 @login_required
 def tasks():
-    """任务列表页面"""
+    """统一任务中心：搬运任务优先，兼容展示旧版 YouTube 同步任务。"""
     logger.info("访问任务列表页面")
     
     # 获取分页参数
@@ -1707,11 +1707,36 @@ def tasks():
     # 获取分页数据
     pagination_data = get_tasks_paginated(page=page, per_page=per_page)
     config = load_config()
+    center = _transfer_center()
     
     return render_template('tasks.html', 
                          tasks=pagination_data['tasks'],
                          pagination=pagination_data,
-                         config=config)
+                         config=config,
+                         transfer_jobs=center.list_jobs(limit=100),
+                         transfer_stats=center.get_dashboard_stats())
+
+
+@app.route('/tasks/transfer-state')
+@login_required
+def transfer_task_state():
+    """轻量返回搬运任务进度；阶段切换时前端再刷新完整列表。"""
+    center = _transfer_center()
+    jobs = center.list_jobs(limit=100)
+    return jsonify({
+        'success': True,
+        'stats': center.get_dashboard_stats(),
+        'jobs': [
+            {
+                'id': job.get('id'),
+                'status': job.get('status'),
+                'progress_percent': job.get('progress_percent') or 0,
+                'progress_message': job.get('progress_message') or '',
+                'updated_at': job.get('updated_at') or '',
+            }
+            for job in jobs
+        ],
+    })
 
 
 def _render_task_fragments(task: dict, config: dict | None = None) -> dict:
@@ -2109,14 +2134,34 @@ def add_task_via_extension():
 @app.route('/tasks/add', methods=['POST'])
 @login_required
 def add_task_route():
-    """添加新任务，支持播放列表批量添加"""
-    youtube_url = request.form.get('youtube_url')
-    upload_target = request.form.get('upload_target')
+    """统一创建任务：B站/抖音进入搬运链路，YouTube 保留旧版同步链路。"""
+    source_url = str(
+        request.form.get('source_url')
+        or request.form.get('youtube_url')
+        or ''
+    ).strip()
+    upload_target = request.form.get('youtube_upload_target') or request.form.get('upload_target')
     
-    if not youtube_url:
-        flash('YouTube URL不能为空', 'danger')
+    if not source_url:
+        flash('视频链接不能为空', 'danger')
         return redirect(url_for('tasks'))
 
+    lowered_url = source_url.lower()
+    if any(host in lowered_url for host in ('bilibili.com', 'b23.tv', 'douyin.com')):
+        try:
+            targets = _transfer_target_list(request.form)
+            job_id = _transfer_center().add_manual_job(source_url, targets)
+            _transfer_center().prepare_job_async(job_id, publish_after=False)
+            flash('搬运任务已创建；素材准备完成后会进入版权与再创作审核。', 'success')
+        except Exception as exc:
+            flash(f'创建搬运任务失败：{exc}', 'danger')
+        return redirect(url_for('tasks'))
+
+    if not any(host in lowered_url for host in ('youtube.com', 'youtu.be')):
+        flash('暂不支持这个链接；请输入 B站、抖音或 YouTube 视频链接。', 'danger')
+        return redirect(url_for('tasks'))
+
+    youtube_url = source_url
     config = load_config()
     if not upload_target:
         upload_target = config.get('UPLOAD_TARGET_DEFAULT', 'acfun')
@@ -3445,8 +3490,6 @@ def transfer_center_index():
     return render_template(
         'transfer_center.html',
         rules=center.list_rules(),
-        jobs=center.list_jobs(limit=100),
-        stats=center.get_dashboard_stats(),
         transfer_config={
             'x_mode': 'manual_free',
             'youtube_connected': os.path.isfile(
@@ -3613,7 +3656,7 @@ def transfer_center_add_job():
         flash('任务已创建；下载完成后会进入版权与再创作审核，不会直接发布。', 'success')
     except Exception as e:
         flash(f'创建搬运任务失败：{e}', 'danger')
-    return redirect(url_for('transfer_center_index'))
+    return redirect(url_for('tasks'))
 
 
 @app.route('/transfer-center/jobs/<job_id>/prepare', methods=['POST'])
@@ -3624,7 +3667,7 @@ def transfer_center_prepare_job(job_id):
     else:
         started = _transfer_center().prepare_job_async(job_id)
         flash('已重新开始下载和准备。' if started else '该任务正在处理中，请稍候。', 'success')
-    return redirect(url_for('transfer_center_index'))
+    return redirect(url_for('tasks'))
 
 
 @app.route('/transfer-center/jobs/<job_id>/publish', methods=['POST'])
@@ -3635,7 +3678,7 @@ def transfer_center_publish_job(job_id):
     else:
         started = _transfer_center().publish_job_async(job_id)
         flash('发布任务已提交。' if started else '该任务正在处理中，请稍候。', 'success')
-    return redirect(url_for('transfer_center_index'))
+    return redirect(url_for('tasks'))
 
 
 @app.route('/transfer-center/jobs/<job_id>/review')
