@@ -1792,6 +1792,27 @@ class TransferCenter:
         thread.start()
         return True
 
+    def mark_youtube_reconnected(self) -> int:
+        """Restore blocked jobs after a real YouTube channel was verified."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE transfer_jobs
+                SET youtube_publish_status='pending',
+                    next_retry_at=NULL,
+                    last_retry_stage='',
+                    error_message='',
+                    progress_percent=90,
+                    progress_message='YouTube 频道已连接，等待发布',
+                    updated_at=?
+                WHERE youtube_publish_status='waiting_auth'
+                  AND youtube_video_id=''
+                  AND instr(target_platforms, '"youtube"') > 0
+                """,
+                (_utc_now(),),
+            )
+        return int(cursor.rowcount or 0)
+
     def _publish_job_guarded(self, job_id: str) -> None:
         try:
             self.publish_job(job_id)

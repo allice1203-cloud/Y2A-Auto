@@ -3999,8 +3999,12 @@ def transfer_center_youtube_callback():
         flow.fetch_token(code=authorization_code)
         channel = verify_youtube_credentials(flow.credentials)
         save_youtube_connection(flow.credentials, channel)
+        restored_jobs = _transfer_center().mark_youtube_reconnected()
         flash(
-            f'YouTube 频道“{channel["channel_title"]}”连接成功。',
+            (
+                f'YouTube 频道“{channel["channel_title"]}”连接成功，'
+                f'已恢复 {restored_jobs} 条待发布任务。'
+            ),
             'success',
         )
     except ValueError as e:

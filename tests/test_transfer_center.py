@@ -208,6 +208,32 @@ def test_youtube_signup_error_waits_for_reconnect_without_retry(
     assert not channel_path.exists()
 
 
+def test_verified_channel_restores_waiting_jobs_to_publishable(center):
+    job_id = center.add_manual_job(
+        "https://www.douyin.com/video/1234567890123456123",
+        ["youtube"],
+    )
+    center._update_job(
+        job_id,
+        status="ready",
+        youtube_publish_status="waiting_auth",
+        next_retry_at="2026-07-30T00:00:00+00:00",
+        last_retry_stage="publish",
+        error_message="YouTube 授权失效",
+    )
+
+    restored = center.mark_youtube_reconnected()
+    result = center.get_job(job_id)
+
+    assert restored == 1
+    assert result["status"] == "ready"
+    assert result["youtube_publish_status"] == "pending"
+    assert result["next_retry_at"] is None
+    assert result["last_retry_stage"] == ""
+    assert result["error_message"] == ""
+    assert result["progress_message"] == "YouTube 频道已连接，等待发布"
+
+
 def test_keyword_filters_are_inclusive_and_exclusive(center):
     rule = {
         "include_keywords": "AI, 人工智能",
