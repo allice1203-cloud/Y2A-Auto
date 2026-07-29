@@ -23,8 +23,18 @@ RIGHTS_BASES = {
 RECREATION_MODES = {
     "commentary": "原创观点解说",
     "localized": "本地化深度改编",
+    "drama_recap": "短剧解说 / 剧情复盘",
     "authorized_repost": "授权内容分发",
 }
+
+WATERMARK_STATES = {
+    "none": "未发现第三方作者或平台水印",
+    "own_brand": "仅有本人或本团队品牌标识",
+    "third_party_preserved": "存在第三方标识，将保留并准确署名",
+    "authorized_cleanup": "书面授权明确允许清理品牌标识",
+}
+
+WATERMARK_REVIEWED_VALUES = set(WATERMARK_STATES)
 
 
 def _clean_text(value: Any, limit: int) -> str:
@@ -49,6 +59,8 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
     source_url = _clean_text(job.get("source_url"), 1000)
     if mode == "localized":
         angle = f"围绕《{title}》重组叙事顺序，补充中文背景、关键概念解释与本地案例。"
+    elif mode == "drama_recap":
+        angle = f"围绕《{title}》提炼剧情冲突，以原创旁白复盘人物动机、叙事逻辑和关键转折。"
     elif mode == "authorized_repost":
         angle = f"在明确授权范围内分发《{title}》，保留准确署名并补充本频道的独立导读。"
     else:
@@ -57,6 +69,11 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
         "重新设计开场问题，加入至少三段原创口播观点、事实核验或案例分析，"
         "调整片段顺序并在结尾给出独立结论；不得只增加字幕、边框、片头或水印。"
     )
+    if mode == "drama_recap":
+        contribution = (
+            "以原创旁白承担主要叙事，只选取解释剧情所必需的短片段，重写结构、"
+            "补充人物动机和独立评价；不得整集复刻、机械拆条或仅去除水印。"
+        )
     return {
         "original_angle": angle,
         "original_contribution": contribution,
@@ -85,7 +102,12 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
         "risk_notes": [
             "AI草案不等于已完成再创作，必须人工确认实际成片具有实质性原创贡献",
             "拥有转载许可也不自动满足YouTube重复使用内容的商业化要求",
+            "第三方作者名、平台名或版权标识不得为掩盖来源而移除",
         ],
+        "watermark_policy": (
+            "第三方作者、平台或版权标识默认保留；仅本人原创或书面授权明确允许时，"
+            "才可清理并重新上传成片体检。"
+        ),
         "generated_by": "safe_fallback",
     }
 
@@ -108,6 +130,10 @@ def _normalize_plan(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
         ),
         "risk_level": str(source.get("risk_level") or fallback["risk_level"]).lower(),
         "risk_notes": _clean_list(source.get("risk_notes")) or fallback["risk_notes"],
+        "watermark_policy": _clean_multiline(
+            source.get("watermark_policy") or fallback["watermark_policy"],
+            1200,
+        ),
         "generated_by": str(source.get("generated_by") or fallback["generated_by"]),
     }
     if plan["risk_level"] not in {"low", "medium", "high"}:
@@ -155,6 +181,7 @@ def generate_recreation_plan(
             "x_text、youtube_title、youtube_description、risk_level、risk_notes。"
             "目标是形成具有实质性原创贡献的制作方案，而不是换标题、加字幕、加边框或去水印。"
             "不得声称获得版权、不得替用户判断合理使用成立、不得建议规避平台审核。"
+            "第三方作者名、平台名和版权标识默认保留，不得建议通过去除标识掩盖来源。"
             "必须要求加入原创口播/出镜评论、事实核验、案例分析或新的叙事结构。"
             "当授权依据不明确时 risk_level 必须为 high。"
         )
@@ -190,12 +217,22 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     original_contribution = _clean_multiline(payload.get("original_contribution"), 3000)
     if len(original_contribution) < 30:
         raise ValueError("请具体说明成片将增加哪些原创观点、口播、核验或叙事改造")
+    watermark_status = str(payload.get("watermark_status") or "").strip().lower()
+    if watermark_status not in WATERMARK_REVIEWED_VALUES:
+        raise ValueError("必须核对成片中的作者名、平台名和版权水印")
+    watermark_note = _clean_multiline(payload.get("watermark_note"), 1500)
+    if watermark_status != "none" and len(watermark_note) < 8:
+        raise ValueError("请说明水印归属、保留方式或允许清理的书面授权范围")
+    if watermark_status == "authorized_cleanup" and rights_basis not in {"owned", "licensed"}:
+        raise ValueError("只有本人原创或书面授权素材可以确认品牌标识清理")
     return {
         "rights_basis": rights_basis,
         "rights_note": rights_note,
         "recreation_mode": recreation_mode,
         "original_angle": _clean_multiline(payload.get("original_angle"), 1200),
         "original_contribution": original_contribution,
+        "watermark_status": watermark_status,
+        "watermark_note": watermark_note,
         "x_text": _clean_multiline(payload.get("x_text"), 260),
         "youtube_title": _clean_text(payload.get("youtube_title"), 100),
         "youtube_description": _clean_multiline(payload.get("youtube_description"), 5000),

@@ -1,4 +1,4 @@
-from modules.media_preflight import assess_x_compatibility
+from modules.media_preflight import assess_x_compatibility, build_distribution_plan
 
 
 def _base_info():
@@ -49,3 +49,23 @@ def test_x_nonstandard_media_is_marked_for_transcode():
 
     assert result["blockers"] == []
     assert len(result["transcode_reasons"]) == 4
+
+
+def test_distribution_plan_routes_short_vertical_video_to_both_platforms():
+    plan = build_distribution_plan(_base_info(), ["x", "youtube"])
+
+    assert plan["same_cut_max_seconds"] == 140
+    assert plan["x"]["route"] == "single_post"
+    assert plan["youtube"]["route"] == "shorts"
+
+
+def test_distribution_plan_requires_editorial_series_for_long_drama():
+    info = _base_info()
+    info["duration"] = 1200
+
+    plan = build_distribution_plan(info, ["x", "youtube"])
+
+    assert plan["x"]["route"] == "editorial_series"
+    assert plan["x"]["estimated_editorial_parts"] == 9
+    assert plan["youtube"]["route"] == "long_form"
+    assert plan["youtube"]["requires_long_upload_access"] is True

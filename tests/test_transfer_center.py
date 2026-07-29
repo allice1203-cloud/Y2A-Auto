@@ -72,6 +72,7 @@ def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
         ),
         rights_basis="owned",
         rights_note="本人原创并拥有全部商业发布权",
+        watermark_status="none",
         recreation_status="approved",
         original_contribution="已完成原创口播、事实核验、案例分析和重新编排后的独立结论。",
     )
@@ -192,6 +193,8 @@ def test_review_approval_requires_rights_note_and_ready_variants(center, tmp_pat
             "recreation_mode": "commentary",
             "original_angle": "验证原观点在国内场景是否成立",
             "original_contribution": "成片加入三段原创口播、事实核验、国内案例分析和重新编排后的独立结论。",
+            "watermark_status": "none",
+            "watermark_note": "",
             "x_text": "经过验证，我对这个观点有三个不同判断。",
             "youtube_title": "深度验证",
             "youtube_description": "原创分析",

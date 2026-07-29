@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 from fractions import Fraction
@@ -15,6 +16,8 @@ from typing import Any
 
 X_MAX_BYTES = 512 * 1024 * 1024
 X_MAX_DURATION_SECONDS = 140.0
+YOUTUBE_SHORT_MAX_DURATION_SECONDS = 180.0
+YOUTUBE_DEFAULT_MAX_DURATION_SECONDS = 900.0
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -134,6 +137,69 @@ def assess_x_compatibility(info: dict[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
         "transcode_reasons": transcode_reasons,
     }
+
+
+def build_distribution_plan(
+    info: dict[str, Any],
+    targets: list[str],
+) -> dict[str, Any]:
+    """Describe safe editorial routes without mechanically splitting a source."""
+
+    duration = _safe_float(info.get("duration"))
+    width = _safe_int(info.get("width"))
+    height = _safe_int(info.get("height"))
+    selected_targets = {str(item or "").strip().lower() for item in targets}
+    is_vertical_or_square = bool(width and height and height >= width)
+    plan: dict[str, Any] = {
+        "duration_seconds": round(duration, 3),
+        "orientation": "vertical_or_square" if is_vertical_or_square else "landscape",
+        "same_cut_max_seconds": (
+            int(X_MAX_DURATION_SECONDS)
+            if {"x", "youtube"}.issubset(selected_targets)
+            else None
+        ),
+        "editorial_notice": (
+            "系列拆分必须按完整观点或剧情节点重新剪辑并加入原创串联，"
+            "不得把第三方长视频机械切段后连续发布。"
+        ),
+    }
+
+    if "x" in selected_targets:
+        needs_series = duration > X_MAX_DURATION_SECONDS
+        plan["x"] = {
+            "route": "editorial_series" if needs_series else "single_post",
+            "recommended_max_seconds": int(X_MAX_DURATION_SECONDS),
+            "estimated_editorial_parts": (
+                max(2, int(math.ceil(duration / X_MAX_DURATION_SECONDS)))
+                if needs_series and duration > 0
+                else 1
+            ),
+            "requires_editorial_cut": needs_series,
+            "label": "需要原创系列剪辑" if needs_series else "可作为单条视频",
+        }
+
+    if "youtube" in selected_targets:
+        is_short = (
+            is_vertical_or_square
+            and duration > 0
+            and duration <= YOUTUBE_SHORT_MAX_DURATION_SECONDS
+        )
+        needs_long_upload_access = duration > YOUTUBE_DEFAULT_MAX_DURATION_SECONDS
+        plan["youtube"] = {
+            "route": "shorts" if is_short else "long_form",
+            "recommended_max_seconds": (
+                int(YOUTUBE_SHORT_MAX_DURATION_SECONDS) if is_short else None
+            ),
+            "requires_long_upload_access": needs_long_upload_access,
+            "label": "YouTube Shorts" if is_short else "YouTube 长视频",
+            "note": (
+                "超过15分钟，发布频道需已启用长视频上传资格。"
+                if needs_long_upload_access
+                else "当前时长不要求超过15分钟的长视频资格。"
+            ),
+        }
+
+    return plan
 
 
 def _transcode_x(

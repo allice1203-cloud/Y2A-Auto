@@ -35,7 +35,7 @@ from .content_recreation import (
     serialize_plan,
     validate_review_payload,
 )
-from .media_preflight import prepare_platform_variants
+from .media_preflight import build_distribution_plan, prepare_platform_variants
 from .utils import get_app_subdir
 
 
@@ -164,8 +164,11 @@ class TransferCenter:
                     local_metadata_path TEXT DEFAULT '',
                     media_probe_json TEXT DEFAULT '{}',
                     platform_variants_json TEXT DEFAULT '{}',
+                    distribution_plan_json TEXT DEFAULT '{}',
                     rights_basis TEXT DEFAULT 'unconfirmed',
                     rights_note TEXT DEFAULT '',
+                    watermark_status TEXT DEFAULT 'unreviewed',
+                    watermark_note TEXT DEFAULT '',
                     recreation_mode TEXT DEFAULT 'commentary',
                     recreation_status TEXT DEFAULT 'pending',
                     recreation_plan_json TEXT DEFAULT '{}',
@@ -241,8 +244,11 @@ class TransferCenter:
         job_columns = {
             "media_probe_json": "TEXT DEFAULT '{}'",
             "platform_variants_json": "TEXT DEFAULT '{}'",
+            "distribution_plan_json": "TEXT DEFAULT '{}'",
             "rights_basis": "TEXT DEFAULT 'unconfirmed'",
             "rights_note": "TEXT DEFAULT ''",
+            "watermark_status": "TEXT DEFAULT 'unreviewed'",
+            "watermark_note": "TEXT DEFAULT ''",
             "recreation_mode": "TEXT DEFAULT 'commentary'",
             "recreation_status": "TEXT DEFAULT 'pending'",
             "recreation_plan_json": "TEXT DEFAULT '{}'",
@@ -311,7 +317,7 @@ class TransferCenter:
         ):
             raise ValueError("B站账号监控需要填写个人空间链接")
         recreation_mode = str(payload.get("recreation_mode") or "commentary").strip().lower()
-        if recreation_mode not in {"commentary", "localized", "authorized_repost"}:
+        if recreation_mode not in {"commentary", "localized", "drama_recap", "authorized_repost"}:
             recreation_mode = "commentary"
 
         now = _utc_now()
@@ -745,8 +751,11 @@ class TransferCenter:
             "local_metadata_path",
             "media_probe_json",
             "platform_variants_json",
+            "distribution_plan_json",
             "rights_basis",
             "rights_note",
+            "watermark_status",
+            "watermark_note",
             "recreation_mode",
             "recreation_status",
             "recreation_plan_json",
@@ -970,6 +979,7 @@ class TransferCenter:
             str(output_dir),
             targets,
         )
+        distribution_plan = build_distribution_plan(media_info, targets)
         recreation_job = {**job, **prepared_fields}
         plan = generate_recreation_plan(
             recreation_job,
@@ -982,6 +992,7 @@ class TransferCenter:
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
+            distribution_plan_json=json.dumps(distribution_plan, ensure_ascii=False),
             recreation_status="draft",
             recreation_plan_json=serialize_plan(plan),
             original_angle=str(plan.get("original_angle") or ""),
@@ -1035,13 +1046,17 @@ class TransferCenter:
             str(Path(video_path).parent),
             targets,
         )
+        distribution_plan = build_distribution_plan(media_info, targets)
         self._update_job(
             job_id,
             status=JOB_STATUSES["REVIEW"],
             local_video_path=video_path,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
+            distribution_plan_json=json.dumps(distribution_plan, ensure_ascii=False),
             recreation_status="draft",
+            watermark_status="unreviewed",
+            watermark_note="",
             reviewed_at=None,
             x_publish_status="pending" if "x" in targets else "skipped",
             youtube_publish_status="pending" if "youtube" in targets else "skipped",
@@ -1067,6 +1082,8 @@ class TransferCenter:
             {
                 "original_angle": normalized["original_angle"],
                 "original_contribution": normalized["original_contribution"],
+                "watermark_status": normalized["watermark_status"],
+                "watermark_note": normalized["watermark_note"],
                 "x_text": normalized["x_text"],
                 "youtube_title": normalized["youtube_title"],
                 "youtube_description": normalized["youtube_description"],
@@ -1099,6 +1116,8 @@ class TransferCenter:
             recreation_plan_json=serialize_plan(plan),
             original_angle=normalized["original_angle"],
             original_contribution=normalized["original_contribution"],
+            watermark_status=normalized["watermark_status"],
+            watermark_note=normalized["watermark_note"],
             x_text=normalized["x_text"],
             youtube_title=normalized["youtube_title"],
             youtube_description=normalized["youtube_description"],
@@ -1283,6 +1302,13 @@ class TransferCenter:
             raise ValueError("版权或授权依据尚未确认，禁止发布")
         if str(job.get("recreation_status") or "") != "approved":
             raise ValueError("再创作方案和实际成片尚未人工批准，禁止发布")
+        if str(job.get("watermark_status") or "") not in {
+            "none",
+            "own_brand",
+            "third_party_preserved",
+            "authorized_cleanup",
+        }:
+            raise ValueError("作者名、平台名和版权水印尚未核对，禁止发布")
         if not job.get("local_video_path") or not os.path.isfile(job["local_video_path"]):
             raise ValueError("视频尚未准备完成")
         targets = _json_list(job["target_platforms"])

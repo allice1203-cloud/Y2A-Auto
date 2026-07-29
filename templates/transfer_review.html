@@ -37,6 +37,12 @@
         padding: .65rem;
         background: #fafbfc;
     }
+    .route-card {
+        border: 1px solid #dce7ff;
+        border-radius: 12px;
+        padding: .8rem;
+        background: linear-gradient(145deg, #f7faff, #ffffff);
+    }
 </style>
 {% endblock %}
 
@@ -116,7 +122,32 @@
                 </div>
 
                 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                    <h3 class="h6 mb-0">2. 实质性再创作方案</h3>
+                    <h3 class="h6 mb-0">2. 水印与来源标识</h3>
+                </div>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">成片核对结果</label>
+                        <select class="form-select" name="watermark_status" required>
+                            <option value="">请选择核对结果</option>
+                            {% for value, label in watermark_states.items() %}
+                            <option value="{{ value }}" {% if job.watermark_status == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">归属或授权说明</label>
+                        <textarea class="form-control" name="watermark_note" rows="3" placeholder="第三方标识如何保留；或书面授权是否明确允许清理。">{{ job.watermark_note or '' }}</textarea>
+                    </div>
+                    <div class="col-12">
+                        <div class="alert alert-light border small mb-0">
+                            系统不会为了掩盖来源自动去除第三方作者名、平台名或版权标识。
+                            本人原创或书面授权明确允许的素材，可在外部完成品牌清理后上传成片，系统会撤销旧批准并重新体检。
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <h3 class="h6 mb-0">3. 实质性再创作方案</h3>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">新的原创角度</label>
@@ -128,7 +159,7 @@
                     <div class="form-text">请按实际已经完成的成片填写，不要只复制AI建议。</div>
                 </div>
 
-                <h3 class="h6 mb-3">3. 分平台文案</h3>
+                <h3 class="h6 mb-3">4. 分平台文案</h3>
                 <div class="mb-3">
                     <label class="form-label">X 发布文字</label>
                     <textarea class="form-control" name="x_text" rows="3" maxlength="260">{{ job.x_text or '' }}</textarea>
@@ -152,6 +183,40 @@
     </div>
 
     <div class="col-lg-4">
+        {% if distribution_plan %}
+        <div class="card review-card mb-4">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">发布路线</h2></div>
+            <div class="card-body">
+                {% if distribution_plan.x %}
+                <div class="route-card mb-2">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>X</strong>
+                        <span class="badge {{ 'bg-warning text-dark' if distribution_plan.x.requires_editorial_cut else 'bg-success' }}">
+                            {{ distribution_plan.x.label }}
+                        </span>
+                    </div>
+                    {% if distribution_plan.x.requires_editorial_cut %}
+                    <div class="small text-muted mt-2">
+                        预计需要 {{ distribution_plan.x.estimated_editorial_parts }} 个原创章节，每条不超过
+                        {{ distribution_plan.x.recommended_max_seconds }} 秒。
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if distribution_plan.youtube %}
+                <div class="route-card mb-2">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>YouTube</strong>
+                        <span class="badge bg-primary">{{ distribution_plan.youtube.label }}</span>
+                    </div>
+                    <div class="small text-muted mt-2">{{ distribution_plan.youtube.note }}</div>
+                </div>
+                {% endif %}
+                <div class="small text-muted mt-3">{{ distribution_plan.editorial_notice }}</div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="card review-card mb-4">
             <div class="card-header bg-white py-3"><h2 class="h6 mb-0">媒体体检</h2></div>
             <div class="card-body">
@@ -211,6 +276,7 @@
             <div class="card-header bg-white py-3"><h2 class="h6 mb-0">批准前必须满足</h2></div>
             <div class="card-body small">
                 <div class="safety-step">授权依据真实、可追溯，并覆盖目标平台和商业使用范围。</div>
+                <div class="safety-step">第三方作者、平台和版权标识没有为掩盖来源而被移除。</div>
                 <div class="safety-step">实际成片已经加入原创观点、口播/出镜、核验、案例或新叙事。</div>
                 <div class="safety-step">平台专用媒体版本体检通过。</div>
                 <div class="safety-step mb-0">标题、简介和素材署名与实际内容一致，不误导观众。</div>

@@ -34,6 +34,7 @@ from modules.transfer_center import get_transfer_center
 from modules.content_recreation import (
     RECREATION_MODES,
     RIGHTS_BASES,
+    WATERMARK_STATES,
     deserialize_plan,
 )
 from modules.source_login import create_login_authorization
@@ -3652,6 +3653,8 @@ def transfer_center_review_job(job_id):
         recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
+        distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
+        watermark_states=WATERMARK_STATES,
     )
 
 
@@ -3752,6 +3755,8 @@ def transfer_center_save_review(job_id):
                 'recreation_mode': request.form.get('recreation_mode'),
                 'original_angle': request.form.get('original_angle'),
                 'original_contribution': request.form.get('original_contribution'),
+                'watermark_status': request.form.get('watermark_status'),
+                'watermark_note': request.form.get('watermark_note'),
                 'x_text': request.form.get('x_text'),
                 'youtube_title': request.form.get('youtube_title'),
                 'youtube_description': request.form.get('youtube_description'),

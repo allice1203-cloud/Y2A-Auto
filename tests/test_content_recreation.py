@@ -43,3 +43,34 @@ def test_review_payload_enforces_real_contribution_detail():
                 "original_contribution": "加字幕",
             }
         )
+
+
+def test_review_payload_rejects_watermark_cleanup_without_owned_or_licensed_rights():
+    with pytest.raises(ValueError, match="本人原创或书面授权"):
+        validate_review_payload(
+            {
+                "rights_basis": "cc",
+                "rights_note": "许可协议允许再创作和商业发布",
+                "original_contribution": (
+                    "加入多段原创旁白、剧情结构分析、人物动机复盘、重新编排后的独立评价和结尾观点。"
+                ),
+                "watermark_status": "authorized_cleanup",
+                "watermark_note": "计划去除来源作者标识",
+            }
+        )
+
+
+def test_drama_recap_plan_rejects_mechanical_episode_reposting():
+    plan = generate_recreation_plan(
+        {
+            "title": "短剧第一集",
+            "source_uploader": "来源作者",
+            "source_url": "https://example.com/drama",
+            "rights_basis": "licensed",
+        },
+        config={},
+        mode="drama_recap",
+    )
+
+    assert "原创旁白" in plan["original_contribution"]
+    assert "机械拆条" in plan["original_contribution"]
