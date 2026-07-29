@@ -12,7 +12,7 @@ def test_fallback_plan_demands_substantive_original_contribution():
             "title": "AI工具实测",
             "source_uploader": "来源作者",
             "source_url": "https://example.com/source",
-            "rights_basis": "unconfirmed",
+            "recreation_completed": 0,
         },
         config={},
     )
@@ -23,13 +23,14 @@ def test_fallback_plan_demands_substantive_original_contribution():
     assert len(plan["commentary_outline"]) >= 3
 
 
-def test_review_payload_rejects_unconfirmed_rights():
-    with pytest.raises(ValueError, match="版权"):
+def test_review_payload_requires_source_attribution():
+    with pytest.raises(ValueError, match="来源标识"):
         validate_review_payload(
             {
-                "rights_basis": "unconfirmed",
-                "rights_note": "不确定",
+                "source_attribution": "",
                 "original_contribution": "加入原创口播、核验和案例分析形成新的叙事。",
+                "watermark_status": "none",
+                "recreation_confirmed": "on",
             }
         )
 
@@ -38,24 +39,24 @@ def test_review_payload_enforces_real_contribution_detail():
     with pytest.raises(ValueError, match="具体说明"):
         validate_review_payload(
             {
-                "rights_basis": "owned",
-                "rights_note": "本人原创并拥有全部权利",
+                "source_attribution": "原作者：https://example.com/source",
                 "original_contribution": "加字幕",
+                "watermark_status": "none",
+                "recreation_confirmed": "on",
             }
         )
 
 
-def test_review_payload_rejects_watermark_cleanup_without_owned_or_licensed_rights():
-    with pytest.raises(ValueError, match="本人原创或书面授权"):
+def test_review_payload_requires_recreated_media_confirmation():
+    with pytest.raises(ValueError, match="已完成加工"):
         validate_review_payload(
             {
-                "rights_basis": "cc",
-                "rights_note": "许可协议允许再创作和商业发布",
+                "source_attribution": "原作者：https://example.com/source",
                 "original_contribution": (
                     "加入多段原创旁白、剧情结构分析、人物动机复盘、重新编排后的独立评价和结尾观点。"
                 ),
-                "watermark_status": "authorized_cleanup",
-                "watermark_note": "计划去除来源作者标识",
+                "watermark_status": "platform_overlay_removed",
+                "watermark_note": "已清理平台浮层，片尾保留原作者署名",
             }
         )
 
@@ -66,7 +67,7 @@ def test_drama_recap_plan_rejects_mechanical_episode_reposting():
             "title": "短剧第一集",
             "source_uploader": "来源作者",
             "source_url": "https://example.com/drama",
-            "rights_basis": "licensed",
+            "recreation_completed": 1,
         },
         config={},
         mode="drama_recap",

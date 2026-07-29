@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -55,9 +55,6 @@ JOB_STATUSES = {
     "SKIPPED": "skipped",
 }
 RETRY_DELAYS_SECONDS = (60, 300, 1800)
-RIGHTS_CONFIRMED_VALUES = {"owned", "licensed", "cc", "public_domain"}
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -214,12 +211,15 @@ class TransferCenter:
                     target_platforms TEXT NOT NULL,
                     status TEXT NOT NULL,
                     local_video_path TEXT DEFAULT '',
+                    original_video_path TEXT DEFAULT '',
+                    recreated_media_path TEXT DEFAULT '',
                     local_metadata_path TEXT DEFAULT '',
                     media_probe_json TEXT DEFAULT '{}',
                     platform_variants_json TEXT DEFAULT '{}',
                     distribution_plan_json TEXT DEFAULT '{}',
                     rights_basis TEXT DEFAULT 'unconfirmed',
                     rights_note TEXT DEFAULT '',
+                    source_attribution TEXT DEFAULT '',
                     watermark_status TEXT DEFAULT 'unreviewed',
                     watermark_note TEXT DEFAULT '',
                     recreation_mode TEXT DEFAULT 'commentary',
@@ -231,6 +231,11 @@ class TransferCenter:
                     youtube_title TEXT DEFAULT '',
                     youtube_description TEXT DEFAULT '',
                     reviewed_at TEXT,
+                    recreation_completed INTEGER NOT NULL DEFAULT 0,
+                    mpt_project_id TEXT DEFAULT '',
+                    mpt_asset_id TEXT DEFAULT '',
+                    mpt_status TEXT DEFAULT '',
+                    mpt_message TEXT DEFAULT '',
                     prepare_attempts INTEGER NOT NULL DEFAULT 0,
                     x_publish_status TEXT DEFAULT 'pending',
                     youtube_publish_status TEXT DEFAULT 'pending',
@@ -311,10 +316,13 @@ class TransferCenter:
         }
         job_columns = {
             "media_probe_json": "TEXT DEFAULT '{}'",
+            "original_video_path": "TEXT DEFAULT ''",
+            "recreated_media_path": "TEXT DEFAULT ''",
             "platform_variants_json": "TEXT DEFAULT '{}'",
             "distribution_plan_json": "TEXT DEFAULT '{}'",
             "rights_basis": "TEXT DEFAULT 'unconfirmed'",
             "rights_note": "TEXT DEFAULT ''",
+            "source_attribution": "TEXT DEFAULT ''",
             "watermark_status": "TEXT DEFAULT 'unreviewed'",
             "watermark_note": "TEXT DEFAULT ''",
             "recreation_mode": "TEXT DEFAULT 'commentary'",
@@ -326,6 +334,11 @@ class TransferCenter:
             "youtube_title": "TEXT DEFAULT ''",
             "youtube_description": "TEXT DEFAULT ''",
             "reviewed_at": "TEXT",
+            "recreation_completed": "INTEGER NOT NULL DEFAULT 0",
+            "mpt_project_id": "TEXT DEFAULT ''",
+            "mpt_asset_id": "TEXT DEFAULT ''",
+            "mpt_status": "TEXT DEFAULT ''",
+            "mpt_message": "TEXT DEFAULT ''",
             "prepare_attempts": "INTEGER NOT NULL DEFAULT 0",
             "x_publish_status": "TEXT DEFAULT 'pending'",
             "youtube_publish_status": "TEXT DEFAULT 'pending'",
@@ -349,6 +362,25 @@ class TransferCenter:
                     conn.execute(
                         f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
                     )
+        conn.execute(
+            """
+            UPDATE transfer_jobs
+            SET original_video_path = local_video_path
+            WHERE original_video_path = '' AND local_video_path <> ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE transfer_jobs
+            SET source_attribution = trim(
+                CASE
+                    WHEN source_uploader <> '' THEN source_uploader || char(10)
+                    ELSE ''
+                END || source_url
+            )
+            WHERE source_attribution = ''
+            """
+        )
 
     def _config(self) -> dict:
         config = self._config_provider()
@@ -824,12 +856,15 @@ class TransferCenter:
             "thumbnail_url",
             "duration",
             "local_video_path",
+            "original_video_path",
+            "recreated_media_path",
             "local_metadata_path",
             "media_probe_json",
             "platform_variants_json",
             "distribution_plan_json",
             "rights_basis",
             "rights_note",
+            "source_attribution",
             "watermark_status",
             "watermark_note",
             "recreation_mode",
@@ -841,6 +876,11 @@ class TransferCenter:
             "youtube_title",
             "youtube_description",
             "reviewed_at",
+            "recreation_completed",
+            "mpt_project_id",
+            "mpt_asset_id",
+            "mpt_status",
+            "mpt_message",
             "prepare_attempts",
             "x_publish_status",
             "youtube_publish_status",
@@ -1107,7 +1147,17 @@ class TransferCenter:
             "thumbnail_url": str(metadata.get("thumbnail") or job.get("thumbnail_url") or "")[:1500],
             "duration": metadata.get("duration") or job.get("duration"),
             "local_video_path": str(videos[0]),
+            "original_video_path": str(videos[0]),
+            "recreated_media_path": "",
             "local_metadata_path": str(metadata_path),
+            "source_attribution": "\n".join(
+                item
+                for item in (
+                    str(metadata.get("uploader") or job.get("source_uploader") or "").strip(),
+                    str(job.get("source_url") or "").strip(),
+                )
+                if item
+            ),
         }
         targets = _json_list(job["target_platforms"])
         media_info, variants = prepare_platform_variants(
@@ -1132,6 +1182,7 @@ class TransferCenter:
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
             distribution_plan_json=json.dumps(distribution_plan, ensure_ascii=False),
             recreation_status="draft",
+            recreation_completed=0,
             recreation_plan_json=serialize_plan(plan),
             original_angle=str(plan.get("original_angle") or ""),
             original_contribution=str(plan.get("original_contribution") or ""),
@@ -1189,10 +1240,12 @@ class TransferCenter:
             job_id,
             status=JOB_STATUSES["REVIEW"],
             local_video_path=video_path,
+            recreated_media_path=video_path,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
             distribution_plan_json=json.dumps(distribution_plan, ensure_ascii=False),
             recreation_status="draft",
+            recreation_completed=1,
             watermark_status="unreviewed",
             watermark_note="",
             reviewed_at=None,
@@ -1231,6 +1284,8 @@ class TransferCenter:
         recreation_status = "draft"
         reviewed_at = None
         if approve:
+            if not int(job.get("recreation_completed") or 0):
+                raise ValueError("请先通过超级印钞机或其他剪辑工具完成加工，并上传新的再创作成片")
             variants = deserialize_plan(job.get("platform_variants_json"))
             blockers = []
             for target in _json_list(job.get("target_platforms")):
@@ -1247,8 +1302,7 @@ class TransferCenter:
         self._update_job(
             job_id,
             status=status,
-            rights_basis=normalized["rights_basis"],
-            rights_note=normalized["rights_note"],
+            source_attribution=normalized["source_attribution"],
             recreation_mode=normalized["recreation_mode"],
             recreation_status=recreation_status,
             recreation_plan_json=serialize_plan(plan),
@@ -1263,6 +1317,123 @@ class TransferCenter:
             error_message="",
         )
         return self.get_job(job_id) or {}
+
+    def send_to_money_printer(self, job_id: str) -> dict:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        video_path = str(job.get("original_video_path") or job.get("local_video_path") or "")
+        if not video_path or not os.path.isfile(video_path):
+            raise ValueError("原视频尚未下载完成")
+        if job.get("mpt_project_id") and job.get("mpt_asset_id"):
+            return self.get_job(job_id) or {}
+
+        base_url = str(
+            self._config().get("TRANSFER_MPT_INTERNAL_URL")
+            or "http://172.17.0.1:18081"
+        ).rstrip("/")
+        session = requests.Session()
+        session.trust_env = False
+        self._update_job(
+            job_id,
+            mpt_status="sending",
+            mpt_message="正在创建再创作项目并分析原片",
+        )
+
+        def api_json(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            response = session.request(
+                method,
+                f"{base_url}{path}",
+                timeout=(5, 180),
+                **kwargs,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if int(payload.get("status") or 500) != 200:
+                raise RuntimeError(str(payload.get("message") or "超级印钞机接口失败"))
+            data = payload.get("data")
+            return data if isinstance(data, dict) else {}
+
+        try:
+            project = api_json(
+                "POST",
+                "/api/v1/projects",
+                json={
+                    "name": f"搬运再创作｜{str(job.get('title') or '未命名视频')[:36]}",
+                    "description": (
+                        "来自视频搬运通道。原片仅作为节奏和素材参考；"
+                        "请完成新口播、镜头重组、字幕与包装后再回传成片。\n"
+                        f"来源：{job.get('source_uploader') or '原发布者'}\n"
+                        f"{job.get('source_url') or ''}"
+                    ),
+                    "template": "short_video",
+                },
+            )
+            project_id = str(project.get("project_id") or "")
+            if not project_id:
+                raise RuntimeError("超级印钞机未返回项目编号")
+            filename = Path(video_path).name
+            query = urlencode(
+                {
+                    "asset_type": "video",
+                    "tags": "搬运通道,参考视频,待再创作",
+                    "license_type": "unknown",
+                    "rights_note": (
+                        f"来源署名：{job.get('source_uploader') or '原发布者'}；"
+                        "仅作为再创作参考，不代表原片可直接发布。"
+                    ),
+                }
+            )
+            with open(video_path, "rb") as media:
+                asset = api_json(
+                    "POST",
+                    f"/api/v1/assets/upload?{query}",
+                    files={"file": (filename, media, mimetypes.guess_type(filename)[0] or "video/mp4")},
+                )
+            asset_id = str(asset.get("asset_id") or "")
+            if not asset_id:
+                raise RuntimeError("超级印钞机未返回素材编号")
+            api_json(
+                "POST",
+                f"/api/v1/projects/{quote(project_id)}/reference-analyses",
+                json={"asset_id": asset_id},
+            )
+            self._update_job(
+                job_id,
+                mpt_project_id=project_id,
+                mpt_asset_id=asset_id,
+                mpt_status="ready",
+                mpt_message="原片分析完成，可以进入超级印钞机加工",
+            )
+            return self.get_job(job_id) or {}
+        except Exception as exc:
+            message = _safe_error(exc, limit=500)
+            self._update_job(
+                job_id,
+                mpt_status="failed",
+                mpt_message=message,
+            )
+            raise RuntimeError(f"送入超级印钞机失败：{message}") from exc
+
+    def money_printer_url(self, job: dict[str, Any]) -> str:
+        project_id = str(job.get("mpt_project_id") or "").strip()
+        if not project_id:
+            return ""
+        public_url = str(
+            self._config().get("TRANSFER_MPT_PUBLIC_URL")
+            or "http://192.168.1.249:18081/app/"
+        ).strip()
+        separator = "&" if "?" in public_url else "?"
+        return (
+            f"{public_url}{separator}"
+            + urlencode(
+                {
+                    "project_id": project_id,
+                    "studio": "intelligence",
+                    "source": "transfer",
+                }
+            )
+        )
 
     # ---- publishing ----------------------------------------------------
     def publish_job_async(self, job_id: str) -> bool:
@@ -1436,17 +1607,17 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
-        if str(job.get("rights_basis") or "") not in RIGHTS_CONFIRMED_VALUES:
-            raise ValueError("版权或授权依据尚未确认，禁止发布")
+        if len(str(job.get("source_attribution") or "").strip()) < 2:
+            raise ValueError("来源标识尚未填写，禁止发布")
         if str(job.get("recreation_status") or "") != "approved":
             raise ValueError("再创作方案和实际成片尚未人工批准，禁止发布")
         if str(job.get("watermark_status") or "") not in {
             "none",
             "own_brand",
             "third_party_preserved",
-            "authorized_cleanup",
+            "platform_overlay_removed",
         }:
-            raise ValueError("作者名、平台名和版权水印尚未核对，禁止发布")
+            raise ValueError("作者名、来源标识和平台浮层尚未核对，禁止发布")
         if not job.get("local_video_path") or not os.path.isfile(job["local_video_path"]):
             raise ValueError("视频尚未准备完成")
         targets = _json_list(job["target_platforms"])

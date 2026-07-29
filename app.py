@@ -33,7 +33,6 @@ from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import get_transfer_center
 from modules.content_recreation import (
     RECREATION_MODES,
-    RIGHTS_BASES,
     WATERMARK_STATES,
     deserialize_plan,
 )
@@ -2152,7 +2151,7 @@ def add_task_route():
             targets = _transfer_target_list(request.form)
             job_id = _transfer_center().add_manual_job(source_url, targets)
             _transfer_center().prepare_job_async(job_id, publish_after=False)
-            flash('搬运任务已创建；素材准备完成后会进入版权与再创作审核。', 'success')
+            flash('搬运任务已创建；素材准备完成后会进入视频再创作工作台。', 'success')
         except Exception as exc:
             flash(f'创建搬运任务失败：{exc}', 'danger')
         return redirect(url_for('tasks'))
@@ -3653,7 +3652,7 @@ def transfer_center_add_job():
             job_id,
             publish_after=False,
         )
-        flash('任务已创建；下载完成后会进入版权与再创作审核，不会直接发布。', 'success')
+        flash('任务已创建；下载完成后会进入再创作工作台，不会直接发布。', 'success')
     except Exception as e:
         flash(f'创建搬运任务失败：{e}', 'danger')
     return redirect(url_for('tasks'))
@@ -3691,13 +3690,13 @@ def transfer_center_review_job(job_id):
     return render_template(
         'transfer_review.html',
         job=job,
-        rights_bases=RIGHTS_BASES,
         recreation_modes=RECREATION_MODES,
         recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
         watermark_states=WATERMARK_STATES,
+        money_printer_url=_transfer_center().money_printer_url(job),
     )
 
 
@@ -3793,13 +3792,13 @@ def transfer_center_save_review(job_id):
         _transfer_center().save_recreation_review(
             job_id,
             {
-                'rights_basis': request.form.get('rights_basis'),
-                'rights_note': request.form.get('rights_note'),
+                'source_attribution': request.form.get('source_attribution'),
                 'recreation_mode': request.form.get('recreation_mode'),
                 'original_angle': request.form.get('original_angle'),
                 'original_contribution': request.form.get('original_contribution'),
                 'watermark_status': request.form.get('watermark_status'),
                 'watermark_note': request.form.get('watermark_note'),
+                'recreation_confirmed': request.form.get('recreation_confirmed'),
                 'x_text': request.form.get('x_text'),
                 'youtube_title': request.form.get('youtube_title'),
                 'youtube_description': request.form.get('youtube_description'),
@@ -3807,7 +3806,7 @@ def transfer_center_save_review(job_id):
             approve=approve,
         )
         flash(
-            '版权与再创作审核已批准，可以进入发布。'
+            '再创作成片已确认，可以进入发布。'
             if approve
             else '审核草稿已保存，尚未允许发布。',
             'success',
@@ -3820,6 +3819,23 @@ def transfer_center_save_review(job_id):
         if approve
         else url_for('transfer_center_review_job', job_id=job_id)
     )
+
+
+@app.route('/transfer-center/jobs/<job_id>/money-printer', methods=['POST'])
+@login_required
+def transfer_center_send_to_money_printer(job_id):
+    try:
+        job = _transfer_center().send_to_money_printer(job_id)
+        flash(
+            '已在超级印钞机建立再创作项目并完成原片分析。请进入加工，完成后回传新成片。',
+            'success',
+        )
+        target_url = _transfer_center().money_printer_url(job)
+        if target_url:
+            return redirect(target_url)
+    except Exception as e:
+        flash(str(e), 'danger')
+    return redirect(url_for('transfer_center_review_job', job_id=job_id))
 
 
 @app.route('/transfer-center/connections', methods=['POST'])
