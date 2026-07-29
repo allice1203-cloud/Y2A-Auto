@@ -80,14 +80,14 @@
                             'discovered': 2,
                             'downloading': (job.progress_percent or 8),
                             'review': 72,
-                            'ready': 86,
-                            'publishing': 93,
+                            'ready': (job.progress_percent or 86),
+                            'publishing': (job.progress_percent or 93),
                             'completed': 100,
                             'failed': (job.progress_percent or 8),
                             'skipped': 100
                         } %}
                         {% set progress = status_progress.get(job.status, 0)|int %}
-                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
+                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-x-status="{{ job.x_publish_status }}" data-youtube-status="{{ job.youtube_publish_status }}" data-error="{{ job.error_message|e }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
                             <td>
                                 <div class="task-video-cell">
                                     <span class="task-video-thumb">
@@ -136,17 +136,17 @@
                             <td>
                                 <div class="publish-state-stack">
                                     {% if '"x"' in job.target_platforms %}
-                                    <span><i class="platform-mini x">X</i>{{ {
+                                    <span><i class="platform-mini x">X</i><span data-publish-status="x">{{ {
                                         'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待授权',
                                         'publishing':'发布中','completed':'已发布','failed':'失败','blocked':'媒体未就绪',
                                         'skipped':'未选择'
-                                    }.get(job.x_publish_status, job.x_publish_status) }}</span>
+                                    }.get(job.x_publish_status, job.x_publish_status) }}</span></span>
                                     {% endif %}
                                     {% if '"youtube"' in job.target_platforms %}
-                                    <span><i class="platform-mini youtube"><i class="bi bi-youtube"></i></i>{{ {
+                                    <span><i class="platform-mini youtube"><i class="bi bi-youtube"></i></i><span data-publish-status="youtube">{{ {
                                         'pending':'待发布','waiting_auth':'待授权','publishing':'发布中',
                                         'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
-                                    }.get(job.youtube_publish_status, job.youtube_publish_status) }}</span>
+                                    }.get(job.youtube_publish_status, job.youtube_publish_status) }}</span></span>
                                     {% endif %}
                                 </div>
                             </td>
@@ -769,7 +769,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                         needsReload = true;
                         return;
                     }
-                    if (row.dataset.status !== job.status) {
+                    if (row.dataset.status !== job.status || (row.dataset.error || '') !== (job.error_message || '')) {
                         needsReload = true;
                         return;
                     }
@@ -778,9 +778,29 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                     const bar = row.querySelector('[data-transfer-progress-bar]');
                     const value = row.querySelector('[data-transfer-progress-value]');
                     const message = row.querySelector('[data-transfer-progress-message]');
-                    if (job.status === 'downloading' && bar && rawProgress) bar.style.width = progress + '%';
-                    if (job.status === 'downloading' && value && rawProgress) value.textContent = Math.round(progress) + '%';
+                    if (bar && rawProgress) bar.style.width = progress + '%';
+                    if (value && rawProgress) value.textContent = Math.round(progress) + '%';
                     if (message && job.progress_message) message.textContent = job.progress_message;
+                    const statusLabels = {
+                        x: {
+                            pending: '待发布', manual_ready: '素材已备好', waiting_auth: '待授权',
+                            publishing: '发布中', completed: '已发布', failed: '失败',
+                            blocked: '媒体未就绪', skipped: '未选择'
+                        },
+                        youtube: {
+                            pending: '待发布', waiting_auth: '待授权', publishing: '发布中',
+                            completed: '已发布', failed: '失败', blocked: '媒体未就绪',
+                            skipped: '未选择'
+                        }
+                    };
+                    ['x', 'youtube'].forEach(function(platform) {
+                        const field = platform === 'x' ? 'x_publish_status' : 'youtube_publish_status';
+                        const datasetField = platform === 'x' ? 'xStatus' : 'youtubeStatus';
+                        const status = job[field] || '';
+                        const target = row.querySelector(`[data-publish-status="${platform}"]`);
+                        if (target && status) target.textContent = statusLabels[platform][status] || status;
+                        row.dataset[datasetField] = status;
+                    });
                 });
                 if (needsReload) window.location.reload();
             } catch (error) {

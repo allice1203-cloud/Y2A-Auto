@@ -298,8 +298,8 @@
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
                 <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
-                <button class="btn btn-success" id="approveButton" name="action" value="approve" data-recreated="{{ 1 if job.recreation_completed else 0 }}">
-                    <i class="bi bi-check2-circle me-1"></i><span id="approveButtonLabel">确认并批准发布</span>
+                <button class="btn btn-success" id="approveButton" name="action" value="approve_publish" data-recreated="{{ 1 if job.recreation_completed else 0 }}">
+                    <i class="bi bi-send-check me-1"></i><span id="approveButtonLabel">确认并开始发布</span>
                 </button>
             </div>
         </form>
@@ -443,6 +443,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const publishConfirmed = document.getElementById('publishConfirmed');
     const recreationConfirmed = document.getElementById('recreationConfirmed');
     const hasRecreatedMedia = approveButton?.dataset.recreated === '1';
+    const reviewForm = approveButton?.closest('form');
 
     function syncMode() {
         const mode = modeInputs.find((input) => input.checked)?.value || 'direct';
@@ -467,12 +468,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (approveButton) approveButton.disabled = mode !== 'direct' && !hasRecreatedMedia;
         if (approveLabel) {
             approveLabel.textContent = mode === 'direct'
-                ? '确认原片并批准发布'
-                : '确认加工成片并批准发布';
+                ? '确认原片并开始发布'
+                : '确认加工成片并开始发布';
         }
     }
 
     modeInputs.forEach((input) => input.addEventListener('change', syncMode));
+    reviewForm?.addEventListener('submit', (event) => {
+        if (event.submitter !== approveButton) return;
+        approveButton.disabled = true;
+        approveButton.setAttribute('aria-busy', 'true');
+        if (approveLabel) approveLabel.textContent = '正在提交到后台…';
+    });
     syncMode();
 });
 </script>

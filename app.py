@@ -30,7 +30,13 @@ from modules.acfun_auth import AcfunQrLoginSession
 from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
-from modules.transfer_center import get_transfer_center
+from modules.transfer_center import (
+    YOUTUBE_SCOPES,
+    get_transfer_center,
+    save_youtube_connection,
+    verify_youtube_credentials,
+    youtube_connection_state,
+)
 from modules.content_recreation import (
     PROCESSING_MODES,
     RECREATION_MODES,
@@ -1732,6 +1738,9 @@ def transfer_task_state():
                 'status': job.get('status'),
                 'progress_percent': job.get('progress_percent') or 0,
                 'progress_message': job.get('progress_message') or '',
+                'x_publish_status': job.get('x_publish_status') or '',
+                'youtube_publish_status': job.get('youtube_publish_status') or '',
+                'error_message': job.get('error_message') or '',
                 'updated_at': job.get('updated_at') or '',
             }
             for job in jobs
@@ -3487,14 +3496,16 @@ def _transfer_target_list(form):
 def transfer_center_index():
     center = _transfer_center()
     config = load_config()
+    youtube_state = youtube_connection_state()
     return render_template(
         'transfer_center.html',
         rules=center.list_rules(),
         transfer_config={
             'x_mode': 'manual_free',
-            'youtube_connected': os.path.isfile(
-                os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
-            ),
+            'youtube_connected': youtube_state.get('connected', False),
+            'youtube_status': youtube_state.get('status', 'disconnected'),
+            'youtube_channel_title': youtube_state.get('channel_title', ''),
+            'youtube_message': youtube_state.get('message', ''),
             'bilibili_cookies_ready': _source_cookie_ready('bilibili'),
             'douyin_cookies_ready': _source_cookie_ready('douyin'),
             'source_login_helper_ready': bool(_source_login_helper_secret()),
@@ -3795,9 +3806,12 @@ def transfer_center_replace_review_media(job_id):
 @app.route('/transfer-center/jobs/<job_id>/review', methods=['POST'])
 @login_required
 def transfer_center_save_review(job_id):
-    approve = request.form.get('action') == 'approve'
+    action = str(request.form.get('action') or 'draft')
+    approve = action in ('approve', 'approve_publish')
+    publish_after = action == 'approve_publish'
     try:
-        _transfer_center().save_recreation_review(
+        center = _transfer_center()
+        center.save_recreation_review(
             job_id,
             {
                 'source_attribution': request.form.get('source_attribution'),
@@ -3815,17 +3829,26 @@ def transfer_center_save_review(job_id):
             },
             approve=approve,
         )
-        flash(
-            '视频已确认，可以进入发布。'
-            if approve
-            else '确认草稿已保存，尚未允许发布。',
-            'success',
-        )
+        if publish_after:
+            started = center.publish_job_async(job_id)
+            flash(
+                '已确认并开始后台发布，可在任务中心查看每个平台的实时进度。'
+                if started
+                else '视频已确认；该任务正在后台处理中，请在任务中心查看进度。',
+                'success',
+            )
+        else:
+            flash(
+                '视频已确认，可以进入发布。'
+                if approve
+                else '确认草稿已保存，尚未允许发布。',
+                'success',
+            )
     except Exception as e:
         flash(f'保存审核失败：{e}', 'danger')
         return redirect(url_for('transfer_center_review_job', job_id=job_id))
     return redirect(
-        url_for('transfer_center_index')
+        url_for('tasks')
         if approve
         else url_for('transfer_center_review_job', job_id=job_id)
     )
@@ -3920,13 +3943,13 @@ def transfer_center_youtube_connect():
         redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
         flow = Flow.from_client_secrets_file(
             client_secret_path,
-            scopes=['https://www.googleapis.com/auth/youtube.upload'],
+            scopes=list(YOUTUBE_SCOPES),
             redirect_uri=redirect_uri,
         )
         authorization_url, state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
-            prompt='consent',
+            prompt='select_account consent',
         )
         session['transfer_youtube_oauth_state'] = state
         session['transfer_youtube_oauth_code_verifier'] = flow.code_verifier
@@ -3964,7 +3987,7 @@ def transfer_center_youtube_callback():
         redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
         flow = Flow.from_client_secrets_file(
             client_secret_path,
-            scopes=['https://www.googleapis.com/auth/youtube.upload'],
+            scopes=list(YOUTUBE_SCOPES),
             state=state,
             redirect_uri=redirect_uri,
             code_verifier=code_verifier,
@@ -3974,14 +3997,14 @@ def transfer_center_youtube_callback():
         # still goes to Google's HTTPS endpoint. Passing the verified code avoids
         # globally disabling OAuthlib transport checks for the whole process.
         flow.fetch_token(code=authorization_code)
-        token_path = os.path.join(get_app_subdir('config'), 'youtube_transfer_token.json')
-        with open(token_path, 'w', encoding='utf-8') as handle:
-            handle.write(flow.credentials.to_json())
-        try:
-            os.chmod(token_path, 0o600)
-        except Exception:
-            pass
-        flash('YouTube 频道授权成功。', 'success')
+        channel = verify_youtube_credentials(flow.credentials)
+        save_youtube_connection(flow.credentials, channel)
+        flash(
+            f'YouTube 频道“{channel["channel_title"]}”连接成功。',
+            'success',
+        )
+    except ValueError as e:
+        flash(f'YouTube 授权未完成：{e}。请重新连接并选择拥有频道的 Google 账号。', 'warning')
     except Exception as e:
         flash(f'YouTube 授权失败：{e}', 'danger')
     return redirect(url_for('transfer_center_index'))

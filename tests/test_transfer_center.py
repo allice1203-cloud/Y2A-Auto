@@ -126,6 +126,88 @@ def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
     assert result["youtube_publish_status"] == "waiting_auth"
 
 
+def test_youtube_connection_requires_verified_channel(center, tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    token_path = config_dir / "youtube_transfer_token.json"
+    token_path.write_text(
+        json.dumps({"scopes": [transfer_module.YOUTUBE_UPLOAD_SCOPE]}),
+        encoding="utf-8",
+    )
+
+    state = transfer_module.youtube_connection_state()
+    assert state["status"] == "reconnect_required"
+    assert state["connected"] is False
+
+    token_path.write_text(
+        json.dumps({"scopes": list(transfer_module.YOUTUBE_SCOPES)}),
+        encoding="utf-8",
+    )
+    (config_dir / "youtube_transfer_channel.json").write_text(
+        json.dumps(
+            {
+                "channel_id": "UC123",
+                "channel_title": "Allice",
+                "verified_at": "2026-07-30T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = transfer_module.youtube_connection_state()
+    assert state["connected"] is True
+    assert state["channel_title"] == "Allice"
+
+
+def test_youtube_signup_error_waits_for_reconnect_without_retry(
+    center, tmp_path, monkeypatch
+):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1youtubeauth",
+        ["youtube"],
+    )
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"test")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "youtube_transfer_token.json").write_text(
+        json.dumps({"scopes": list(transfer_module.YOUTUBE_SCOPES)}),
+        encoding="utf-8",
+    )
+    channel_path = config_dir / "youtube_transfer_channel.json"
+    channel_path.write_text(
+        json.dumps({"channel_id": "UC123", "channel_title": "Wrong account"}),
+        encoding="utf-8",
+    )
+    center._update_job(
+        job_id,
+        status="ready",
+        local_video_path=str(video_path),
+        platform_variants_json=json.dumps(
+            {"youtube": {"status": "ready", "path": str(video_path)}}
+        ),
+        source_attribution="原账号\nhttps://example.com/source",
+        watermark_status="none",
+        recreation_status="approved",
+    )
+    monkeypatch.setattr(
+        center,
+        "_publish_youtube",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("401 youtubeSignupRequired Unauthorized")
+        ),
+    )
+
+    result = center.publish_job(job_id)
+
+    assert result["status"] == "ready"
+    assert result["youtube_publish_status"] == "waiting_auth"
+    assert result["next_retry_at"] is None
+    assert result["last_retry_stage"] == ""
+    assert "重新连接" in result["error_message"]
+    assert not channel_path.exists()
+
+
 def test_keyword_filters_are_inclusive_and_exclusive(center):
     rule = {
         "include_keywords": "AI, 人工智能",

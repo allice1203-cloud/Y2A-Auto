@@ -55,6 +55,11 @@ JOB_STATUSES = {
     "SKIPPED": "skipped",
 }
 RETRY_DELAYS_SECONDS = (60, 300, 1800)
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -142,6 +147,171 @@ def _friendly_download_error(value: Any) -> str:
     if "cookies" in lowered and any(token in lowered for token in ("expired", "login", "sign in")):
         return "来源平台登录已失效，请刷新登录后重试"
     return message
+
+
+def _friendly_youtube_publish_error(value: Any) -> tuple[str, bool, bool]:
+    """Return a user-facing message, retryability, and reconnect requirement."""
+    message = _safe_error(value)
+    lowered = message.lower()
+    if "youtubesignuprequired" in lowered:
+        return (
+            "当前 Google 授权没有关联可上传的 YouTube 频道，请重新连接并选择拥有频道的账号",
+            False,
+            True,
+        )
+    if any(
+        marker in lowered
+        for marker in (
+            "invalid_grant",
+            "authorizationrequired",
+            "invalid credentials",
+            "token has been expired",
+            "unauthorized_client",
+        )
+    ):
+        return ("YouTube 授权已失效，请重新连接频道", False, True)
+    if any(
+        marker in lowered
+        for marker in (
+            "quotaexceeded",
+            "uploadlimitexceeded",
+            "dailylimitexceeded",
+        )
+    ):
+        return ("YouTube 当日上传或 API 额度已用完，请稍后人工重试", False, False)
+    retryable = any(
+        marker in lowered
+        for marker in (
+            "timeout",
+            "timed out",
+            "connection",
+            "backenderror",
+            "internalerror",
+            "ratelimitexceeded",
+            " 429 ",
+            " 500 ",
+            " 502 ",
+            " 503 ",
+            " 504 ",
+        )
+    )
+    return (message or "YouTube 发布失败", retryable, False)
+
+
+def _youtube_connection_paths() -> tuple[Path, Path]:
+    config_dir = Path(get_app_subdir("config"))
+    return (
+        config_dir / "youtube_transfer_token.json",
+        config_dir / "youtube_transfer_channel.json",
+    )
+
+
+def youtube_connection_state() -> dict[str, Any]:
+    """Read the last verified YouTube channel without making a network call."""
+    token_path, channel_path = _youtube_connection_paths()
+    if not token_path.is_file():
+        return {"status": "disconnected", "connected": False}
+    try:
+        token_payload = json.loads(token_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {
+            "status": "reconnect_required",
+            "connected": False,
+            "message": "授权文件无法读取，请重新连接",
+        }
+    scopes = {
+        str(scope).strip()
+        for scope in (token_payload.get("scopes") or [])
+        if str(scope).strip()
+    }
+    if not set(YOUTUBE_SCOPES).issubset(scopes):
+        return {
+            "status": "reconnect_required",
+            "connected": False,
+            "message": "需要重新验证实际 YouTube 频道",
+        }
+    try:
+        channel_payload = json.loads(channel_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        channel_payload = {}
+    if not str(channel_payload.get("channel_id") or "").strip():
+        return {
+            "status": "reconnect_required",
+            "connected": False,
+            "message": "尚未验证实际 YouTube 频道",
+        }
+    return {
+        "status": "connected",
+        "connected": True,
+        "channel_id": str(channel_payload.get("channel_id") or ""),
+        "channel_title": str(channel_payload.get("channel_title") or ""),
+        "long_uploads_status": str(channel_payload.get("long_uploads_status") or ""),
+        "verified_at": str(channel_payload.get("verified_at") or ""),
+    }
+
+
+def verify_youtube_credentials(credentials: Any) -> dict[str, str]:
+    """Verify that OAuth credentials resolve to an upload-capable channel."""
+    try:
+        from googleapiclient.discovery import build
+    except Exception as exc:
+        raise RuntimeError("YouTube发布依赖未安装") from exc
+    youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+    try:
+        response = (
+            youtube.channels()
+            .list(part="id,snippet,status", mine=True)
+            .execute()
+        )
+    except Exception as exc:
+        friendly, _, reconnect_required = _friendly_youtube_publish_error(exc)
+        if reconnect_required:
+            raise ValueError(friendly) from exc
+        raise
+    items = response.get("items") or []
+    if not items:
+        raise ValueError("当前 Google 账号没有可用的 YouTube 频道")
+    channel = items[0]
+    channel_id = str(channel.get("id") or "").strip()
+    if not channel_id:
+        raise ValueError("YouTube 没有返回有效频道信息")
+    return {
+        "channel_id": channel_id,
+        "channel_title": str((channel.get("snippet") or {}).get("title") or "未命名频道"),
+        "long_uploads_status": str(
+            (channel.get("status") or {}).get("longUploadsStatus") or ""
+        ),
+    }
+
+
+def save_youtube_connection(credentials: Any, channel: dict[str, str]) -> None:
+    """Persist OAuth credentials only after a real channel was verified."""
+    token_path, channel_path = _youtube_connection_paths()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    channel_payload = {
+        **channel,
+        "verified_at": _utc_now(),
+    }
+    token_tmp = token_path.with_suffix(".json.tmp")
+    channel_tmp = channel_path.with_suffix(".json.tmp")
+    token_tmp.write_text(credentials.to_json(), encoding="utf-8")
+    channel_tmp.write_text(
+        json.dumps(channel_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.chmod(token_tmp, 0o600)
+    os.chmod(channel_tmp, 0o600)
+    os.replace(token_tmp, token_path)
+    os.replace(channel_tmp, channel_path)
+
+
+def invalidate_youtube_connection() -> None:
+    """Keep OAuth credentials for diagnosis but remove the verified badge."""
+    _, channel_path = _youtube_connection_paths()
+    try:
+        channel_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 class TransferCenter:
@@ -1734,7 +1904,12 @@ class TransferCenter:
             raise RuntimeError("X 发布成功响应缺少帖子ID")
         return post_id
 
-    def _publish_youtube(self, job: dict, token_path: str) -> str:
+    def _publish_youtube(
+        self,
+        job: dict,
+        token_path: str,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> str:
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
@@ -1743,7 +1918,7 @@ class TransferCenter:
             raise RuntimeError("YouTube发布依赖未安装") from exc
         credentials = Credentials.from_authorized_user_file(
             token_path,
-            scopes=["https://www.googleapis.com/auth/youtube.upload"],
+            scopes=list(YOUTUBE_SCOPES),
         )
         if credentials.expired and credentials.refresh_token:
             from google.auth.transport.requests import Request
@@ -1771,7 +1946,9 @@ class TransferCenter:
         )
         response = None
         while response is None:
-            _, response = request.next_chunk()
+            status, response = request.next_chunk()
+            if status is not None and progress_callback is not None:
+                progress_callback(max(0.0, min(1.0, float(status.progress()))))
         video_id = str((response or {}).get("id") or "")
         if not video_id:
             raise RuntimeError("YouTube 发布响应缺少视频ID")
@@ -1802,6 +1979,8 @@ class TransferCenter:
             next_retry_at=None,
             last_retry_stage="publish",
             error_message="",
+            progress_percent=88,
+            progress_message="发布任务已进入后台队列",
         )
         errors = []
         retryable_errors = []
@@ -1813,7 +1992,12 @@ class TransferCenter:
                 self._update_job(job_id, x_publish_status="blocked")
                 errors.append("X 媒体版本未就绪，请先完成原创剪辑或重新体检")
             else:
-                self._update_job(job_id, x_publish_status="manual_ready")
+                self._update_job(
+                    job_id,
+                    x_publish_status="manual_ready",
+                    progress_percent=90,
+                    progress_message="X 素材已备好，正在处理其他发布平台",
+                )
         if "youtube" in targets and not youtube_video_id:
             youtube_path = self._target_video_path(job, "youtube")
             token_path = os.path.join(get_app_subdir("config"), "youtube_transfer_token.json")
@@ -1829,20 +2013,49 @@ class TransferCenter:
                     job_id,
                     youtube_publish_status="publishing",
                     youtube_publish_attempts=youtube_attempts,
+                    progress_percent=91,
+                    progress_message="正在连接已验证的 YouTube 频道",
                 )
                 try:
                     youtube_job = {**job, "local_video_path": youtube_path}
-                    youtube_video_id = self._publish_youtube(youtube_job, token_path)
+                    youtube_video_id = self._publish_youtube(
+                        youtube_job,
+                        token_path,
+                        progress_callback=lambda progress: self._update_job(
+                            job_id,
+                            progress_percent=92 + (progress * 7),
+                            progress_message=f"正在上传到 YouTube {progress * 100:.0f}%",
+                        ),
+                    )
                     self._update_job(
                         job_id,
                         youtube_video_id=youtube_video_id,
                         youtube_publish_status="completed",
+                        progress_percent=99,
+                        progress_message="YouTube 上传完成",
                     )
                 except Exception as exc:
-                    message = f"YouTube: {_safe_error(exc)}"
-                    self._update_job(job_id, youtube_publish_status="failed")
+                    friendly, retryable, reconnect_required = (
+                        _friendly_youtube_publish_error(exc)
+                    )
+                    message = f"YouTube: {friendly}"
+                    self._update_job(
+                        job_id,
+                        youtube_publish_status=(
+                            "waiting_auth" if reconnect_required else "failed"
+                        ),
+                        progress_percent=90,
+                        progress_message=(
+                            "YouTube 频道需要重新连接"
+                            if reconnect_required
+                            else "YouTube 发布失败，需要检查"
+                        ),
+                    )
+                    if reconnect_required:
+                        invalidate_youtube_connection()
                     errors.append(message)
-                    retryable_errors.append((message, youtube_attempts))
+                    if retryable:
+                        retryable_errors.append((message, youtube_attempts))
         completed = all(
             (target == "x" and x_post_id) or (target == "youtube" and youtube_video_id)
             for target in targets
@@ -1853,6 +2066,16 @@ class TransferCenter:
             error_message="；".join(errors),
             next_retry_at=None,
             last_retry_stage="",
+            progress_percent=100 if completed else 90,
+            progress_message=(
+                "所有平台发布完成"
+                if completed
+                else (
+                    "YouTube 频道需要重新连接"
+                    if self.get_job(job_id).get("youtube_publish_status") == "waiting_auth"
+                    else "自动处理完成，请查看分平台状态"
+                )
+            ),
         )
         if retryable_errors and not completed:
             max_attempts = max(item[1] for item in retryable_errors)

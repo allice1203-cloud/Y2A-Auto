@@ -64,9 +64,24 @@
             <div class="platform-label">发布到 YouTube</div>
             <div class="platform-state">
                 <span class="connection-dot {{ 'is-success' if transfer_config.youtube_connected else 'is-warning' }}"></span>
-                {{ '已连接' if transfer_config.youtube_connected else '等待授权' }}
+                {% if transfer_config.youtube_connected %}
+                    已连接 · {{ transfer_config.youtube_channel_title or '已验证频道' }}
+                {% elif transfer_config.youtube_status == 'reconnect_required' %}
+                    需要重新连接频道
+                {% else %}
+                    等待授权
+                {% endif %}
             </div>
-            <p>默认以私密方式上传</p>
+            <p>
+                {% if transfer_config.youtube_connected %}
+                    已通过真实频道检测，默认以私密方式上传
+                {% else %}
+                    {{ transfer_config.youtube_message or '连接后会验证实际频道名称' }}
+                {% endif %}
+            </p>
+            {% if not transfer_config.youtube_connected %}
+            <a class="platform-link" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube <i class="bi bi-arrow-right"></i></a>
+            {% endif %}
         </article>
     </div>
 </section>
@@ -360,9 +375,12 @@
             </div>
             <div class="modal-footer">
                 {% if transfer_config.youtube_connected %}
-                    <span class="text-success me-auto"><i class="bi bi-check-circle"></i> YouTube 已授权</span>
+                    <span class="text-success me-auto"><i class="bi bi-check-circle"></i> YouTube：{{ transfer_config.youtube_channel_title or '频道已验证' }}</span>
+                    <a class="btn btn-outline-secondary" href="{{ url_for('transfer_center_youtube_connect') }}">更换频道</a>
                 {% else %}
-                    <a class="btn btn-outline-danger me-auto" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube</a>
+                    <a class="btn btn-outline-danger me-auto" href="{{ url_for('transfer_center_youtube_connect') }}">
+                        {{ '重新连接 YouTube' if transfer_config.youtube_status == 'reconnect_required' else '连接 YouTube' }}
+                    </a>
                 {% endif %}
                 <button type="button" class="btn btn-light" data-bs-dismiss="modal">取消</button>
                 <button class="btn btn-primary">保存连接</button>
