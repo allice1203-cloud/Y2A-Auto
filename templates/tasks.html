@@ -169,7 +169,7 @@
                                 {% if job.status == 'ready' %}
                                     {% if job.youtube_publish_status == 'waiting_auth' %}
                                     <a class="btn btn-sm btn-danger" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube</a>
-                                    {% else %}
+                                    {% elif job.x_publish_status == 'pending' or job.youtube_publish_status in ('pending', 'failed') %}
                                     <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
                                         <button class="btn btn-sm btn-success">发布</button>
                                     </form>
@@ -226,6 +226,9 @@
                         <a class="btn btn-sm btn-outline-secondary" id="xDownloadOnly" href="#">
                             <i class="bi bi-download"></i> 仅下载视频
                         </a>
+                        <a class="btn btn-sm btn-outline-secondary" id="xOpenOnly" href="#" target="_blank" rel="noopener">
+                            <i class="bi bi-box-arrow-up-right"></i> 仅打开 X
+                        </a>
                     </div>
                     <a class="btn btn-dark w-100 mt-3" id="xLaunchPublish" href="#" target="_blank" rel="noopener">
                         <i class="bi bi-box-arrow-up-right me-1"></i> 下载视频并打开 X
@@ -242,6 +245,7 @@
                             <i class="bi bi-check2-circle me-1"></i> 我已在 X 发布，标记完成
                         </button>
                     </form>
+                    <iframe class="d-none" id="xDownloadFrame" title="X 视频下载"></iframe>
                 </div>
             </div>
         </div>
@@ -799,9 +803,16 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         const xPublishText = document.getElementById('xPublishText');
         const xCopyText = document.getElementById('xCopyText');
         const xDownloadOnly = document.getElementById('xDownloadOnly');
+        const xOpenOnly = document.getElementById('xOpenOnly');
         const xLaunchPublish = document.getElementById('xLaunchPublish');
         const xCompleteForm = document.getElementById('xCompleteForm');
         const xPublishLaunchStatus = document.getElementById('xPublishLaunchStatus');
+        const xDownloadFrame = document.getElementById('xDownloadFrame');
+        const startXVideoDownload = function(url) {
+            if (!url || !xDownloadFrame) return;
+            const separator = url.includes('?') ? '&' : '?';
+            xDownloadFrame.src = url + separator + '_download=' + Date.now();
+        };
         if (xPublishModal) {
             xPublishModal.addEventListener('show.bs.modal', function(event) {
                 const trigger = event.relatedTarget;
@@ -810,6 +821,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                 xPublishText.value = trigger.dataset.xText || '';
                 xDownloadOnly.href = trigger.dataset.xVideoUrl || '#';
                 xLaunchPublish.href = trigger.dataset.xComposeUrl || '#';
+                xOpenOnly.href = trigger.dataset.xComposeUrl || '#';
                 xLaunchPublish.dataset.videoUrl = trigger.dataset.xVideoUrl || '';
                 xCompleteForm.action = trigger.dataset.xCompleteUrl || '';
                 xPublishLaunchStatus.classList.add('d-none');
@@ -821,17 +833,15 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                     xCopyText.innerHTML = '<i class="bi bi-copy"></i> 复制文案';
                 }, 1800);
             });
-            xLaunchPublish.addEventListener('click', function() {
+            xDownloadOnly.addEventListener('click', function(event) {
+                event.preventDefault();
+                startXVideoDownload(xDownloadOnly.href);
+            });
+            xLaunchPublish.addEventListener('click', function(event) {
+                event.preventDefault();
                 copyToClipboard(xPublishText.value);
-                const downloadUrl = xLaunchPublish.dataset.videoUrl;
-                if (downloadUrl) {
-                    const link = document.createElement('a');
-                    link.href = downloadUrl;
-                    link.style.display = 'none';
-                    document.body.appendChild(link);
-                    link.click();
-                    link.remove();
-                }
+                window.open(xLaunchPublish.href, '_blank', 'noopener');
+                startXVideoDownload(xLaunchPublish.dataset.videoUrl);
                 xPublishLaunchStatus.classList.remove('d-none');
             });
         }
