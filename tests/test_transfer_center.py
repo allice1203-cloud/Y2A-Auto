@@ -156,7 +156,7 @@ def test_publish_is_blocked_until_source_and_recreation_are_approved(center, tmp
         center.publish_job(job_id)
 
     center._update_job(job_id, source_attribution="原作者\nhttps://example.com/source")
-    with pytest.raises(ValueError, match="再创作"):
+    with pytest.raises(ValueError, match="人工确认"):
         center.publish_job(job_id)
 
 
@@ -219,6 +219,7 @@ def test_review_approval_requires_new_media_and_ready_variants(center, tmp_path,
             job_id,
             {
                 "source_attribution": "原账号\nhttps://www.douyin.com/video/1234567890123456700",
+                "processing_mode": "professional",
                 "original_contribution": "加入三段原创口播、事实核验、案例分析、重新编排镜头，并在结尾给出全新的独立结论。",
                 "watermark_status": "none",
                 "recreation_confirmed": "on",
@@ -242,6 +243,7 @@ def test_review_approval_requires_new_media_and_ready_variants(center, tmp_path,
         job_id,
         {
             "source_attribution": "原账号\nhttps://www.douyin.com/video/1234567890123456700",
+            "processing_mode": "professional",
             "recreation_mode": "commentary",
             "original_angle": "验证原观点在国内场景是否成立",
             "original_contribution": "成片加入三段原创口播、事实核验、国内案例分析和重新编排后的独立结论。",
@@ -258,6 +260,51 @@ def test_review_approval_requires_new_media_and_ready_variants(center, tmp_path,
     assert result["status"] == "ready"
     assert result["recreation_status"] == "approved"
     assert result["source_attribution"].startswith("原账号")
+
+
+def test_direct_transfer_can_be_approved_without_uploading_new_media(
+    center, tmp_path, monkeypatch
+):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1direct",
+        ["youtube"],
+    )
+    video_path = tmp_path / "original.mp4"
+    video_path.write_bytes(b"original")
+    monkeypatch.setattr(
+        transfer_module,
+        "prepare_platform_variants",
+        lambda source_path, output_dir, targets: (
+            {"duration": 30, "width": 1920, "height": 1080},
+            {"youtube": {"status": "ready", "path": source_path, "issues": []}},
+        ),
+    )
+    center._update_job(
+        job_id,
+        status="review",
+        local_video_path=str(video_path),
+        original_video_path=str(video_path),
+        source_attribution="原作者\nhttps://www.bilibili.com/video/BV1direct",
+        platform_variants_json=json.dumps(
+            {"youtube": {"status": "ready", "path": str(video_path), "issues": []}}
+        ),
+    )
+
+    result = center.save_recreation_review(
+        job_id,
+        {
+            "source_attribution": "原作者\nhttps://www.bilibili.com/video/BV1direct",
+            "processing_mode": "direct",
+            "watermark_status": "third_party_preserved",
+            "watermark_note": "画面保留原作者账号",
+            "publish_confirmed": "on",
+        },
+        approve=True,
+    )
+
+    assert result["status"] == "ready"
+    assert result["processing_mode"] == "direct"
+    assert result["recreation_completed"] == 0
 
 
 def test_recreated_media_replacement_revokes_previous_approval(center, tmp_path, monkeypatch):
@@ -306,7 +353,13 @@ def test_money_printer_url_opens_imported_project(center):
 
     assert url.startswith("http://192.168.1.249:18081/app/?")
     assert "project_id=project-123" in url
-    assert "studio=intelligence" in url
+    assert "studio=quick" in url
+
+    professional_url = center.money_printer_url(
+        center.get_job(job_id), workflow="professional"
+    )
+    assert "studio=intelligence" in professional_url
+    assert "workflow=professional" in professional_url
 
 
 def test_send_to_money_printer_creates_project_uploads_and_analyzes(
@@ -357,6 +410,7 @@ def test_send_to_money_printer_creates_project_uploads_and_analyzes(
     assert result["mpt_status"] == "ready"
     assert result["mpt_project_id"] == "project-123"
     assert result["mpt_asset_id"] == "asset-456"
+    assert result["processing_mode"] == "quick"
     assert calls[0][0] == "POST"
     assert calls[1][2]["files"]["file"][0] == "source.mp4"
     assert calls[2][2]["json"] == {"asset_id": "asset-456"}

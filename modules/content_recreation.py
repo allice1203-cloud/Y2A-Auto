@@ -20,6 +20,12 @@ RECREATION_MODES = {
     "structured_remix": "结构化重剪与新叙事",
 }
 
+PROCESSING_MODES = {
+    "direct": "直接转发",
+    "quick": "简单加工",
+    "professional": "专业加工",
+}
+
 WATERMARK_STATES = {
     "none": "未发现需要处理的来源或平台标识",
     "own_brand": "仅有本人或本团队品牌标识",
@@ -204,26 +210,38 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     recreation_mode = str(payload.get("recreation_mode") or "commentary").strip().lower()
     if recreation_mode not in RECREATION_MODES:
         recreation_mode = "commentary"
+    processing_mode = str(payload.get("processing_mode") or "direct").strip().lower()
+    if processing_mode not in PROCESSING_MODES:
+        processing_mode = "direct"
     original_contribution = _clean_multiline(payload.get("original_contribution"), 3000)
-    if len(original_contribution) < 30:
-        raise ValueError("请具体说明成片将增加哪些原创观点、口播、核验或叙事改造")
+    if processing_mode == "quick" and len(original_contribution) < 4:
+        raise ValueError("请简单说明本次加工内容，例如画幅、片头片尾、字幕或品牌包装")
+    if processing_mode == "professional" and len(original_contribution) < 30:
+        raise ValueError("请具体说明成片增加了哪些原创观点、口播、核验或叙事改造")
     watermark_status = str(payload.get("watermark_status") or "").strip().lower()
     if watermark_status not in WATERMARK_REVIEWED_VALUES:
         raise ValueError("必须核对成片中的作者名、来源标识和平台浮层")
     watermark_note = _clean_multiline(payload.get("watermark_note"), 1500)
     if watermark_status != "none" and len(watermark_note) < 4:
         raise ValueError("请说明来源标识保留位置或平台浮层处理结果")
-    recreation_confirmed = str(payload.get("recreation_confirmed") or "").strip().lower()
-    if recreation_confirmed not in {"1", "true", "yes", "on"}:
-        raise ValueError("请确认当前预览的是已完成加工的再创作成片")
+    confirmation_field = (
+        "publish_confirmed" if processing_mode == "direct" else "recreation_confirmed"
+    )
+    confirmed = str(payload.get(confirmation_field) or "").strip().lower()
+    if confirmed not in {"1", "true", "yes", "on"}:
+        if processing_mode == "direct":
+            raise ValueError("请确认当前预览原片、来源标识和发布平台均无误")
+        raise ValueError("请确认当前预览的是已完成加工的新成片")
     return {
         "source_attribution": source_attribution,
+        "processing_mode": processing_mode,
         "recreation_mode": recreation_mode,
         "original_angle": _clean_multiline(payload.get("original_angle"), 1200),
         "original_contribution": original_contribution,
         "watermark_status": watermark_status,
         "watermark_note": watermark_note,
-        "recreation_confirmed": True,
+        "publish_confirmed": processing_mode == "direct",
+        "recreation_confirmed": processing_mode != "direct",
         "x_text": _clean_multiline(payload.get("x_text"), 260),
         "youtube_title": _clean_text(payload.get("youtube_title"), 100),
         "youtube_description": _clean_multiline(payload.get("youtube_description"), 5000),

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}视频再创作 - 视频搬运通道{% endblock %}
+{% block title %}确认与发布 - 视频搬运通道{% endblock %}
 
 {% block extra_css %}
 <style>
     .review-hero {
-        background: linear-gradient(135deg, #fff8e8 0%, #fffdf8 100%);
-        border: 1px solid #f4dfae;
+        background: linear-gradient(135deg, #f5f3ff 0%, #ffffff 100%);
+        border: 1px solid #ded9ff;
         border-radius: 18px;
         padding: 1.35rem;
     }
@@ -21,11 +21,69 @@
         border-radius: 12px;
         background: #101827;
     }
-    .safety-step {
-        border-left: 3px solid #f59e0b;
-        padding-left: .8rem;
-        margin-bottom: .9rem;
+    .workflow-rail {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        overflow: hidden;
+        border: 1px solid #e4e8f0;
+        border-radius: 16px;
+        background: #e4e8f0;
     }
+    .workflow-step {
+        min-height: 92px;
+        padding: 1rem 1.1rem;
+        background: #fff;
+    }
+    .workflow-step.is-done { background: linear-gradient(145deg, #f2fbf7, #fff); }
+    .workflow-step.is-current { background: linear-gradient(145deg, #f4f2ff, #fff); }
+    .workflow-index {
+        color: #6658e8;
+        font-weight: 700;
+        font-size: .78rem;
+        letter-spacing: .08em;
+    }
+    .mode-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: .75rem;
+    }
+    .mode-option {
+        position: relative;
+        display: block;
+        min-height: 138px;
+        border: 1px solid #e0e5ee;
+        border-radius: 14px;
+        padding: 1rem;
+        background: #fff;
+        cursor: pointer;
+        transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    }
+    .mode-option:hover {
+        transform: translateY(-1px);
+        border-color: #b8b1ff;
+    }
+    .mode-option:has(input:checked) {
+        border-color: #6658e8;
+        box-shadow: 0 0 0 3px rgba(102, 88, 232, .12);
+        background: linear-gradient(145deg, #f7f5ff, #fff);
+    }
+    .mode-option input {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+    }
+    .mode-title {
+        font-weight: 700;
+        margin-bottom: .45rem;
+    }
+    .mode-copy {
+        color: #667085;
+        font-size: .86rem;
+        line-height: 1.55;
+        padding-right: 1rem;
+    }
+    .mode-section[hidden] { display: none !important; }
     .probe-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -43,32 +101,6 @@
         padding: .8rem;
         background: linear-gradient(145deg, #f7faff, #ffffff);
     }
-    .workflow-rail {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 1px;
-        overflow: hidden;
-        border: 1px solid #e4e8f0;
-        border-radius: 16px;
-        background: #e4e8f0;
-    }
-    .workflow-step {
-        min-height: 92px;
-        padding: 1rem 1.1rem;
-        background: #fff;
-    }
-    .workflow-step.is-done {
-        background: linear-gradient(145deg, #f2fbf7, #fff);
-    }
-    .workflow-step.is-current {
-        background: linear-gradient(145deg, #f4f2ff, #fff);
-    }
-    .workflow-index {
-        color: #6658e8;
-        font-weight: 700;
-        font-size: .78rem;
-        letter-spacing: .08em;
-    }
     .production-card {
         color: #fff;
         border: 0;
@@ -82,34 +114,38 @@
         background: transparent !important;
     }
     .production-card .text-muted,
-    .production-card .small {
-        color: rgba(255,255,255,.67) !important;
-    }
+    .production-card .small { color: rgba(255,255,255,.67) !important; }
     .production-state {
         border: 1px solid rgba(255,255,255,.12);
         border-radius: 12px;
         padding: .8rem;
         background: rgba(255,255,255,.06);
     }
+    .check-line {
+        border-left: 3px solid #6658e8;
+        padding-left: .8rem;
+        margin-bottom: .9rem;
+    }
     @media (max-width: 767.98px) {
-        .workflow-rail { grid-template-columns: 1fr; }
-        .workflow-step { min-height: auto; }
+        .workflow-rail, .mode-grid { grid-template-columns: 1fr; }
+        .workflow-step, .mode-option { min-height: auto; }
     }
 </style>
 {% endblock %}
 
 {% block content %}
+{% set current_mode = job.processing_mode or 'direct' %}
 <div class="review-hero mb-4 d-flex flex-column flex-lg-row justify-content-between gap-3">
     <div>
         <a class="small text-decoration-none" href="{{ url_for('transfer_center_index') }}">
             <i class="bi bi-arrow-left"></i> 返回搬运中心
         </a>
-        <h1 class="h3 mt-2 mb-2">视频再创作与发布确认</h1>
-        <p class="text-muted mb-0">保留来源，完成加工，体检通过后再发布到目标平台。</p>
+        <h1 class="h3 mt-2 mb-2">选择处理方式并发布</h1>
+        <p class="text-muted mb-0">可以直接转发，也可以先做简单或专业加工；最后都由你确认。</p>
     </div>
     <div class="align-self-lg-center">
-        <span class="badge {{ 'bg-success' if job.recreation_status == 'approved' else 'bg-warning text-dark' }} fs-6">
-            {{ '已批准发布' if job.recreation_status == 'approved' else ('成片待确认' if job.recreation_completed else '等待再创作') }}
+        <span class="badge {{ 'bg-success' if job.recreation_status == 'approved' else 'bg-primary' }} fs-6">
+            {{ '已批准发布' if job.recreation_status == 'approved' else ('加工成片待确认' if job.recreation_completed else '等待确认') }}
         </span>
     </div>
 </div>
@@ -118,23 +154,23 @@
     <div class="workflow-step is-done">
         <div class="workflow-index">01 · 原片就绪</div>
         <div class="fw-semibold mt-2">来源视频与发布路线已识别</div>
-        <div class="small text-muted mt-1">当前原片只作为加工输入，不会直接发布。</div>
+        <div class="small text-muted mt-1">标题、作者、时长和平台媒体规格已读取。</div>
     </div>
-    <div class="workflow-step {{ 'is-done' if job.recreation_completed else 'is-current' }}">
-        <div class="workflow-index">02 · 内容再创作</div>
-        <div class="fw-semibold mt-2">{{ '新成片已回传' if job.recreation_completed else '送入超级印钞机加工' }}</div>
-        <div class="small text-muted mt-1">新口播、重组镜头、字幕与包装形成新作品。</div>
+    <div class="workflow-step is-current">
+        <div class="workflow-index">02 · 选择方式</div>
+        <div class="fw-semibold mt-2">直接转发 / 简单加工 / 专业加工</div>
+        <div class="small text-muted mt-1">默认走最短路径，需要时再增加加工。</div>
     </div>
-    <div class="workflow-step {{ 'is-current' if job.recreation_completed and job.recreation_status != 'approved' else '' }}">
+    <div class="workflow-step">
         <div class="workflow-index">03 · 确认并发布</div>
-        <div class="fw-semibold mt-2">来源、水印与成片体检</div>
-        <div class="small text-muted mt-1">确认无误后才会解锁 X 与 YouTube。</div>
+        <div class="fw-semibold mt-2">来源、水印与发布文案</div>
+        <div class="small text-muted mt-1">确认无误后解锁 X 与 YouTube。</div>
     </div>
 </div>
 
-<div class="alert alert-warning border-0">
-    <strong>成片标准：</strong>裁切、加字幕、加边框或单纯清理平台浮层不算完成再创作。
-    新成片需要有新的口播观点、镜头结构、事实核验、案例分析或叙事逻辑。
+<div class="alert alert-primary border-0">
+    <strong>最简单的做法：</strong>选择“直接转发”，核对来源与水印后即可确认。
+    如果只想统一画幅、片头片尾和编码，选择“简单加工”。
 </div>
 
 <div class="row g-4">
@@ -146,7 +182,7 @@
                         <h2 class="h5 mb-1">{{ job.title or '等待获取视频标题' }}</h2>
                         <div class="small text-muted">
                             {{ job.source_uploader or '来源作者待识别' }}
-                            · {{ '再创作成片' if job.recreation_completed else '原始参考片' }}
+                            · {{ '加工成片' if job.recreation_completed else '当前原片' }}
                         </div>
                     </div>
                     <a href="{{ job.source_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary align-self-start">
@@ -165,33 +201,38 @@
 
         <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" class="card review-card">
             <div class="card-header bg-white py-3">
-                <h2 class="h5 mb-1">审核表</h2>
-                <div class="small text-muted">所有字段只记录在本机；系统不会替你判断版权或合理使用成立。</div>
+                <h2 class="h5 mb-1">发布确认</h2>
+                <div class="small text-muted">先选处理方式，再核对来源与目标平台。</div>
             </div>
             <div class="card-body">
-                <h3 class="h6 mb-3">1. 来源标识与加工方式</h3>
+                <h3 class="h6 mb-3">1. 这条视频怎么处理？</h3>
+                <div class="mode-grid mb-4">
+                    <label class="mode-option">
+                        <input class="form-check-input" type="radio" name="processing_mode" value="direct" {% if current_mode == 'direct' %}checked{% endif %}>
+                        <div class="mode-title">直接转发</div>
+                        <div class="mode-copy">使用当前原片，不进入超级印钞机。核对来源、水印和发布文案后即可确认。</div>
+                    </label>
+                    <label class="mode-option">
+                        <input class="form-check-input" type="radio" name="processing_mode" value="quick" {% if current_mode == 'quick' %}checked{% endif %}>
+                        <div class="mode-title">简单加工</div>
+                        <div class="mode-copy">在超级印钞机中一键统一画幅、片头片尾、来源标识与 H.264 编码。</div>
+                    </label>
+                    <label class="mode-option">
+                        <input class="form-check-input" type="radio" name="processing_mode" value="professional" {% if current_mode == 'professional' %}checked{% endif %}>
+                        <div class="mode-title">专业加工</div>
+                        <div class="mode-copy">进行镜头重组、原创口播、配音、字幕、短剧复盘与复杂包装。</div>
+                    </label>
+                </div>
+
+                <h3 class="h6 mb-3">2. 来源与水印</h3>
                 <div class="row g-3 mb-4">
-                    <div class="col-md-6">
-                        <label class="form-label">再创作方式</label>
-                        <select class="form-select" name="recreation_mode">
-                            {% for value, label in recreation_modes.items() %}
-                            <option value="{{ value }}" {% if job.recreation_mode == value %}selected{% endif %}>{{ label }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
                     <div class="col-12">
                         <label class="form-label">原作者、原账号或原视频来源</label>
                         <textarea class="form-control" name="source_attribution" rows="3" minlength="2" required placeholder="保留原作者、原账号和原视频链接。">{{ job.source_attribution or ((job.source_uploader or '') ~ '\n' ~ (job.source_url or ''))|trim }}</textarea>
-                        <div class="form-text">这段来源信息会保留在任务记录中，也可用于发布简介。</div>
+                        <div class="form-text">来源信息会保留在任务记录中，也可用于发布简介。</div>
                     </div>
-                </div>
-
-                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                    <h3 class="h6 mb-0">2. 水印与来源标识</h3>
-                </div>
-                <div class="row g-3 mb-4">
                     <div class="col-md-6">
-                        <label class="form-label">成片核对结果</label>
+                        <label class="form-label">画面核对结果</label>
                         <select class="form-select" name="watermark_status" required>
                             <option value="">请选择核对结果</option>
                             {% for value, label in watermark_states.items() %}
@@ -201,34 +242,44 @@
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">来源标识处理说明</label>
-                        <textarea class="form-control" name="watermark_note" rows="3" placeholder="说明来源标识保留在哪里，或清理了哪些不承载作者归属的平台浮层。">{{ job.watermark_note or '' }}</textarea>
-                    </div>
-                    <div class="col-12">
-                        <div class="alert alert-light border small mb-0">
-                            系统不会移除作者名来掩盖来源。平台下载浮层可在加工时清理，
-                            但成片或发布文案中必须保留清晰的来源署名。
-                        </div>
+                        <textarea class="form-control" name="watermark_note" rows="3" placeholder="说明来源标识保留在哪里，或清理了哪些平台浮层。">{{ job.watermark_note or '' }}</textarea>
                     </div>
                 </div>
 
-                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                    <h3 class="h6 mb-0">3. 实质性再创作方案</h3>
+                <div class="mode-section" data-mode-section="processed">
+                    <h3 class="h6 mb-3">3. 加工说明</h3>
+                    <div class="mb-3 mode-section" data-mode-section="professional">
+                        <label class="form-label">专业加工类型</label>
+                        <select class="form-select" name="recreation_mode">
+                            {% for value, label in recreation_modes.items() %}
+                            <option value="{{ value }}" {% if job.recreation_mode == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3 mode-section" data-mode-section="professional">
+                        <label class="form-label">新的原创角度</label>
+                        <textarea class="form-control" name="original_angle" rows="3" placeholder="这条成片要表达什么不同于原视频的新观点？">{{ job.original_angle or '' }}</textarea>
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label" id="contributionLabel">本次加工内容</label>
+                        <textarea class="form-control" name="original_contribution" id="originalContribution" rows="4">{{ job.original_contribution or '' }}</textarea>
+                    </div>
+                    <div class="form-check border rounded-3 p-3 ps-5 mb-4">
+                        <input class="form-check-input" type="checkbox" name="recreation_confirmed" id="recreationConfirmed">
+                        <label class="form-check-label fw-semibold" for="recreationConfirmed">
+                            我确认当前预览的是已经加工完成的新成片
+                        </label>
+                        <div class="form-text">简单或专业加工都需要先回传新成片。</div>
+                    </div>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">新的原创角度</label>
-                    <textarea class="form-control" name="original_angle" rows="3" placeholder="这条成片要表达什么不同于原视频的新观点？">{{ job.original_angle or '' }}</textarea>
-                </div>
-                <div class="mb-4">
-                    <label class="form-label">实际成片增加的原创贡献</label>
-                    <textarea class="form-control" name="original_contribution" rows="5" minlength="30" required placeholder="具体写明新增口播、观点、核验、案例、重组叙事和删除了哪些非必要片段。">{{ job.original_contribution or '' }}</textarea>
-                    <div class="form-text">请按实际已经完成的成片填写，不要只复制AI建议。</div>
-                </div>
-                <div class="form-check border rounded-3 p-3 ps-5 mb-4">
-                    <input class="form-check-input" type="checkbox" name="recreation_confirmed" id="recreationConfirmed" required>
-                    <label class="form-check-label fw-semibold" for="recreationConfirmed">
-                        我确认当前预览的是已完成加工的新成片，不是未经处理的原片
-                    </label>
-                    <div class="form-text">只有上传新的再创作成片后，这项确认才会生效。</div>
+
+                <div class="mode-section" data-mode-section="direct">
+                    <div class="form-check border rounded-3 p-3 ps-5 mb-4">
+                        <input class="form-check-input" type="checkbox" name="publish_confirmed" id="publishConfirmed">
+                        <label class="form-check-label fw-semibold" for="publishConfirmed">
+                            我确认直接使用当前原片，来源标识、目标平台和发布文案均无误
+                        </label>
+                    </div>
                 </div>
 
                 <h3 class="h6 mb-3">4. 分平台文案</h3>
@@ -247,8 +298,8 @@
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
                 <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
-                <button class="btn btn-success" name="action" value="approve" {% if not job.recreation_completed %}disabled{% endif %}>
-                    <i class="bi bi-check2-circle me-1"></i>确认成片并批准发布
+                <button class="btn btn-success" id="approveButton" name="action" value="approve" data-recreated="{{ 1 if job.recreation_completed else 0 }}">
+                    <i class="bi bi-check2-circle me-1"></i><span id="approveButtonLabel">确认并批准发布</span>
                 </button>
             </div>
         </form>
@@ -263,20 +314,15 @@
                 <div class="route-card mb-2">
                     <div class="d-flex justify-content-between gap-2">
                         <strong>X</strong>
-                        <span class="badge {{ 'bg-warning text-dark' if distribution_plan.x.requires_editorial_cut else 'bg-success' }}">
-                            {{ distribution_plan.x.label }}
-                        </span>
+                        <span class="badge {{ 'bg-warning text-dark' if distribution_plan.x.requires_editorial_cut else 'bg-success' }}">{{ distribution_plan.x.label }}</span>
                     </div>
                     {% if distribution_plan.x.requires_editorial_cut %}
-                    <div class="small text-muted mt-2">
-                        预计需要 {{ distribution_plan.x.estimated_editorial_parts }} 个原创章节，每条不超过
-                        {{ distribution_plan.x.recommended_max_seconds }} 秒。
-                    </div>
+                    <div class="small text-muted mt-2">长视频建议拆为 {{ distribution_plan.x.estimated_editorial_parts }} 个章节，每条不超过 {{ distribution_plan.x.recommended_max_seconds }} 秒。</div>
                     {% endif %}
                 </div>
                 {% endif %}
                 {% if distribution_plan.youtube %}
-                <div class="route-card mb-2">
+                <div class="route-card">
                     <div class="d-flex justify-content-between gap-2">
                         <strong>YouTube</strong>
                         <span class="badge bg-primary">{{ distribution_plan.youtube.label }}</span>
@@ -284,41 +330,46 @@
                     <div class="small text-muted mt-2">{{ distribution_plan.youtube.note }}</div>
                 </div>
                 {% endif %}
-                <div class="small text-muted mt-3">{{ distribution_plan.editorial_notice }}</div>
             </div>
         </div>
         {% endif %}
 
         <div class="card review-card production-card mb-4">
-            <div class="card-header py-3"><h2 class="h6 mb-0">超级印钞机 · 再创作加工</h2></div>
+            <div class="card-header py-3"><h2 class="h6 mb-0">超级印钞机 · 可选加工</h2></div>
             <div class="card-body">
-                <p class="small mb-3">把原片送入视频制作系统，分析节奏并建立加工项目。完成新口播、镜头重组、字幕和包装后，再把新成片回传到这里。</p>
+                <p class="small mb-3">不加工可直接跳过。需要加工时先选简单模式；只有确实要重做内容才进入专业模式。</p>
                 <div class="production-state mb-3">
                     <div class="small">联动状态</div>
                     <div class="fw-semibold mt-1">
-                        {% if job.mpt_status == 'ready' %}项目已建立，原片分析完成
+                        {% if job.mpt_status == 'ready' %}项目已建立，原片已就绪
                         {% elif job.mpt_status == 'failed' %}联动失败，可以重试
                         {% elif job.mpt_status == 'sending' %}正在送入超级印钞机
                         {% else %}尚未建立加工项目{% endif %}
                     </div>
                     {% if job.mpt_message %}<div class="small mt-1">{{ job.mpt_message }}</div>{% endif %}
                 </div>
-                {% if money_printer_url %}
-                <a class="btn btn-light w-100 mb-2" href="{{ money_printer_url }}">
-                    <i class="bi bi-magic me-1"></i>进入超级印钞机继续加工
+                {% if money_printer_quick_url %}
+                <a class="btn btn-light w-100 mb-2" href="{{ money_printer_quick_url }}">
+                    <i class="bi bi-lightning-charge me-1"></i>简单加工
+                </a>
+                <a class="btn btn-outline-light w-100" href="{{ money_printer_professional_url }}">
+                    <i class="bi bi-sliders me-1"></i>专业加工
                 </a>
                 {% else %}
+                <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
+                    <input type="hidden" name="workflow" value="quick">
+                    <button class="btn btn-light w-100"><i class="bi bi-lightning-charge me-1"></i>开始简单加工</button>
+                </form>
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}">
-                    <button class="btn btn-light w-100 mb-2">
-                        <i class="bi bi-send me-1"></i>送入超级印钞机
-                    </button>
+                    <input type="hidden" name="workflow" value="professional">
+                    <button class="btn btn-outline-light w-100"><i class="bi bi-sliders me-1"></i>进入专业加工</button>
                 </form>
                 {% endif %}
             </div>
         </div>
 
         <div class="card review-card mb-4">
-            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">成片回传与媒体体检</h2></div>
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">媒体体检与成片回传</h2></div>
             <div class="card-body">
                 {% if media_probe %}
                 <div class="probe-grid mb-3">
@@ -327,61 +378,96 @@
                     <div class="probe-item"><div class="small text-muted">视频编码</div><strong>{{ media_probe.video_codec|upper }}</strong></div>
                     <div class="probe-item"><div class="small text-muted">音频编码</div><strong>{{ media_probe.audio_codec|upper or '无' }}</strong></div>
                 </div>
-                {% else %}
-                <div class="text-muted">下载后自动进行体检。</div>
                 {% endif %}
                 {% for target in ['x', 'youtube'] %}
                     {% if target in platform_variants %}
                     {% set variant = platform_variants[target] %}
                     <div class="d-flex justify-content-between align-items-center border-top py-2">
                         <strong>{{ target|upper }}</strong>
-                        <span class="badge {{ 'bg-success' if variant.status == 'ready' else 'bg-danger' }}">
-                            {{ '媒体已就绪' if variant.status == 'ready' else '需要处理' }}
-                        </span>
+                        <span class="badge {{ 'bg-success' if variant.status == 'ready' else 'bg-danger' }}">{{ '媒体已就绪' if variant.status == 'ready' else '需要处理' }}</span>
                     </div>
-                    {% if variant.issues %}
-                    <div class="small text-muted mb-2">{{ variant.issues|join('；') }}</div>
-                    {% endif %}
+                    {% if variant.issues %}<div class="small text-muted mb-2">{{ variant.issues|join('；') }}</div>{% endif %}
                     {% endif %}
                 {% endfor %}
                 <form method="post" action="{{ url_for('transfer_center_replace_review_media', job_id=job.id) }}" enctype="multipart/form-data" class="border-top pt-3 mt-2">
-                    <label class="form-label fw-semibold">上传超级印钞机导出的新成片</label>
+                    <label class="form-label fw-semibold">上传加工后导出的新成片</label>
                     <input class="form-control form-control-sm mb-2" type="file" name="recreated_video" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" required>
-                    <div class="form-text mb-2">回传后会替换当前预览、重新体检，并撤销旧批准。</div>
+                    <div class="form-text mb-2">只有选择简单或专业加工时才需要上传。</div>
                     <button class="btn btn-sm btn-outline-primary w-100">替换成片并重新体检</button>
                 </form>
             </div>
         </div>
 
-        <div class="card review-card mb-4">
-            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">AI再创作草案</h2></div>
+        <div class="card review-card mb-4 mode-section" data-mode-section="professional">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">AI 专业加工草案</h2></div>
             <div class="card-body">
-                <p class="small text-muted">根据现有 AI 配置生成新观点、口播结构和文案建议；草案不等于已经完成加工。</p>
+                <p class="small text-muted">需要重做内容时，可生成新观点、口播结构和镜头建议。</p>
                 <form method="post" action="{{ url_for('transfer_center_generate_review', job_id=job.id) }}">
                     <button class="btn btn-outline-warning w-100" {% if not job.local_video_path %}disabled{% endif %}>
-                        <i class="bi bi-stars me-1"></i>重新生成再创作草案
+                        <i class="bi bi-stars me-1"></i>生成专业加工草案
                     </button>
                 </form>
                 {% if recreation_plan.commentary_outline %}
                 <ol class="small mt-3 mb-0 ps-3">
-                    {% for item in recreation_plan.commentary_outline %}
-                    <li class="mb-2">{{ item }}</li>
-                    {% endfor %}
+                    {% for item in recreation_plan.commentary_outline %}<li class="mb-2">{{ item }}</li>{% endfor %}
                 </ol>
                 {% endif %}
             </div>
         </div>
 
         <div class="card review-card">
-            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">批准前必须满足</h2></div>
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">发布前确认</h2></div>
             <div class="card-body small">
-                <div class="safety-step">原作者、原账号或原视频链接已经清楚记录。</div>
-                <div class="safety-step">作者与来源标识没有为掩盖来源而被移除。</div>
-                <div class="safety-step">新成片已经加入原创观点、口播/出镜、核验、案例或新叙事。</div>
-                <div class="safety-step">平台专用媒体版本体检通过。</div>
-                <div class="safety-step mb-0">标题、简介和素材署名与实际内容一致，不误导观众。</div>
+                <div class="check-line">来源作者、原账号或原视频链接已经记录。</div>
+                <div class="check-line">平台浮层可以清理，但来源标识仍需保留。</div>
+                <div class="check-line">直接转发已核对原片；选择加工时已上传新成片。</div>
+                <div class="check-line mb-0">目标平台和发布文案已经最后确认。</div>
             </div>
         </div>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const modeInputs = Array.from(document.querySelectorAll('input[name="processing_mode"]'));
+    const approveButton = document.getElementById('approveButton');
+    const approveLabel = document.getElementById('approveButtonLabel');
+    const contribution = document.getElementById('originalContribution');
+    const contributionLabel = document.getElementById('contributionLabel');
+    const publishConfirmed = document.getElementById('publishConfirmed');
+    const recreationConfirmed = document.getElementById('recreationConfirmed');
+    const hasRecreatedMedia = approveButton?.dataset.recreated === '1';
+
+    function syncMode() {
+        const mode = modeInputs.find((input) => input.checked)?.value || 'direct';
+        document.querySelectorAll('[data-mode-section]').forEach((section) => {
+            const target = section.dataset.modeSection;
+            section.hidden = !(target === mode || (target === 'processed' && mode !== 'direct'));
+        });
+        if (publishConfirmed) publishConfirmed.required = mode === 'direct';
+        if (recreationConfirmed) recreationConfirmed.required = mode !== 'direct';
+        if (contribution) {
+            contribution.required = mode !== 'direct';
+            contribution.minLength = mode === 'professional' ? 30 : 4;
+            contribution.placeholder = mode === 'professional'
+                ? '具体写明新增口播、观点、核验、案例或重组叙事。'
+                : '例如：改为竖屏、增加片头片尾和来源标识。';
+        }
+        if (contributionLabel) {
+            contributionLabel.textContent = mode === 'professional'
+                ? '实际成片增加的原创贡献'
+                : '本次简单加工内容';
+        }
+        if (approveButton) approveButton.disabled = mode !== 'direct' && !hasRecreatedMedia;
+        if (approveLabel) {
+            approveLabel.textContent = mode === 'direct'
+                ? '确认原片并批准发布'
+                : '确认加工成片并批准发布';
+        }
+    }
+
+    modeInputs.forEach((input) => input.addEventListener('change', syncMode));
+    syncMode();
+});
+</script>
 {% endblock %}

@@ -223,6 +223,7 @@ class TransferCenter:
                     watermark_status TEXT DEFAULT 'unreviewed',
                     watermark_note TEXT DEFAULT '',
                     recreation_mode TEXT DEFAULT 'commentary',
+                    processing_mode TEXT DEFAULT 'direct',
                     recreation_status TEXT DEFAULT 'pending',
                     recreation_plan_json TEXT DEFAULT '{}',
                     original_angle TEXT DEFAULT '',
@@ -236,6 +237,7 @@ class TransferCenter:
                     mpt_asset_id TEXT DEFAULT '',
                     mpt_status TEXT DEFAULT '',
                     mpt_message TEXT DEFAULT '',
+                    mpt_workflow TEXT DEFAULT '',
                     prepare_attempts INTEGER NOT NULL DEFAULT 0,
                     x_publish_status TEXT DEFAULT 'pending',
                     youtube_publish_status TEXT DEFAULT 'pending',
@@ -326,6 +328,7 @@ class TransferCenter:
             "watermark_status": "TEXT DEFAULT 'unreviewed'",
             "watermark_note": "TEXT DEFAULT ''",
             "recreation_mode": "TEXT DEFAULT 'commentary'",
+            "processing_mode": "TEXT DEFAULT 'direct'",
             "recreation_status": "TEXT DEFAULT 'pending'",
             "recreation_plan_json": "TEXT DEFAULT '{}'",
             "original_angle": "TEXT DEFAULT ''",
@@ -339,6 +342,7 @@ class TransferCenter:
             "mpt_asset_id": "TEXT DEFAULT ''",
             "mpt_status": "TEXT DEFAULT ''",
             "mpt_message": "TEXT DEFAULT ''",
+            "mpt_workflow": "TEXT DEFAULT ''",
             "prepare_attempts": "INTEGER NOT NULL DEFAULT 0",
             "x_publish_status": "TEXT DEFAULT 'pending'",
             "youtube_publish_status": "TEXT DEFAULT 'pending'",
@@ -367,6 +371,14 @@ class TransferCenter:
             UPDATE transfer_jobs
             SET original_video_path = local_video_path
             WHERE original_video_path = '' AND local_video_path <> ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE transfer_jobs
+            SET processing_mode = 'professional'
+            WHERE recreation_completed = 1
+              AND (processing_mode = '' OR processing_mode = 'direct')
             """
         )
         conn.execute(
@@ -868,6 +880,7 @@ class TransferCenter:
             "watermark_status",
             "watermark_note",
             "recreation_mode",
+            "processing_mode",
             "recreation_status",
             "recreation_plan_json",
             "original_angle",
@@ -881,6 +894,7 @@ class TransferCenter:
             "mpt_asset_id",
             "mpt_status",
             "mpt_message",
+            "mpt_workflow",
             "prepare_attempts",
             "x_publish_status",
             "youtube_publish_status",
@@ -1176,13 +1190,14 @@ class TransferCenter:
             job_id,
             status=JOB_STATUSES["REVIEW"],
             progress_percent=72,
-            progress_message="素材已就绪，等待再创作审核",
+            progress_message="素材已就绪，等待选择处理方式",
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
             distribution_plan_json=json.dumps(distribution_plan, ensure_ascii=False),
             recreation_status="draft",
             recreation_completed=0,
+            processing_mode="direct",
             recreation_plan_json=serialize_plan(plan),
             original_angle=str(plan.get("original_angle") or ""),
             original_contribution=str(plan.get("original_contribution") or ""),
@@ -1284,8 +1299,32 @@ class TransferCenter:
         recreation_status = "draft"
         reviewed_at = None
         if approve:
-            if not int(job.get("recreation_completed") or 0):
+            if (
+                normalized["processing_mode"] != "direct"
+                and not int(job.get("recreation_completed") or 0)
+            ):
                 raise ValueError("请先通过超级印钞机或其他剪辑工具完成加工，并上传新的再创作成片")
+            if normalized["processing_mode"] == "direct":
+                original_path = str(job.get("original_video_path") or "")
+                if original_path and os.path.isfile(original_path):
+                    targets = _json_list(job.get("target_platforms"))
+                    media_info, variants = prepare_platform_variants(
+                        original_path,
+                        str(Path(original_path).parent),
+                        targets,
+                    )
+                    distribution_plan = build_distribution_plan(media_info, targets)
+                    self._update_job(
+                        job_id,
+                        local_video_path=original_path,
+                        recreation_completed=0,
+                        media_probe_json=json.dumps(media_info, ensure_ascii=False),
+                        platform_variants_json=json.dumps(variants, ensure_ascii=False),
+                        distribution_plan_json=json.dumps(
+                            distribution_plan, ensure_ascii=False
+                        ),
+                    )
+                    job = self.get_job(job_id) or job
             variants = deserialize_plan(job.get("platform_variants_json"))
             blockers = []
             for target in _json_list(job.get("target_platforms")):
@@ -1303,6 +1342,7 @@ class TransferCenter:
             job_id,
             status=status,
             source_attribution=normalized["source_attribution"],
+            processing_mode=normalized["processing_mode"],
             recreation_mode=normalized["recreation_mode"],
             recreation_status=recreation_status,
             recreation_plan_json=serialize_plan(plan),
@@ -1318,14 +1358,25 @@ class TransferCenter:
         )
         return self.get_job(job_id) or {}
 
-    def send_to_money_printer(self, job_id: str) -> dict:
+    def send_to_money_printer(
+        self,
+        job_id: str,
+        *,
+        workflow: str = "quick",
+    ) -> dict:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
         video_path = str(job.get("original_video_path") or job.get("local_video_path") or "")
         if not video_path or not os.path.isfile(video_path):
             raise ValueError("原视频尚未下载完成")
+        workflow = workflow if workflow in {"quick", "professional"} else "quick"
         if job.get("mpt_project_id") and job.get("mpt_asset_id"):
+            self._update_job(
+                job_id,
+                processing_mode=workflow,
+                mpt_workflow=workflow,
+            )
             return self.get_job(job_id) or {}
 
         base_url = str(
@@ -1337,7 +1388,8 @@ class TransferCenter:
         self._update_job(
             job_id,
             mpt_status="sending",
-            mpt_message="正在创建再创作项目并分析原片",
+            mpt_workflow=workflow,
+            mpt_message="正在创建加工项目并读取原片",
         )
 
         def api_json(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -1359,10 +1411,10 @@ class TransferCenter:
                 "POST",
                 "/api/v1/projects",
                 json={
-                    "name": f"搬运再创作｜{str(job.get('title') or '未命名视频')[:36]}",
+                    "name": f"搬运加工｜{str(job.get('title') or '未命名视频')[:36]}",
                     "description": (
-                        "来自视频搬运通道。原片仅作为节奏和素材参考；"
-                        "请完成新口播、镜头重组、字幕与包装后再回传成片。\n"
+                        "来自视频搬运通道。可选择简单加工或专业加工；"
+                        "导出后回传成片，再由用户确认发布。\n"
                         f"来源：{job.get('source_uploader') or '原发布者'}\n"
                         f"{job.get('source_url') or ''}"
                     ),
@@ -1403,7 +1455,13 @@ class TransferCenter:
                 mpt_project_id=project_id,
                 mpt_asset_id=asset_id,
                 mpt_status="ready",
-                mpt_message="原片分析完成，可以进入超级印钞机加工",
+                processing_mode=workflow,
+                mpt_workflow=workflow,
+                mpt_message=(
+                    "原片已就绪，可以一键生成简单成片"
+                    if workflow == "quick"
+                    else "原片分析完成，可以进行专业加工"
+                ),
             )
             return self.get_job(job_id) or {}
         except Exception as exc:
@@ -1415,10 +1473,22 @@ class TransferCenter:
             )
             raise RuntimeError(f"送入超级印钞机失败：{message}") from exc
 
-    def money_printer_url(self, job: dict[str, Any]) -> str:
+    def money_printer_url(
+        self,
+        job: dict[str, Any],
+        *,
+        workflow: str | None = None,
+    ) -> str:
         project_id = str(job.get("mpt_project_id") or "").strip()
         if not project_id:
             return ""
+        selected_workflow = (
+            workflow
+            if workflow in {"quick", "professional"}
+            else str(job.get("mpt_workflow") or job.get("processing_mode") or "quick")
+        )
+        if selected_workflow not in {"quick", "professional"}:
+            selected_workflow = "quick"
         public_url = str(
             self._config().get("TRANSFER_MPT_PUBLIC_URL")
             or "http://192.168.1.249:18081/app/"
@@ -1429,8 +1499,11 @@ class TransferCenter:
             + urlencode(
                 {
                     "project_id": project_id,
-                    "studio": "intelligence",
+                    "asset_id": str(job.get("mpt_asset_id") or ""),
+                    "studio": "quick" if selected_workflow == "quick" else "intelligence",
+                    "workflow": selected_workflow,
                     "source": "transfer",
+                    "source_attribution": str(job.get("source_uploader") or "原发布者")[:120],
                 }
             )
         )
@@ -1610,7 +1683,7 @@ class TransferCenter:
         if len(str(job.get("source_attribution") or "").strip()) < 2:
             raise ValueError("来源标识尚未填写，禁止发布")
         if str(job.get("recreation_status") or "") != "approved":
-            raise ValueError("再创作方案和实际成片尚未人工批准，禁止发布")
+            raise ValueError("当前视频尚未人工确认，禁止发布")
         if str(job.get("watermark_status") or "") not in {
             "none",
             "own_brand",

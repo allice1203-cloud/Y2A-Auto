@@ -40,6 +40,7 @@ def test_review_payload_enforces_real_contribution_detail():
         validate_review_payload(
             {
                 "source_attribution": "原作者：https://example.com/source",
+                "processing_mode": "professional",
                 "original_contribution": "加字幕",
                 "watermark_status": "none",
                 "recreation_confirmed": "on",
@@ -52,6 +53,7 @@ def test_review_payload_requires_recreated_media_confirmation():
         validate_review_payload(
             {
                 "source_attribution": "原作者：https://example.com/source",
+                "processing_mode": "professional",
                 "original_contribution": (
                     "加入多段原创旁白、剧情结构分析、人物动机复盘、重新编排后的独立评价和结尾观点。"
                 ),
@@ -59,6 +61,22 @@ def test_review_payload_requires_recreated_media_confirmation():
                 "watermark_note": "已清理平台浮层，片尾保留原作者署名",
             }
         )
+
+
+def test_direct_transfer_only_requires_source_watermark_and_final_confirmation():
+    result = validate_review_payload(
+        {
+            "source_attribution": "原作者：https://example.com/source",
+            "processing_mode": "direct",
+            "watermark_status": "third_party_preserved",
+            "watermark_note": "画面保留原作者账号",
+            "publish_confirmed": "on",
+        }
+    )
+
+    assert result["processing_mode"] == "direct"
+    assert result["publish_confirmed"] is True
+    assert result["original_contribution"] == ""
 
 
 def test_drama_recap_plan_rejects_mechanical_episode_reposting():

@@ -32,6 +32,7 @@ from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import get_transfer_center
 from modules.content_recreation import (
+    PROCESSING_MODES,
     RECREATION_MODES,
     WATERMARK_STATES,
     deserialize_plan,
@@ -3652,7 +3653,7 @@ def transfer_center_add_job():
             job_id,
             publish_after=False,
         )
-        flash('任务已创建；下载完成后会进入再创作工作台，不会直接发布。', 'success')
+        flash('任务已创建；下载完成后会进入处理方式与发布确认，不会自动发布。', 'success')
     except Exception as e:
         flash(f'创建搬运任务失败：{e}', 'danger')
     return redirect(url_for('tasks'))
@@ -3691,12 +3692,19 @@ def transfer_center_review_job(job_id):
         'transfer_review.html',
         job=job,
         recreation_modes=RECREATION_MODES,
+        processing_modes=PROCESSING_MODES,
         recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
         watermark_states=WATERMARK_STATES,
         money_printer_url=_transfer_center().money_printer_url(job),
+        money_printer_quick_url=_transfer_center().money_printer_url(
+            job, workflow='quick'
+        ),
+        money_printer_professional_url=_transfer_center().money_printer_url(
+            job, workflow='professional'
+        ),
     )
 
 
@@ -3793,12 +3801,14 @@ def transfer_center_save_review(job_id):
             job_id,
             {
                 'source_attribution': request.form.get('source_attribution'),
+                'processing_mode': request.form.get('processing_mode'),
                 'recreation_mode': request.form.get('recreation_mode'),
                 'original_angle': request.form.get('original_angle'),
                 'original_contribution': request.form.get('original_contribution'),
                 'watermark_status': request.form.get('watermark_status'),
                 'watermark_note': request.form.get('watermark_note'),
                 'recreation_confirmed': request.form.get('recreation_confirmed'),
+                'publish_confirmed': request.form.get('publish_confirmed'),
                 'x_text': request.form.get('x_text'),
                 'youtube_title': request.form.get('youtube_title'),
                 'youtube_description': request.form.get('youtube_description'),
@@ -3806,9 +3816,9 @@ def transfer_center_save_review(job_id):
             approve=approve,
         )
         flash(
-            '再创作成片已确认，可以进入发布。'
+            '视频已确认，可以进入发布。'
             if approve
-            else '审核草稿已保存，尚未允许发布。',
+            else '确认草稿已保存，尚未允许发布。',
             'success',
         )
     except Exception as e:
@@ -3824,13 +3834,22 @@ def transfer_center_save_review(job_id):
 @app.route('/transfer-center/jobs/<job_id>/money-printer', methods=['POST'])
 @login_required
 def transfer_center_send_to_money_printer(job_id):
+    workflow = (
+        request.form.get('workflow')
+        if request.form.get('workflow') in ('quick', 'professional')
+        else 'quick'
+    )
     try:
-        job = _transfer_center().send_to_money_printer(job_id)
+        job = _transfer_center().send_to_money_printer(job_id, workflow=workflow)
         flash(
-            '已在超级印钞机建立再创作项目并完成原片分析。请进入加工，完成后回传新成片。',
+            (
+                '已进入超级印钞机简单加工，只需确认画幅、片头片尾和来源标识。'
+                if workflow == 'quick'
+                else '已进入超级印钞机专业加工，可继续镜头重组、配音和深度包装。'
+            ),
             'success',
         )
-        target_url = _transfer_center().money_printer_url(job)
+        target_url = _transfer_center().money_printer_url(job, workflow=workflow)
         if target_url:
             return redirect(target_url)
     except Exception as e:
