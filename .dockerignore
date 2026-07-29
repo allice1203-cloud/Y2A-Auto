@@ -34,6 +34,7 @@ ffmpeg/
 
 # Database files (exclude from image)  
 db/
+backups/
 tasks.db
 *.db
 *.sqlite
