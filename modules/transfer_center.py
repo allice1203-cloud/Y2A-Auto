@@ -393,6 +393,13 @@ class TransferCenter:
             WHERE source_attribution = ''
             """
         )
+        conn.execute(
+            """
+            UPDATE transfer_jobs
+            SET progress_message = '素材已就绪，等待选择处理方式'
+            WHERE progress_message = '素材已就绪，等待再创作审核'
+            """
+        )
 
     def _config(self) -> dict:
         config = self._config_provider()
