@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
     "TRANSFER_BILIBILI_COOKIES_PATH": "cookies/bilibili_source_cookies.txt",
     "TRANSFER_DOUYIN_COOKIES_PATH": "cookies/douyin_cookies.txt",
     "TRANSFER_X_ACCESS_TOKEN": "",
+    "TRANSFER_PUBLIC_BASE_URL": "",
     "TRANSFER_YOUTUBE_CATEGORY_ID": "22",
     "TRANSFER_YOUTUBE_PRIVACY": "private",
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）

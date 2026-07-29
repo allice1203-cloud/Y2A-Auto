@@ -32,6 +32,7 @@ from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import (
     YOUTUBE_SCOPES,
+    build_youtube_oauth_redirect_uri,
     get_transfer_center,
     save_youtube_connection,
     verify_youtube_credentials,
@@ -3491,6 +3492,30 @@ def _transfer_target_list(form):
     ]
 
 
+def _transfer_youtube_redirect_uri():
+    config = load_config()
+    public_base_url = str(
+        os.environ.get('TRANSFER_PUBLIC_BASE_URL')
+        or config.get('TRANSFER_PUBLIC_BASE_URL')
+        or ''
+    ).strip()
+    forwarded_host = str(
+        request.headers.get('X-Forwarded-Host')
+        or request.host
+        or ''
+    )
+    forwarded_scheme = str(
+        request.headers.get('X-Forwarded-Proto')
+        or request.scheme
+        or 'http'
+    )
+    return build_youtube_oauth_redirect_uri(
+        public_base_url,
+        request_host=forwarded_host,
+        request_scheme=forwarded_scheme,
+    )
+
+
 @app.route('/transfer-center')
 @login_required
 def transfer_center_index():
@@ -3940,7 +3965,7 @@ def transfer_center_youtube_connect():
     try:
         from google_auth_oauthlib.flow import Flow
 
-        redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
+        redirect_uri = _transfer_youtube_redirect_uri()
         flow = Flow.from_client_secrets_file(
             client_secret_path,
             scopes=list(YOUTUBE_SCOPES),
@@ -3984,7 +4009,7 @@ def transfer_center_youtube_callback():
     try:
         from google_auth_oauthlib.flow import Flow
 
-        redirect_uri = url_for('transfer_center_youtube_callback', _external=True)
+        redirect_uri = _transfer_youtube_redirect_uri()
         flow = Flow.from_client_secrets_file(
             client_secret_path,
             scopes=list(YOUTUBE_SCOPES),
@@ -3993,9 +4018,8 @@ def transfer_center_youtube_callback():
             code_verifier=code_verifier,
             autogenerate_code_verifier=False,
         )
-        # The callback is intentionally loopback HTTP, while the token exchange
-        # still goes to Google's HTTPS endpoint. Passing the verified code avoids
-        # globally disabling OAuthlib transport checks for the whole process.
+        # Use the exact same registered HTTPS redirect URI for authorization and
+        # token exchange. Passing the verified code keeps OAuthlib checks enabled.
         flow.fetch_token(code=authorization_code)
         channel = verify_youtube_credentials(flow.credentials)
         save_youtube_connection(flow.credentials, channel)

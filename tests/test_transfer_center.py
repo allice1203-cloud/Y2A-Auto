@@ -159,6 +159,26 @@ def test_youtube_connection_requires_verified_channel(center, tmp_path):
     assert state["channel_title"] == "Allice"
 
 
+def test_youtube_oauth_redirect_uses_stable_public_https_url():
+    redirect_uri = transfer_module.build_youtube_oauth_redirect_uri(
+        "https://transfer.sg99.online/"
+    )
+    assert redirect_uri == (
+        "https://transfer.sg99.online/transfer-center/youtube/callback"
+    )
+
+    proxied_redirect_uri = transfer_module.build_youtube_oauth_redirect_uri(
+        request_host="transfer.sg99.online",
+        request_scheme="http",
+    )
+    assert proxied_redirect_uri == redirect_uri
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        transfer_module.build_youtube_oauth_redirect_uri(
+            "http://transfer.sg99.online"
+        )
+
+
 def test_youtube_signup_error_waits_for_reconnect_without_retry(
     center, tmp_path, monkeypatch
 ):

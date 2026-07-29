@@ -20,6 +20,7 @@ services:
       PYTHONIOENCODING: utf-8
       HTTP_PROXY: http://172.17.0.1:17890
       HTTPS_PROXY: http://172.17.0.1:17890
+      TRANSFER_PUBLIC_BASE_URL: https://transfer.sg99.online
       NO_PROXY: localhost,127.0.0.1,.bilibili.com,.bilivideo.com,.b23.tv,.douyin.com,.bytedance.com,.amemv.com,.douyinvod.com
     cpus: 6.0
     mem_limit: 8g

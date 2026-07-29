@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote, urlencode, urljoin
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import requests
 
@@ -62,6 +62,30 @@ YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE)
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def build_youtube_oauth_redirect_uri(
+    public_base_url: str = "",
+    *,
+    request_host: str = "",
+    request_scheme: str = "http",
+) -> str:
+    """Build one stable callback URI for OAuth registration and token exchange."""
+    base_url = str(public_base_url or "").strip().rstrip("/")
+    if not base_url:
+        host = str(request_host or "").strip().split(",", 1)[0].strip()
+        scheme = str(request_scheme or "http").strip().split(",", 1)[0].strip()
+        if not host:
+            raise ValueError("无法确定 YouTube OAuth 公网回调地址")
+        if host.split(":", 1)[0].lower() == "transfer.sg99.online":
+            scheme = "https"
+        base_url = f"{scheme}://{host}"
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("YouTube OAuth 公网地址格式无效")
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("YouTube OAuth 公网地址必须使用 HTTPS")
+    return f"{base_url}/transfer-center/youtube/callback"
 
 
 def _as_bool(value: Any) -> bool:
