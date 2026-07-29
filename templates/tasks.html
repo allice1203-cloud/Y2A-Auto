@@ -91,7 +91,8 @@
                             <td>
                                 <div class="task-video-cell">
                                     <span class="task-video-thumb">
-                                        {% if job.thumbnail_url %}<img src="{{ job.thumbnail_url }}" alt="">{% else %}<i class="bi bi-play-fill"></i>{% endif %}
+                                        {% if job.thumbnail_url %}<img src="{{ job.thumbnail_url }}" alt="" onerror="this.style.display='none'">{% endif %}
+                                        <i class="bi bi-play-fill"></i>
                                     </span>
                                     <div>
                                         <a href="{{ job.source_url }}" target="_blank" rel="noopener">{{ job.title or '正在获取视频信息' }}</a>
@@ -777,8 +778,8 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                     const bar = row.querySelector('[data-transfer-progress-bar]');
                     const value = row.querySelector('[data-transfer-progress-value]');
                     const message = row.querySelector('[data-transfer-progress-message]');
-                    if (bar && rawProgress) bar.style.width = progress + '%';
-                    if (value && rawProgress) value.textContent = Math.round(progress) + '%';
+                    if (job.status === 'downloading' && bar && rawProgress) bar.style.width = progress + '%';
+                    if (job.status === 'downloading' && value && rawProgress) value.textContent = Math.round(progress) + '%';
                     if (message && job.progress_message) message.textContent = job.progress_message;
                 });
                 if (needsReload) window.location.reload();

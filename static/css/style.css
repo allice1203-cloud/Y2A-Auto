@@ -2734,9 +2734,20 @@ body.login-fullscreen {
 }
 
 .task-video-thumb img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
+}
+
+.task-video-thumb {
+    position: relative;
+}
+
+.task-video-thumb > i {
+    position: relative;
+    z-index: 0;
 }
 
 .task-video-cell a {

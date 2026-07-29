@@ -1125,7 +1125,7 @@ class TransferCenter:
         self._update_job(
             job_id,
             status=JOB_STATUSES["REVIEW"],
-            progress_percent=100,
+            progress_percent=72,
             progress_message="素材已就绪，等待再创作审核",
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
