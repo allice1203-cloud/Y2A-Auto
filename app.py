@@ -32,6 +32,7 @@ from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import (
     YOUTUBE_SCOPES,
+    build_x_web_intent_url,
     build_youtube_oauth_redirect_uri,
     get_transfer_center,
     save_youtube_connection,
@@ -3534,7 +3535,7 @@ def transfer_center_index():
             'bilibili_cookies_ready': _source_cookie_ready('bilibili'),
             'douyin_cookies_ready': _source_cookie_ready('douyin'),
             'source_login_helper_ready': bool(_source_login_helper_secret()),
-            'youtube_privacy': config.get('TRANSFER_YOUTUBE_PRIVACY', 'private'),
+            'youtube_privacy': config.get('TRANSFER_YOUTUBE_PRIVACY', 'public'),
             'youtube_category_id': config.get('TRANSFER_YOUTUBE_CATEGORY_ID', '22'),
         },
     )
@@ -3788,6 +3789,31 @@ def transfer_center_x_video(job_id):
     )
 
 
+@app.route('/transfer-center/jobs/<job_id>/x-compose')
+@login_required
+def transfer_center_x_compose(job_id):
+    job = _transfer_center().get_job(job_id)
+    if not job or str(job.get('x_publish_status') or '') != 'manual_ready':
+        flash('X 素材尚未准备完成或已经确认发布。', 'warning')
+        return redirect(url_for('tasks'))
+    text = str(job.get('x_text') or job.get('title') or '新视频').strip()
+    return redirect(build_x_web_intent_url(text))
+
+
+@app.route('/transfer-center/jobs/<job_id>/x-complete', methods=['POST'])
+@login_required
+def transfer_center_x_complete(job_id):
+    try:
+        _transfer_center().mark_x_manually_published(
+            job_id,
+            request.form.get('x_post_url', ''),
+        )
+        flash('X 发布已确认，任务状态已更新。', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+    return redirect(url_for('tasks'))
+
+
 @app.route('/transfer-center/jobs/<job_id>/review/generate', methods=['POST'])
 @login_required
 def transfer_center_generate_review(job_id):
@@ -3924,7 +3950,7 @@ def transfer_center_save_connections():
         'TRANSFER_YOUTUBE_PRIVACY': (
             request.form.get('youtube_privacy')
             if request.form.get('youtube_privacy') in ('private', 'unlisted', 'public')
-            else 'private'
+            else 'public'
         ),
         'TRANSFER_YOUTUBE_CATEGORY_ID': str(request.form.get('youtube_category_id') or '22').strip(),
     }

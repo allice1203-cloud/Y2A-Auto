@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import modules.config_manager as config_module
 import modules.transfer_center as transfer_module
 
 
@@ -124,6 +125,41 @@ def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
     assert "X 尚未授权" not in result["error_message"]
     assert result["x_publish_status"] == "manual_ready"
     assert result["youtube_publish_status"] == "waiting_auth"
+
+
+def test_default_youtube_visibility_is_public():
+    assert config_module.DEFAULT_CONFIG["TRANSFER_YOUTUBE_PRIVACY"] == "public"
+
+
+def test_x_web_intent_prefills_publish_text():
+    url = transfer_module.build_x_web_intent_url("世界杯观察：三个结论")
+
+    assert url.startswith("https://x.com/intent/post?")
+    assert "%E4%B8%96%E7%95%8C%E6%9D%AF" in url
+
+
+def test_manual_x_confirmation_completes_cross_platform_job(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1manualx",
+        ["x", "youtube"],
+    )
+    center._update_job(
+        job_id,
+        status="ready",
+        x_publish_status="manual_ready",
+        youtube_publish_status="completed",
+        youtube_video_id="youtube-video-id",
+    )
+
+    result = center.mark_x_manually_published(
+        job_id,
+        "https://x.com/allice/status/123456789",
+    )
+
+    assert result["status"] == "completed"
+    assert result["x_publish_status"] == "completed"
+    assert result["x_post_id"] == "https://x.com/allice/status/123456789"
+    assert result["progress_percent"] == 100
 
 
 def test_youtube_connection_requires_verified_channel(center, tmp_path):

@@ -78,7 +78,7 @@ DEFAULT_CONFIG = {
     "TRANSFER_X_ACCESS_TOKEN": "",
     "TRANSFER_PUBLIC_BASE_URL": "",
     "TRANSFER_YOUTUBE_CATEGORY_ID": "22",
-    "TRANSFER_YOUTUBE_PRIVACY": "private",
+    "TRANSFER_YOUTUBE_PRIVACY": "public",
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
     "COOKIECLOUD_ENABLED": False,
     "COOKIECLOUD_SERVER_URL": "",

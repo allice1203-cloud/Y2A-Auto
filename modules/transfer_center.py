@@ -64,6 +64,12 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def build_x_web_intent_url(text: str) -> str:
+    """Build the free X web composer URL; media is attached manually."""
+    normalized = str(text or "").strip()[:280]
+    return "https://x.com/intent/post?" + urlencode({"text": normalized})
+
+
 def build_youtube_oauth_redirect_uri(
     public_base_url: str = "",
     *,
@@ -1837,6 +1843,57 @@ class TransferCenter:
             )
         return int(cursor.rowcount or 0)
 
+    def mark_x_manually_published(self, job_id: str, post_url: str = "") -> dict:
+        """Record completion after the user confirms the free X web upload."""
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        targets = _json_list(job.get("target_platforms"))
+        if "x" not in targets:
+            raise ValueError("当前任务没有选择发布到 X")
+        if str(job.get("x_publish_status") or "") != "manual_ready":
+            raise ValueError("X 素材尚未准备完成或已经确认发布")
+
+        normalized_url = str(post_url or "").strip()
+        if normalized_url:
+            parsed = urlparse(normalized_url)
+            host = (parsed.hostname or "").lower()
+            if host not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}:
+                raise ValueError("请填写有效的 X 帖子链接")
+            if not re.search(r"/status/\d+", parsed.path):
+                raise ValueError("X 帖子链接格式不完整")
+            result_id = normalized_url
+        else:
+            result_id = f"manual-confirmed:{uuid.uuid4().hex[:12]}"
+
+        youtube_done = (
+            "youtube" not in targets
+            or bool(str(job.get("youtube_video_id") or "").strip())
+        )
+        completed = youtube_done
+        self._update_job(
+            job_id,
+            x_publish_status="completed",
+            x_post_id=result_id,
+            status=(
+                JOB_STATUSES["COMPLETED"] if completed else JOB_STATUSES["READY"]
+            ),
+            progress_percent=100 if completed else 90,
+            progress_message=(
+                "X 与 YouTube 均已完成"
+                if completed and "youtube" in targets
+                else (
+                    "X 已确认发布完成"
+                    if completed
+                    else "X 已确认发布，等待 YouTube 完成"
+                )
+            ),
+            error_message="",
+            next_retry_at=None,
+            last_retry_stage="",
+        )
+        return self.get_job(job_id) or {}
+
     def _publish_job_guarded(self, job_id: str) -> None:
         try:
             self.publish_job(job_id)
@@ -1980,7 +2037,7 @@ class TransferCenter:
                 "categoryId": str(self._config().get("TRANSFER_YOUTUBE_CATEGORY_ID") or "22"),
             },
             "status": {
-                "privacyStatus": str(self._config().get("TRANSFER_YOUTUBE_PRIVACY") or "private"),
+                "privacyStatus": str(self._config().get("TRANSFER_YOUTUBE_PRIVACY") or "public"),
                 "selfDeclaredMadeForKids": False,
             },
         }

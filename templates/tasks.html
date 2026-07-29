@@ -176,7 +176,15 @@
                                     {% endif %}
                                 {% endif %}
                                 {% if job.x_publish_status == 'manual_ready' %}
-                                <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_x_video', job_id=job.id) }}">下载 X 素材</a>
+                                <button class="btn btn-sm btn-dark" type="button"
+                                    data-bs-toggle="modal" data-bs-target="#xPublishModal"
+                                    data-x-title="{{ (job.title or '搬运视频')|e }}"
+                                    data-x-text="{{ (job.x_text or job.title or '新视频')|e }}"
+                                    data-x-video-url="{{ url_for('transfer_center_x_video', job_id=job.id) }}"
+                                    data-x-compose-url="{{ url_for('transfer_center_x_compose', job_id=job.id) }}"
+                                    data-x-complete-url="{{ url_for('transfer_center_x_complete', job_id=job.id) }}">
+                                    <i class="bi bi-box-arrow-up-right"></i> 去 X 发布
+                                </button>
                                 {% endif %}
                             </td>
                         </tr>
@@ -192,6 +200,52 @@
         {% endif %}
         </div>
     </section>
+
+    <div class="modal fade" id="xPublishModal" tabindex="-1" aria-labelledby="xPublishModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header border-0 pb-0">
+                    <div>
+                        <div class="text-uppercase small text-muted fw-semibold mb-1">X · 免费半自动发布</div>
+                        <h2 class="modal-title h5 mb-0" id="xPublishModalLabel">发布到 X</h2>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body pt-3">
+                    <div class="alert alert-primary border-0 mb-3">
+                        系统会下载已适配的视频、复制文案并打开 X。由于 X 网页禁止普通网站替你附加本地文件，你只需在 X 里选择刚下载的视频并点击发布。
+                    </div>
+                    <div class="small text-muted mb-1">当前视频</div>
+                    <div class="fw-semibold mb-3" id="xPublishTitle">搬运视频</div>
+                    <label class="form-label" for="xPublishText">发布文案</label>
+                    <textarea class="form-control" id="xPublishText" rows="4" readonly></textarea>
+                    <div class="d-flex gap-2 mt-2 flex-wrap">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="xCopyText">
+                            <i class="bi bi-copy"></i> 复制文案
+                        </button>
+                        <a class="btn btn-sm btn-outline-secondary" id="xDownloadOnly" href="#">
+                            <i class="bi bi-download"></i> 仅下载视频
+                        </a>
+                    </div>
+                    <a class="btn btn-dark w-100 mt-3" id="xLaunchPublish" href="#" target="_blank" rel="noopener">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> 下载视频并打开 X
+                    </a>
+                    <div class="small text-success mt-2 d-none" id="xPublishLaunchStatus">
+                        视频已开始下载，文案已复制；请在 X 中选择下载的 MP4。
+                    </div>
+                    <hr class="my-4">
+                    <form method="post" id="xCompleteForm">
+                        <label class="form-label" for="xPostUrl">发布后记录结果</label>
+                        <input class="form-control" id="xPostUrl" name="x_post_url" type="url"
+                            placeholder="可选：粘贴 https://x.com/.../status/...">
+                        <button class="btn btn-outline-success w-100 mt-2" type="submit">
+                            <i class="bi bi-check2-circle me-1"></i> 我已在 X 发布，标记完成
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <div class="legacy-task-heading">
         <div>
@@ -740,6 +794,48 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        const xPublishModal = document.getElementById('xPublishModal');
+        const xPublishTitle = document.getElementById('xPublishTitle');
+        const xPublishText = document.getElementById('xPublishText');
+        const xCopyText = document.getElementById('xCopyText');
+        const xDownloadOnly = document.getElementById('xDownloadOnly');
+        const xLaunchPublish = document.getElementById('xLaunchPublish');
+        const xCompleteForm = document.getElementById('xCompleteForm');
+        const xPublishLaunchStatus = document.getElementById('xPublishLaunchStatus');
+        if (xPublishModal) {
+            xPublishModal.addEventListener('show.bs.modal', function(event) {
+                const trigger = event.relatedTarget;
+                if (!trigger) return;
+                xPublishTitle.textContent = trigger.dataset.xTitle || '搬运视频';
+                xPublishText.value = trigger.dataset.xText || '';
+                xDownloadOnly.href = trigger.dataset.xVideoUrl || '#';
+                xLaunchPublish.href = trigger.dataset.xComposeUrl || '#';
+                xLaunchPublish.dataset.videoUrl = trigger.dataset.xVideoUrl || '';
+                xCompleteForm.action = trigger.dataset.xCompleteUrl || '';
+                xPublishLaunchStatus.classList.add('d-none');
+            });
+            xCopyText.addEventListener('click', function() {
+                copyToClipboard(xPublishText.value);
+                xCopyText.innerHTML = '<i class="bi bi-check2"></i> 已复制';
+                window.setTimeout(function() {
+                    xCopyText.innerHTML = '<i class="bi bi-copy"></i> 复制文案';
+                }, 1800);
+            });
+            xLaunchPublish.addEventListener('click', function() {
+                copyToClipboard(xPublishText.value);
+                const downloadUrl = xLaunchPublish.dataset.videoUrl;
+                if (downloadUrl) {
+                    const link = document.createElement('a');
+                    link.href = downloadUrl;
+                    link.style.display = 'none';
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                }
+                xPublishLaunchStatus.classList.remove('d-none');
+            });
+        }
+
         const sourceInput = document.getElementById('source_url');
         if (sourceInput) {
             sourceInput.addEventListener('input', updateRelayRoutePreview);
