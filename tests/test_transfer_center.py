@@ -64,6 +64,22 @@ def test_manual_job_normalizes_missing_protocol(center):
     assert job["source_platform"] == "bilibili"
 
 
+def test_existing_job_with_missing_protocol_is_migrated(center):
+    job_id = center.add_manual_job(
+        "https://bilibili.com/video/BV1legacy",
+        ["youtube"],
+    )
+    with center._connect() as connection:
+        connection.execute(
+            "UPDATE transfer_jobs SET source_url=? WHERE id=?",
+            ("bilibili.com/video/BV1legacy", job_id),
+        )
+
+    migrated = transfer_module.TransferCenter(config_provider=lambda: {})
+
+    assert migrated.get_job(job_id)["source_url"] == "https://bilibili.com/video/BV1legacy"
+
+
 def test_chinese_source_download_bypasses_proxy(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:17890")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:17890")

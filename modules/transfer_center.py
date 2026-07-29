@@ -283,6 +283,21 @@ class TransferCenter:
                 """,
                 (_utc_now(), _utc_now()),
             )
+            conn.execute(
+                """
+                UPDATE transfer_jobs
+                SET source_url = 'https://' || ltrim(source_url, '/'),
+                    updated_at = ?
+                WHERE lower(source_url) NOT LIKE 'http://%'
+                  AND lower(source_url) NOT LIKE 'https://%'
+                  AND (
+                      lower(source_url) LIKE '%bilibili.com%'
+                      OR lower(source_url) LIKE '%b23.tv%'
+                      OR lower(source_url) LIKE '%douyin.com%'
+                  )
+                """,
+                (_utc_now(),),
+            )
 
     @staticmethod
     def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -1027,7 +1042,7 @@ class TransferCenter:
         cookie_path = self._cookie_path(job["source_platform"])
         if cookie_path:
             cmd.extend(["--cookies", cookie_path])
-        cmd.append(job["source_url"])
+        cmd.append(_normalize_source_url(job["source_url"]))
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
