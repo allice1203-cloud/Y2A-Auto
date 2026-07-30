@@ -1,6 +1,11 @@
 ARG BASE_IMAGE=video-transfer-channel:0.6.0
 FROM ${BASE_IMAGE}
 
+ARG REVISION=unknown
+ARG RELEASE_VERSION=dev
+LABEL org.opencontainers.image.revision=${REVISION} \
+      org.opencontainers.image.version=${RELEASE_VERSION}
+
 USER root
 WORKDIR /app
 
