@@ -245,6 +245,14 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "x_text": _clean_multiline(payload.get("x_text"), 260),
         "youtube_title": _clean_text(payload.get("youtube_title"), 100),
         "youtube_description": _clean_multiline(payload.get("youtube_description"), 5000),
+        "bilibili_title": _clean_text(payload.get("bilibili_title"), 80),
+        "bilibili_description": _clean_multiline(
+            payload.get("bilibili_description"), 2000
+        ),
+        "bilibili_partition_id": _clean_text(
+            payload.get("bilibili_partition_id"), 20
+        ),
+        "douyin_text": _clean_multiline(payload.get("douyin_text"), 2000),
     }
 
 

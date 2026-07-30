@@ -199,6 +199,20 @@ def build_distribution_plan(
             ),
         }
 
+    if "bilibili" in selected_targets:
+        plan["bilibili"] = {
+            "route": "standard_upload",
+            "label": "B站普通投稿",
+            "note": "确认分区、标题和来源说明后，由服务器自动上传。",
+        }
+
+    if "douyin" in selected_targets:
+        plan["douyin"] = {
+            "route": "creator_web",
+            "label": "抖音创作者中心",
+            "note": "系统准备成片与文案，最后在抖音创作者中心确认发布。",
+        }
+
     return plan
 
 
@@ -272,6 +286,14 @@ def prepare_platform_variants(
             "path": source_path,
             "issues": [],
         }
+
+    for target in ("bilibili", "douyin"):
+        if target in targets:
+            variants[target] = {
+                "status": "ready",
+                "path": source_path,
+                "issues": [],
+            }
 
     if "x" in targets:
         assessment = assess_x_compatibility(info)

@@ -164,7 +164,7 @@
     <div class="workflow-step">
         <div class="workflow-index">03 · 确认并发布</div>
         <div class="fw-semibold mt-2">来源、水印与发布文案</div>
-        <div class="small text-muted mt-1">确认无误后解锁 X 与 YouTube。</div>
+        <div class="small text-muted mt-1">确认无误后解锁已选择的目标平台。</div>
     </div>
 </div>
 
@@ -283,10 +283,13 @@
                 </div>
 
                 <h3 class="h6 mb-3">4. 分平台文案</h3>
+                {% if '"x"' in job.target_platforms %}
                 <div class="mb-3">
                     <label class="form-label">X 发布文字</label>
                     <textarea class="form-control" name="x_text" rows="3" maxlength="260">{{ job.x_text or '' }}</textarea>
                 </div>
+                {% endif %}
+                {% if '"youtube"' in job.target_platforms %}
                 <div class="mb-3">
                     <label class="form-label">YouTube 标题</label>
                     <input class="form-control" name="youtube_title" maxlength="100" value="{{ job.youtube_title or '' }}">
@@ -295,6 +298,42 @@
                     <label class="form-label">YouTube 简介</label>
                     <textarea class="form-control" name="youtube_description" rows="7" maxlength="5000">{{ job.youtube_description or '' }}</textarea>
                 </div>
+                {% endif %}
+                {% if '"bilibili"' in job.target_platforms %}
+                <div class="row g-3 mb-3">
+                    <div class="col-12">
+                        <label class="form-label">B站标题</label>
+                        <input class="form-control" name="bilibili_title" maxlength="80" required
+                            value="{{ job.bilibili_title or job.title or '' }}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">B站分区</label>
+                        <select class="form-select" name="bilibili_partition_id" required>
+                            <option value="">请选择内容分区</option>
+                            {% for category in bilibili_partition_mapping %}
+                                <optgroup label="{{ category.category }}">
+                                {% for partition in category.partitions %}
+                                    <option value="{{ partition.id }}" {% if job.bilibili_partition_id|string == partition.id|string %}selected{% endif %}>{{ partition.name }}</option>
+                                    {% for sub_partition in partition.sub_partitions %}
+                                    <option value="{{ sub_partition.id }}" {% if job.bilibili_partition_id|string == sub_partition.id|string %}selected{% endif %}>&nbsp;&nbsp;└ {{ sub_partition.name }}</option>
+                                    {% endfor %}
+                                {% endfor %}
+                                </optgroup>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">B站简介</label>
+                        <textarea class="form-control" name="bilibili_description" rows="6" maxlength="2000">{{ job.bilibili_description or job.description or '' }}</textarea>
+                    </div>
+                </div>
+                {% endif %}
+                {% if '"douyin"' in job.target_platforms %}
+                <div class="mb-3">
+                    <label class="form-label">抖音文案</label>
+                    <textarea class="form-control" name="douyin_text" rows="4" maxlength="2000">{{ job.douyin_text or job.title or '' }}</textarea>
+                </div>
+                {% endif %}
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
                 <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
@@ -328,6 +367,24 @@
                         <span class="badge bg-primary">{{ distribution_plan.youtube.label }}</span>
                     </div>
                     <div class="small text-muted mt-2">{{ distribution_plan.youtube.note }}</div>
+                </div>
+                {% endif %}
+                {% if distribution_plan.bilibili %}
+                <div class="route-card mt-2">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>B站</strong>
+                        <span class="badge bg-primary">{{ distribution_plan.bilibili.label }}</span>
+                    </div>
+                    <div class="small text-muted mt-2">{{ distribution_plan.bilibili.note }}</div>
+                </div>
+                {% endif %}
+                {% if distribution_plan.douyin %}
+                <div class="route-card mt-2">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>抖音</strong>
+                        <span class="badge bg-dark">{{ distribution_plan.douyin.label }}</span>
+                    </div>
+                    <div class="small text-muted mt-2">{{ distribution_plan.douyin.note }}</div>
                 </div>
                 {% endif %}
             </div>
@@ -385,7 +442,7 @@
                     <div class="probe-item"><div class="small text-muted">音频编码</div><strong>{{ media_probe.audio_codec|upper or '无' }}</strong></div>
                 </div>
                 {% endif %}
-                {% for target in ['x', 'youtube'] %}
+                {% for target in ['x', 'youtube', 'bilibili', 'douyin'] %}
                     {% if target in platform_variants %}
                     {% set variant = platform_variants[target] %}
                     <div class="d-flex justify-content-between align-items-center border-top py-2">

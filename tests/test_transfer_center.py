@@ -3,6 +3,7 @@ import json
 import pytest
 
 import modules.config_manager as config_module
+import modules.media_preflight as preflight_module
 import modules.transfer_center as transfer_module
 
 
@@ -52,6 +53,37 @@ def test_manual_job_detects_douyin_and_deduplicates(center):
 
     with pytest.raises(ValueError, match="已经"):
         center.add_manual_job(url, ["youtube"])
+
+
+def test_ytdlp_web_job_routes_to_bilibili_and_douyin(center):
+    job_id = center.add_manual_job(
+        "https://www.youtube.com/watch?v=test123",
+        ["bilibili", "douyin"],
+    )
+
+    job = center.get_job(job_id)
+    assert job["source_platform"] == "youtube"
+    assert json.loads(job["target_platforms"]) == ["bilibili", "douyin"]
+    assert job["bilibili_publish_status"] == "pending"
+    assert job["douyin_publish_status"] == "pending"
+    assert job["x_publish_status"] == "skipped"
+    assert job["youtube_publish_status"] == "skipped"
+
+
+def test_ytdlp_web_job_rejects_internal_addresses(center):
+    with pytest.raises(ValueError, match="内网"):
+        center.add_manual_job(
+            "http://127.0.0.1:8080/private-video",
+            ["bilibili"],
+        )
+
+
+def test_chinese_source_cannot_republish_to_chinese_source_platform(center):
+    with pytest.raises(ValueError, match="重复搬运"):
+        center.add_manual_job(
+            "https://www.bilibili.com/video/BV1sameplatform",
+            ["bilibili"],
+        )
 
 
 def test_manual_job_normalizes_missing_protocol(center):
@@ -131,6 +163,41 @@ def test_default_youtube_visibility_is_public():
     assert config_module.DEFAULT_CONFIG["TRANSFER_YOUTUBE_PRIVACY"] == "public"
 
 
+def test_bilibili_and_douyin_media_variants_preserve_source(
+    tmp_path, monkeypatch
+):
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"video")
+    monkeypatch.setattr(
+        preflight_module,
+        "probe_media",
+        lambda *_args, **_kwargs: {
+            "path": str(video_path),
+            "duration": 60,
+            "size_bytes": 5,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1920,
+            "height": 1080,
+            "fps": 30,
+            "pix_fmt": "yuv420p",
+            "audio_channels": 2,
+            "has_audio": True,
+        },
+    )
+
+    _, variants = preflight_module.prepare_platform_variants(
+        str(video_path),
+        str(tmp_path),
+        ["bilibili", "douyin"],
+    )
+
+    assert variants["bilibili"]["path"] == str(video_path)
+    assert variants["douyin"]["path"] == str(video_path)
+    assert variants["bilibili"]["status"] == "ready"
+    assert variants["douyin"]["status"] == "ready"
+
+
 def test_x_web_intent_prefills_publish_text():
     url = transfer_module.build_x_web_intent_url("世界杯观察：三个结论")
 
@@ -160,6 +227,72 @@ def test_manual_x_confirmation_completes_cross_platform_job(center):
     assert result["x_publish_status"] == "completed"
     assert result["x_post_id"] == "https://x.com/allice/status/123456789"
     assert result["progress_percent"] == 100
+
+
+def test_bilibili_publish_uses_server_uploader(center, tmp_path, monkeypatch):
+    job_id = center.add_manual_job(
+        "https://www.youtube.com/watch?v=bili-upload",
+        ["bilibili"],
+    )
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"test")
+    center._update_job(
+        job_id,
+        status="ready",
+        local_video_path=str(video_path),
+        platform_variants_json=json.dumps(
+            {"bilibili": {"status": "ready", "path": str(video_path)}}
+        ),
+        source_attribution="原作者\nhttps://youtube.com/watch?v=bili-upload",
+        watermark_status="third_party_preserved",
+        recreation_status="approved",
+        bilibili_title="测试投稿",
+        bilibili_description="来源说明",
+        bilibili_partition_id="21",
+    )
+    monkeypatch.setattr(
+        center,
+        "_publish_bilibili",
+        lambda *_args, **_kwargs: "BV1serverupload",
+    )
+
+    result = center.publish_job(job_id)
+
+    assert result["status"] == "completed"
+    assert result["bilibili_publish_status"] == "completed"
+    assert result["bilibili_post_id"] == "BV1serverupload"
+
+
+def test_douyin_publish_is_free_manual_handoff(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.youtube.com/watch?v=douyin-upload",
+        ["douyin"],
+    )
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"test")
+    center._update_job(
+        job_id,
+        status="ready",
+        local_video_path=str(video_path),
+        platform_variants_json=json.dumps(
+            {"douyin": {"status": "ready", "path": str(video_path)}}
+        ),
+        source_attribution="原作者\nhttps://youtube.com/watch?v=douyin-upload",
+        watermark_status="third_party_preserved",
+        recreation_status="approved",
+        douyin_text="测试抖音文案",
+    )
+
+    ready = center.publish_job(job_id)
+    assert ready["status"] == "ready"
+    assert ready["douyin_publish_status"] == "manual_ready"
+
+    completed = center.mark_douyin_manually_published(
+        job_id,
+        "https://www.douyin.com/video/1234567890",
+    )
+    assert completed["status"] == "completed"
+    assert completed["douyin_publish_status"] == "completed"
 
 
 def test_youtube_connection_requires_verified_channel(center, tmp_path):

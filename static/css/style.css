@@ -2799,10 +2799,24 @@ body.login-fullscreen {
     background: #171a25;
 }
 
+.relay-path .source-youtube,
 .relay-path .target-youtube {
     color: #e3343d;
     border-color: #f6d2d5;
     background: #fff6f6;
+}
+
+.relay-path .source-web,
+.relay-path .target-bilibili {
+    color: #6f3cc3;
+    border-color: #e2d5f6;
+    background: #faf7ff;
+}
+
+.relay-path .target-douyin {
+    color: #fff;
+    border-color: #171a25;
+    background: #171a25;
 }
 
 .relay-path > i {
@@ -2900,6 +2914,16 @@ body.login-fullscreen {
 .platform-mini.youtube {
     color: #e02c35;
     background: #fff1f2;
+}
+
+.platform-mini.bilibili {
+    color: #d94779;
+    background: #fff0f6;
+}
+
+.platform-mini.douyin {
+    color: #fff;
+    background: #151722;
 }
 
 .task-updated {
@@ -3112,6 +3136,16 @@ body.login-fullscreen {
 .route-target-icon.youtube {
     color: #e12c36;
     background: #fff0f1;
+}
+
+.route-target-icon.bilibili {
+    color: #d94779;
+    background: #fff0f6;
+}
+
+.route-target-icon.douyin {
+    color: #fff;
+    background: #151722;
 }
 
 .route-note {

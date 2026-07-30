@@ -39,7 +39,7 @@
         <div class="workspace-panel-head">
             <div>
                 <h2>搬运任务</h2>
-                <p>B站 / 抖音发布到 X、YouTube 的全部进度与结果。</p>
+                <p>yt-dlp 下载到 winmini，确认后再发布到目标平台。</p>
             </div>
             <span class="workspace-count">{{ transfer_jobs|length }} 条任务</span>
         </div>
@@ -49,6 +49,8 @@
                 <option value="">全部来源</option>
                 <option value="bilibili">B站</option>
                 <option value="douyin">抖音</option>
+                <option value="youtube">YouTube</option>
+                <option value="web">其他网站</option>
             </select>
             <select class="form-select" data-transfer-task-status>
                 <option value="">全部状态</option>
@@ -102,10 +104,15 @@
                             </td>
                             <td>
                                 <div class="relay-path">
-                                    <span class="source source-{{ job.source_platform }}">{{ 'B站' if job.source_platform == 'bilibili' else '抖音' }}</span>
+                                    <span class="source source-{{ job.source_platform }}">{{ {
+                                        'bilibili':'B站', 'douyin':'抖音',
+                                        'youtube':'YouTube', 'web':'yt-dlp'
+                                    }.get(job.source_platform, job.source_platform) }}</span>
                                     <i class="bi bi-arrow-right"></i>
                                     {% if '"x"' in job.target_platforms %}<span class="target target-x">X</span>{% endif %}
                                     {% if '"youtube"' in job.target_platforms %}<span class="target target-youtube">YouTube</span>{% endif %}
+                                    {% if '"bilibili"' in job.target_platforms %}<span class="target target-bilibili">B站</span>{% endif %}
+                                    {% if '"douyin"' in job.target_platforms %}<span class="target target-douyin">抖音</span>{% endif %}
                                 </div>
                             </td>
                             <td>
@@ -154,6 +161,19 @@
                                         'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
                                     }.get(job.youtube_publish_status, job.youtube_publish_status) }}</span></span>
                                     {% endif %}
+                                    {% if '"bilibili"' in job.target_platforms %}
+                                    <span><i class="platform-mini bilibili"><i class="bi bi-play-btn-fill"></i></i><span data-publish-status="bilibili">{{ {
+                                        'pending':'待发布','waiting_auth':'待登录','publishing':'发布中',
+                                        'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
+                                    }.get(job.bilibili_publish_status, job.bilibili_publish_status) }}</span></span>
+                                    {% endif %}
+                                    {% if '"douyin"' in job.target_platforms %}
+                                    <span><i class="platform-mini douyin"><i class="bi bi-music-note"></i></i><span data-publish-status="douyin">{{ {
+                                        'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待登录',
+                                        'publishing':'发布中','completed':'已发布','failed':'失败',
+                                        'blocked':'媒体未就绪','skipped':'未选择'
+                                    }.get(job.douyin_publish_status, job.douyin_publish_status) }}</span></span>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td><span class="task-updated">{{ job.updated_at[:16]|replace('T', ' ') }}</span></td>
@@ -169,7 +189,14 @@
                                 {% if job.status == 'ready' %}
                                     {% if job.youtube_publish_status == 'waiting_auth' %}
                                     <a class="btn btn-sm btn-danger" href="{{ url_for('transfer_center_youtube_connect') }}">连接 YouTube</a>
-                                    {% elif job.x_publish_status == 'pending' or job.youtube_publish_status in ('pending', 'failed') %}
+                                    {% elif job.bilibili_publish_status == 'waiting_auth' %}
+                                    <a class="btn btn-sm btn-danger" href="{{ url_for('settings') }}">登录 B站发布账号</a>
+                                    {% elif (
+                                        job.x_publish_status == 'pending'
+                                        or job.youtube_publish_status in ('pending', 'failed')
+                                        or job.bilibili_publish_status in ('pending', 'failed', 'waiting_auth')
+                                        or job.douyin_publish_status == 'pending'
+                                    ) %}
                                     <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
                                         <button class="btn btn-sm btn-success">发布</button>
                                     </form>
@@ -186,6 +213,17 @@
                                     <i class="bi bi-box-arrow-up-right"></i> 去 X 发布
                                 </button>
                                 {% endif %}
+                                {% if job.douyin_publish_status == 'manual_ready' %}
+                                <button class="btn btn-sm btn-dark" type="button"
+                                    data-bs-toggle="modal" data-bs-target="#douyinPublishModal"
+                                    data-douyin-title="{{ (job.title or '搬运视频')|e }}"
+                                    data-douyin-text="{{ (job.douyin_text or job.title or '新视频')|e }}"
+                                    data-douyin-video-url="{{ url_for('transfer_center_douyin_video', job_id=job.id) }}"
+                                    data-douyin-compose-url="{{ url_for('transfer_center_douyin_compose', job_id=job.id) }}"
+                                    data-douyin-complete-url="{{ url_for('transfer_center_douyin_complete', job_id=job.id) }}">
+                                    <i class="bi bi-box-arrow-up-right"></i> 去抖音发布
+                                </button>
+                                {% endif %}
                             </td>
                         </tr>
                     {% endfor %}
@@ -195,7 +233,7 @@
         {% else %}
             <div class="premium-empty premium-empty-jobs">
                 <span class="empty-frame" aria-hidden="true"></span>
-                <div><strong>还没有搬运任务</strong><span>点击“新建搬运任务”，支持 B站、抖音和 YouTube 链接</span></div>
+                <div><strong>还没有搬运任务</strong><span>粘贴 yt-dlp 支持的视频链接，下载后再确认发布</span></div>
             </div>
         {% endif %}
         </div>
@@ -246,6 +284,48 @@
                         </button>
                     </form>
                     <iframe class="d-none" id="xDownloadFrame" title="X 视频下载"></iframe>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="douyinPublishModal" tabindex="-1" aria-labelledby="douyinPublishModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header border-0 pb-0">
+                    <div>
+                        <div class="text-uppercase small text-muted fw-semibold mb-1">抖音 · 免费半自动发布</div>
+                        <h2 class="modal-title h5 mb-0" id="douyinPublishModalLabel">发布到抖音</h2>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body pt-3">
+                    <div class="alert alert-primary border-0 mb-3">
+                        系统会下载服务器成片、复制文案并打开抖音创作者中心。你只需选择刚下载的视频并确认发布。
+                    </div>
+                    <div class="small text-muted mb-1">当前视频</div>
+                    <div class="fw-semibold mb-3" id="douyinPublishTitle">搬运视频</div>
+                    <label class="form-label" for="douyinPublishText">发布文案</label>
+                    <textarea class="form-control" id="douyinPublishText" rows="4" readonly></textarea>
+                    <button class="btn btn-sm btn-outline-secondary mt-2" type="button" id="douyinCopyText">
+                        <i class="bi bi-copy"></i> 复制文案
+                    </button>
+                    <a class="btn btn-dark w-100 mt-3" id="douyinLaunchPublish" href="#" target="_blank" rel="noopener">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> 下载视频并打开抖音
+                    </a>
+                    <div class="small text-success mt-2 d-none" id="douyinPublishLaunchStatus">
+                        视频已开始下载，文案已复制；请在抖音创作者中心选择下载的视频。
+                    </div>
+                    <hr class="my-4">
+                    <form method="post" id="douyinCompleteForm">
+                        <label class="form-label" for="douyinPostUrl">发布后记录结果</label>
+                        <input class="form-control" id="douyinPostUrl" name="douyin_post_url" type="url"
+                            placeholder="可选：粘贴抖音作品链接">
+                        <button class="btn btn-outline-success w-100 mt-2" type="submit">
+                            <i class="bi bi-check2-circle me-1"></i> 我已在抖音发布，标记完成
+                        </button>
+                    </form>
+                    <iframe class="d-none" id="douyinDownloadFrame" title="抖音视频下载"></iframe>
                 </div>
             </div>
         </div>
@@ -395,9 +475,9 @@
                         <div class="unified-source-input">
                             <i class="bi bi-link-45deg"></i>
                             <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
-                                   placeholder="粘贴 B站、抖音或 YouTube 视频链接">
+                                   placeholder="粘贴 YouTube 或 yt-dlp 支持的视频链接">
                         </div>
-                        <div class="form-text">系统会自动识别来源，并切换到对应的发布目标。</div>
+                        <div class="form-text">yt-dlp 会在 winmini 下载单条视频；不处理播放列表，也不会直接公开发布。</div>
                     </div>
 
                     <div class="source-detection-card" id="sourceDetectionCard">
@@ -406,7 +486,7 @@
                         <span class="settings-status-badge is-neutral" id="sourceDetectionBadge">未识别</span>
                     </div>
 
-                    <div class="route-panel mt-4" id="relayTargetsPanel">
+                    <div class="route-panel mt-4 d-none" id="relayTargetsPanel">
                         <div class="route-panel-head">
                             <div><small>发布到</small><strong>B站 / 抖音来源</strong></div>
                             <span>可多选</span>
@@ -421,28 +501,36 @@
                             <label class="route-target">
                                 <input type="checkbox" name="target_youtube" checked>
                                 <span class="route-target-icon youtube"><i class="bi bi-youtube"></i></span>
-                                <span><strong>YouTube</strong><small>授权后私密上传</small></span>
+                                <span><strong>YouTube</strong><small>授权后公开发布</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
                         </div>
                     </div>
 
-                    <div class="route-panel mt-4 d-none" id="youtubeTargetsPanel">
+                    <div class="route-panel mt-4" id="ytdlpTargetsPanel">
                         <div class="route-panel-head">
-                            <div><small>发布到</small><strong>YouTube 来源</strong></div>
-                            <span>兼容原工作流</span>
+                            <div><small>发布到</small><strong>yt-dlp 下载来源</strong></div>
+                            <span>可多选</span>
                         </div>
-                        {% set default_target = (config.get('UPLOAD_TARGET_DEFAULT', 'acfun'))|lower %}
-                        <select class="form-select" id="youtube_upload_target" name="youtube_upload_target">
-                            <option value="acfun" {% if default_target == 'acfun' %}selected{% endif %}>AcFun</option>
-                            <option value="bilibili" {% if default_target == 'bilibili' %}selected{% endif %}>B站</option>
-                            <option value="both" {% if default_target == 'both' %}selected{% endif %}>双平台（B站 + AcFun）</option>
-                        </select>
+                        <div class="route-target-grid">
+                            <label class="route-target">
+                                <input type="checkbox" name="target_bilibili" checked>
+                                <span class="route-target-icon bilibili"><i class="bi bi-play-btn-fill"></i></span>
+                                <span><strong>B站</strong><small>登录后服务器自动上传</small></span>
+                                <i class="bi bi-check-circle-fill"></i>
+                            </label>
+                            <label class="route-target">
+                                <input type="checkbox" name="target_douyin" checked>
+                                <span class="route-target-icon douyin"><i class="bi bi-music-note"></i></span>
+                                <span><strong>抖音</strong><small>免费半自动发布</small></span>
+                                <i class="bi bi-check-circle-fill"></i>
+                            </label>
+                        </div>
                     </div>
 
                     <div class="route-note mt-4">
                         <i class="bi bi-signpost-split"></i>
-                        <div><strong>搬运路径说明</strong><span>B站 / 抖音 → X、YouTube；YouTube → B站、AcFun。抖音目前作为来源平台，不是发布目标。</span></div>
+                        <div><strong>搬运路径说明</strong><span>YouTube / 其他网站 → B站、抖音；B站 / 抖音 → X、YouTube。全部先下载到 winmini，再人工确认。</span></div>
                     </div>
 
                     <label class="creation-mode-card mt-4">
@@ -764,6 +852,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         if (url.includes('bilibili.com') || url.includes('b23.tv')) return 'bilibili';
         if (url.includes('douyin.com')) return 'douyin';
         if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
+        if (/^https?:\/\/[^/]+/i.test(url)) return 'web';
         return '';
     }
 
@@ -772,17 +861,29 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         const label = document.getElementById('sourceDetectionLabel');
         const badge = document.getElementById('sourceDetectionBadge');
         const relayTargets = document.getElementById('relayTargetsPanel');
-        const youtubeTargets = document.getElementById('youtubeTargetsPanel');
-        if (!input || !label || !badge || !relayTargets || !youtubeTargets) return;
+        const ytdlpTargets = document.getElementById('ytdlpTargetsPanel');
+        if (!input || !label || !badge || !relayTargets || !ytdlpTargets) return;
 
         const source = detectRelaySource(input.value);
-        const names = { bilibili: '已识别：B站', douyin: '已识别：抖音', youtube: '已识别：YouTube' };
+        const names = {
+            bilibili: '已识别：B站',
+            douyin: '已识别：抖音',
+            youtube: '已识别：YouTube · yt-dlp',
+            web: '已识别：yt-dlp 通用链接'
+        };
         label.textContent = names[source] || (input.value.trim() ? '暂未识别，请检查链接' : '等待粘贴视频链接');
         badge.textContent = source ? '已识别' : '未识别';
         badge.classList.toggle('is-success', Boolean(source));
         badge.classList.toggle('is-neutral', !source);
-        relayTargets.classList.toggle('d-none', source === 'youtube');
-        youtubeTargets.classList.toggle('d-none', source !== 'youtube');
+        const isChineseSource = source === 'bilibili' || source === 'douyin';
+        relayTargets.classList.toggle('d-none', !isChineseSource);
+        ytdlpTargets.classList.toggle('d-none', isChineseSource);
+        relayTargets.querySelectorAll('input[type="checkbox"]').forEach(function(field) {
+            field.disabled = !isChineseSource;
+        });
+        ytdlpTargets.querySelectorAll('input[type="checkbox"]').forEach(function(field) {
+            field.disabled = isChineseSource;
+        });
     }
 
     function applyTransferTaskFilters() {
@@ -843,6 +944,44 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                 window.open(xLaunchPublish.href, '_blank', 'noopener');
                 startXVideoDownload(xLaunchPublish.dataset.videoUrl);
                 xPublishLaunchStatus.classList.remove('d-none');
+            });
+        }
+
+        const douyinPublishModal = document.getElementById('douyinPublishModal');
+        const douyinPublishTitle = document.getElementById('douyinPublishTitle');
+        const douyinPublishText = document.getElementById('douyinPublishText');
+        const douyinCopyText = document.getElementById('douyinCopyText');
+        const douyinLaunchPublish = document.getElementById('douyinLaunchPublish');
+        const douyinCompleteForm = document.getElementById('douyinCompleteForm');
+        const douyinPublishLaunchStatus = document.getElementById('douyinPublishLaunchStatus');
+        const douyinDownloadFrame = document.getElementById('douyinDownloadFrame');
+        if (douyinPublishModal) {
+            douyinPublishModal.addEventListener('show.bs.modal', function(event) {
+                const trigger = event.relatedTarget;
+                if (!trigger) return;
+                douyinPublishTitle.textContent = trigger.dataset.douyinTitle || '搬运视频';
+                douyinPublishText.value = trigger.dataset.douyinText || '';
+                douyinLaunchPublish.href = trigger.dataset.douyinComposeUrl || '#';
+                douyinLaunchPublish.dataset.videoUrl = trigger.dataset.douyinVideoUrl || '';
+                douyinCompleteForm.action = trigger.dataset.douyinCompleteUrl || '';
+                douyinPublishLaunchStatus.classList.add('d-none');
+            });
+            douyinCopyText.addEventListener('click', function() {
+                copyToClipboard(douyinPublishText.value);
+                douyinCopyText.innerHTML = '<i class="bi bi-check2"></i> 已复制';
+                window.setTimeout(function() {
+                    douyinCopyText.innerHTML = '<i class="bi bi-copy"></i> 复制文案';
+                }, 1800);
+            });
+            douyinLaunchPublish.addEventListener('click', function(event) {
+                event.preventDefault();
+                copyToClipboard(douyinPublishText.value);
+                window.open(douyinLaunchPublish.href, '_blank', 'noopener');
+                if (douyinDownloadFrame && douyinLaunchPublish.dataset.videoUrl) {
+                    const url = douyinLaunchPublish.dataset.videoUrl;
+                    douyinDownloadFrame.src = url + (url.includes('?') ? '&' : '?') + '_download=' + Date.now();
+                }
+                douyinPublishLaunchStatus.classList.remove('d-none');
             });
         }
 
@@ -907,11 +1046,21 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                             pending: '待发布', waiting_auth: '待授权', publishing: '发布中',
                             completed: '已发布', failed: '失败', blocked: '媒体未就绪',
                             skipped: '未选择'
+                        },
+                        bilibili: {
+                            pending: '待发布', waiting_auth: '待登录', publishing: '发布中',
+                            completed: '已发布', failed: '失败', blocked: '媒体未就绪',
+                            skipped: '未选择'
+                        },
+                        douyin: {
+                            pending: '待发布', manual_ready: '素材已备好', waiting_auth: '待登录',
+                            publishing: '发布中', completed: '已发布', failed: '失败',
+                            blocked: '媒体未就绪', skipped: '未选择'
                         }
                     };
-                    ['x', 'youtube'].forEach(function(platform) {
-                        const field = platform === 'x' ? 'x_publish_status' : 'youtube_publish_status';
-                        const datasetField = platform === 'x' ? 'xStatus' : 'youtubeStatus';
+                    ['x', 'youtube', 'bilibili', 'douyin'].forEach(function(platform) {
+                        const field = platform + '_publish_status';
+                        const datasetField = platform + 'Status';
                         const status = job[field] || '';
                         const target = row.querySelector(`[data-publish-status="${platform}"]`);
                         if (target && status) target.textContent = statusLabels[platform][status] || status;

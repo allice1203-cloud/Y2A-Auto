@@ -1742,6 +1742,8 @@ def transfer_task_state():
                 'progress_message': job.get('progress_message') or '',
                 'x_publish_status': job.get('x_publish_status') or '',
                 'youtube_publish_status': job.get('youtube_publish_status') or '',
+                'bilibili_publish_status': job.get('bilibili_publish_status') or '',
+                'douyin_publish_status': job.get('douyin_publish_status') or '',
                 'error_message': job.get('error_message') or '',
                 'updated_at': job.get('updated_at') or '',
             }
@@ -2145,65 +2147,27 @@ def add_task_via_extension():
 @app.route('/tasks/add', methods=['POST'])
 @login_required
 def add_task_route():
-    """统一创建任务：B站/抖音进入搬运链路，YouTube 保留旧版同步链路。"""
+    """统一使用 yt-dlp 下载，再进入审核与多平台发布链路。"""
     source_url = str(
         request.form.get('source_url')
         or request.form.get('youtube_url')
         or ''
     ).strip()
-    upload_target = request.form.get('youtube_upload_target') or request.form.get('upload_target')
-    
     if not source_url:
         flash('视频链接不能为空', 'danger')
         return redirect(url_for('tasks'))
 
-    lowered_url = source_url.lower()
-    if any(host in lowered_url for host in ('bilibili.com', 'b23.tv', 'douyin.com')):
-        try:
-            targets = _transfer_target_list(request.form)
-            job_id = _transfer_center().add_manual_job(source_url, targets)
-            _transfer_center().prepare_job_async(job_id, publish_after=False)
-            flash('搬运任务已创建；素材准备完成后会进入视频再创作工作台。', 'success')
-        except Exception as exc:
-            flash(f'创建搬运任务失败：{exc}', 'danger')
-        return redirect(url_for('tasks'))
-
-    if not any(host in lowered_url for host in ('youtube.com', 'youtu.be')):
-        flash('暂不支持这个链接；请输入 B站、抖音或 YouTube 视频链接。', 'danger')
-        return redirect(url_for('tasks'))
-
-    youtube_url = source_url
-    config = load_config()
-    if not upload_target:
-        upload_target = config.get('UPLOAD_TARGET_DEFAULT', 'acfun')
-
-    # 判断是否为播放列表URL
-    if 'youtube.com/playlist' in youtube_url or 'youtu.be/playlist' in youtube_url:
-        # 提取所有视频URL
-        cookies_path = config.get('YOUTUBE_COOKIES_PATH')
-        video_urls = extract_video_urls_from_playlist(youtube_url, cookies_path)
-        if not video_urls:
-            flash('未能提取到播放列表中的视频', 'danger')
-            return redirect(url_for('tasks'))
-        added_count = 0
-        for url in video_urls:
-            task_id = add_task(url, upload_target=upload_target)
-            if task_id:
-                added_count += 1
-        flash(f'已批量添加 {added_count} 个视频任务（来自播放列表）', 'success')
-        return redirect(url_for('tasks'))
-    else:
-        task_id = add_task(youtube_url, upload_target=upload_target)
-        if task_id:
-            if config.get('AUTO_MODE_ENABLED', False):
-                logger.info(f"自动模式已启用，立即开始处理任务 {task_id}")
-                start_task(task_id, config)
-                flash(f'任务已添加并开始处理: {youtube_url}', 'success')
-            else:
-                flash(f'任务已添加: {youtube_url}', 'success')
-        else:
-            flash(f'添加任务失败: {youtube_url}', 'danger')
-        return redirect(url_for('tasks'))
+    try:
+        targets = _transfer_target_list(request.form)
+        job_id = _transfer_center().add_manual_job(source_url, targets)
+        _transfer_center().prepare_job_async(job_id, publish_after=False)
+        flash(
+            'yt-dlp 下载任务已创建；素材会保存在服务器，完成后进入确认与发布。',
+            'success',
+        )
+    except Exception as exc:
+        flash(f'创建搬运任务失败：{exc}', 'danger')
+    return redirect(url_for('tasks'))
 
 @app.route('/tasks/<task_id>/start', methods=['POST'])
 @login_required
@@ -3488,7 +3452,7 @@ def _source_login_helper_secret():
 def _transfer_target_list(form):
     return [
         target
-        for target in ('x', 'youtube')
+        for target in ('x', 'youtube', 'bilibili', 'douyin')
         if str(form.get(f'target_{target}', '')).lower() in ('1', 'true', 'on', 'yes')
     ]
 
@@ -3734,6 +3698,7 @@ def transfer_center_review_job(job_id):
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
+        bilibili_partition_mapping=_build_bilibili_partition_mapping(),
         watermark_states=WATERMARK_STATES,
         money_printer_url=_transfer_center().money_printer_url(job),
         money_printer_quick_url=_transfer_center().money_printer_url(
@@ -3814,6 +3779,57 @@ def transfer_center_x_complete(job_id):
     return redirect(url_for('tasks'))
 
 
+@app.route('/transfer-center/jobs/<job_id>/douyin-video')
+@login_required
+def transfer_center_douyin_video(job_id):
+    job = _transfer_center().get_job(job_id)
+    variants = deserialize_plan((job or {}).get('platform_variants_json'))
+    target_variant = variants.get('douyin') if isinstance(variants, dict) else None
+    video_path = str((target_variant or {}).get('path') or '')
+    downloads_root = os.path.realpath(get_app_subdir('downloads'))
+    resolved_path = os.path.realpath(video_path)
+    if (
+        not job
+        or not isinstance(target_variant, dict)
+        or target_variant.get('status') != 'ready'
+        or not video_path
+        or not os.path.isfile(resolved_path)
+        or os.path.commonpath((downloads_root, resolved_path)) != downloads_root
+    ):
+        return '抖音发布视频不存在', 404
+    extension = os.path.splitext(resolved_path)[1] or '.mp4'
+    return send_file(
+        resolved_path,
+        as_attachment=True,
+        download_name=f'douyin-video-{job_id[:8]}{extension}',
+        conditional=True,
+    )
+
+
+@app.route('/transfer-center/jobs/<job_id>/douyin-compose')
+@login_required
+def transfer_center_douyin_compose(job_id):
+    job = _transfer_center().get_job(job_id)
+    if not job or str(job.get('douyin_publish_status') or '') != 'manual_ready':
+        flash('抖音素材尚未准备完成或已经确认发布。', 'warning')
+        return redirect(url_for('tasks'))
+    return redirect('https://creator.douyin.com/creator-micro/content/upload')
+
+
+@app.route('/transfer-center/jobs/<job_id>/douyin-complete', methods=['POST'])
+@login_required
+def transfer_center_douyin_complete(job_id):
+    try:
+        _transfer_center().mark_douyin_manually_published(
+            job_id,
+            request.form.get('douyin_post_url', ''),
+        )
+        flash('抖音发布已确认，任务状态已更新。', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+    return redirect(url_for('tasks'))
+
+
 @app.route('/transfer-center/jobs/<job_id>/review/generate', methods=['POST'])
 @login_required
 def transfer_center_generate_review(job_id):
@@ -3877,6 +3893,10 @@ def transfer_center_save_review(job_id):
                 'x_text': request.form.get('x_text'),
                 'youtube_title': request.form.get('youtube_title'),
                 'youtube_description': request.form.get('youtube_description'),
+                'bilibili_title': request.form.get('bilibili_title'),
+                'bilibili_description': request.form.get('bilibili_description'),
+                'bilibili_partition_id': request.form.get('bilibili_partition_id'),
+                'douyin_text': request.form.get('douyin_text'),
             },
             approve=approve,
         )

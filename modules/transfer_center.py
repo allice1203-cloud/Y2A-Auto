@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import http.cookiejar
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -41,9 +42,11 @@ from .utils import get_app_subdir
 
 logger = logging.getLogger("transfer_center")
 
-PLATFORMS = {"bilibili", "douyin"}
+DISCOVERY_PLATFORMS = {"bilibili", "douyin"}
+SOURCE_PLATFORMS = {"bilibili", "douyin", "youtube", "web"}
+DIRECT_SOURCE_PLATFORMS = {"bilibili", "douyin"}
 DISCOVERY_MODES = {"account", "keyword", "manual"}
-TARGETS = {"x", "youtube"}
+TARGETS = {"x", "youtube", "bilibili", "douyin"}
 JOB_STATUSES = {
     "DISCOVERED": "discovered",
     "DOWNLOADING": "downloading",
@@ -124,19 +127,59 @@ def _normalize_source_url(value: str) -> str:
     return url
 
 
+def _validate_public_source_url(value: str) -> str:
+    """Allow yt-dlp to fetch public web URLs while rejecting local networks."""
+    url = _normalize_source_url(value)
+    parsed = urlparse(url)
+    hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ValueError("请输入完整的 http 或 https 视频链接")
+    if parsed.username or parsed.password:
+        raise ValueError("视频链接不能包含账号或密码")
+    if (
+        hostname in {"localhost", "localhost.localdomain"}
+        or hostname.endswith((".local", ".internal", ".localhost"))
+    ):
+        raise ValueError("不允许下载本机或内网地址")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address and (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        raise ValueError("不允许下载本机或内网地址")
+    return url
+
+
 def _detect_platform(url: str) -> str:
-    lowered = str(url or "").lower()
-    if "bilibili.com" in lowered or "b23.tv" in lowered:
+    parsed = urlparse(_normalize_source_url(url))
+    hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
+    if hostname == "b23.tv" or hostname.endswith(".b23.tv") or (
+        hostname == "bilibili.com" or hostname.endswith(".bilibili.com")
+    ):
         return "bilibili"
-    if "douyin.com" in lowered:
+    if hostname == "douyin.com" or hostname.endswith(".douyin.com"):
         return "douyin"
-    return ""
+    if (
+        hostname == "youtu.be"
+        or hostname.endswith(".youtu.be")
+        or hostname == "youtube.com"
+        or hostname.endswith(".youtube.com")
+    ):
+        return "youtube"
+    return "web" if parsed.scheme in {"http", "https"} and parsed.hostname else ""
 
 
 def _source_direct_env(platform: str) -> dict[str, str]:
     """Keep Chinese source/CDN traffic off the YouTube proxy bridge."""
     env = os.environ.copy()
-    if platform not in PLATFORMS:
+    if platform not in DIRECT_SOURCE_PLATFORMS:
         return env
     for key in (
         "HTTP_PROXY",
@@ -431,6 +474,10 @@ class TransferCenter:
                     x_text TEXT DEFAULT '',
                     youtube_title TEXT DEFAULT '',
                     youtube_description TEXT DEFAULT '',
+                    bilibili_title TEXT DEFAULT '',
+                    bilibili_description TEXT DEFAULT '',
+                    bilibili_partition_id TEXT DEFAULT '',
+                    douyin_text TEXT DEFAULT '',
                     reviewed_at TEXT,
                     recreation_completed INTEGER NOT NULL DEFAULT 0,
                     mpt_project_id TEXT DEFAULT '',
@@ -441,12 +488,17 @@ class TransferCenter:
                     prepare_attempts INTEGER NOT NULL DEFAULT 0,
                     x_publish_status TEXT DEFAULT 'pending',
                     youtube_publish_status TEXT DEFAULT 'pending',
+                    bilibili_publish_status TEXT DEFAULT 'pending',
+                    douyin_publish_status TEXT DEFAULT 'pending',
                     x_publish_attempts INTEGER NOT NULL DEFAULT 0,
                     youtube_publish_attempts INTEGER NOT NULL DEFAULT 0,
+                    bilibili_publish_attempts INTEGER NOT NULL DEFAULT 0,
                     next_retry_at TEXT,
                     last_retry_stage TEXT DEFAULT '',
                     x_post_id TEXT DEFAULT '',
                     youtube_video_id TEXT DEFAULT '',
+                    bilibili_post_id TEXT DEFAULT '',
+                    douyin_post_id TEXT DEFAULT '',
                     error_message TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -536,6 +588,10 @@ class TransferCenter:
             "x_text": "TEXT DEFAULT ''",
             "youtube_title": "TEXT DEFAULT ''",
             "youtube_description": "TEXT DEFAULT ''",
+            "bilibili_title": "TEXT DEFAULT ''",
+            "bilibili_description": "TEXT DEFAULT ''",
+            "bilibili_partition_id": "TEXT DEFAULT ''",
+            "douyin_text": "TEXT DEFAULT ''",
             "reviewed_at": "TEXT",
             "recreation_completed": "INTEGER NOT NULL DEFAULT 0",
             "mpt_project_id": "TEXT DEFAULT ''",
@@ -546,12 +602,17 @@ class TransferCenter:
             "prepare_attempts": "INTEGER NOT NULL DEFAULT 0",
             "x_publish_status": "TEXT DEFAULT 'pending'",
             "youtube_publish_status": "TEXT DEFAULT 'pending'",
+            "bilibili_publish_status": "TEXT DEFAULT 'pending'",
+            "douyin_publish_status": "TEXT DEFAULT 'pending'",
             "x_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "youtube_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "bilibili_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "next_retry_at": "TEXT",
             "last_retry_stage": "TEXT DEFAULT ''",
             "progress_percent": "REAL NOT NULL DEFAULT 0",
             "progress_message": "TEXT DEFAULT ''",
+            "bilibili_post_id": "TEXT DEFAULT ''",
+            "douyin_post_id": "TEXT DEFAULT ''",
         }
         for table_name, additions in (
             ("transfer_rules", rule_columns),
@@ -623,7 +684,7 @@ class TransferCenter:
         mode = str(payload.get("discovery_mode") or "").strip().lower()
         source_value = str(payload.get("source_value") or "").strip()
         targets = [item for item in _json_list(payload.get("target_platforms")) if item in TARGETS]
-        if platform not in PLATFORMS:
+        if platform not in DISCOVERY_PLATFORMS:
             raise ValueError("来源平台无效")
         if mode not in DISCOVERY_MODES - {"manual"}:
             raise ValueError("发现方式无效")
@@ -721,10 +782,21 @@ class TransferCenter:
     # ---- discovery -----------------------------------------------------
     def _cookie_path(self, platform: str) -> str | None:
         config = self._config()
-        configured = str(
-            config.get("TRANSFER_DOUYIN_COOKIES_PATH" if platform == "douyin" else "TRANSFER_BILIBILI_COOKIES_PATH")
-            or ("cookies/douyin_cookies.txt" if platform == "douyin" else "cookies/bilibili_source_cookies.txt")
-        ).strip()
+        settings = {
+            "bilibili": (
+                "TRANSFER_BILIBILI_COOKIES_PATH",
+                "cookies/bilibili_source_cookies.txt",
+            ),
+            "douyin": (
+                "TRANSFER_DOUYIN_COOKIES_PATH",
+                "cookies/douyin_cookies.txt",
+            ),
+            "youtube": ("YOUTUBE_COOKIES_PATH", "cookies/youtube_cookies.txt"),
+        }
+        config_key, default_path = settings.get(platform, ("", ""))
+        if not config_key:
+            return None
+        configured = str(config.get(config_key) or default_path).strip()
         path = configured if os.path.isabs(configured) else os.path.join(get_app_subdir(""), configured)
         real_root = os.path.realpath(get_app_subdir(""))
         real_path = os.path.realpath(path)
@@ -763,7 +835,7 @@ class TransferCenter:
 
     def _requests_session(self, platform: str) -> requests.Session:
         session = requests.Session()
-        if platform in PLATFORMS:
+        if platform in DIRECT_SOURCE_PLATFORMS:
             session.trust_env = False
         session.headers.update(
             {
@@ -899,8 +971,9 @@ class TransferCenter:
                         source_uploader, title, description, thumbnail_url,
                         duration, published_at, target_platforms, status,
                         recreation_mode, x_publish_status, youtube_publish_status,
+                        bilibili_publish_status, douyin_publish_status,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -919,6 +992,8 @@ class TransferCenter:
                         str(rule.get("recreation_mode") or "commentary"),
                         "pending" if "x" in targets else "skipped",
                         "pending" if "youtube" in targets else "skipped",
+                        "pending" if "bilibili" in targets else "skipped",
+                        "pending" if "douyin" in targets else "skipped",
                         now,
                         now,
                     ),
@@ -1045,13 +1120,21 @@ class TransferCenter:
         return dict(row) if row else None
 
     def add_manual_job(self, source_url: str, targets: list[str]) -> str:
-        source_url = _normalize_source_url(source_url)
+        source_url = _validate_public_source_url(source_url)
         platform = _detect_platform(source_url)
-        if platform not in PLATFORMS:
-            raise ValueError("当前只支持B站和国内抖音链接")
+        if platform not in SOURCE_PLATFORMS:
+            raise ValueError("当前链接无法交给 yt-dlp 处理")
         valid_targets = [item for item in targets if item in TARGETS]
         if not valid_targets:
             raise ValueError("至少选择一个发布平台")
+        if platform in {"bilibili", "douyin"} and any(
+            target in {"bilibili", "douyin"} for target in valid_targets
+        ):
+            raise ValueError("B站/抖音来源请发布到 X 或 YouTube，避免平台内重复搬运")
+        if platform in {"youtube", "web"} and any(
+            target in {"x", "youtube"} for target in valid_targets
+        ):
+            raise ValueError("yt-dlp 通用下载任务请发布到 B站或抖音")
         rule = {
             "id": None,
             "platform": platform,
@@ -1095,6 +1178,10 @@ class TransferCenter:
             "x_text",
             "youtube_title",
             "youtube_description",
+            "bilibili_title",
+            "bilibili_description",
+            "bilibili_partition_id",
+            "douyin_text",
             "reviewed_at",
             "recreation_completed",
             "mpt_project_id",
@@ -1105,12 +1192,17 @@ class TransferCenter:
             "prepare_attempts",
             "x_publish_status",
             "youtube_publish_status",
+            "bilibili_publish_status",
+            "douyin_publish_status",
             "x_publish_attempts",
             "youtube_publish_attempts",
+            "bilibili_publish_attempts",
             "next_retry_at",
             "last_retry_stage",
             "x_post_id",
             "youtube_video_id",
+            "bilibili_post_id",
+            "douyin_post_id",
             "error_message",
             "progress_percent",
             "progress_message",
@@ -1271,6 +1363,7 @@ class TransferCenter:
         metadata_path = output_dir / "metadata.json"
         cmd = [
             "yt-dlp",
+            "--ignore-config",
             "--no-playlist",
             "--newline",
             "--no-colors",
@@ -1297,6 +1390,8 @@ class TransferCenter:
             "vtt/srt/best",
             "--merge-output-format",
             "mp4",
+            "--format",
+            "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/bv*+ba/b",
             "-o",
             output_template,
         ]
@@ -1411,6 +1506,17 @@ class TransferCenter:
             x_text=str(plan.get("x_text") or ""),
             youtube_title=str(plan.get("youtube_title") or ""),
             youtube_description=str(plan.get("youtube_description") or ""),
+            bilibili_title=str(
+                plan.get("youtube_title") or prepared_fields["title"] or ""
+            )[:80],
+            bilibili_description=str(
+                plan.get("youtube_description")
+                or prepared_fields["description"]
+                or ""
+            )[:2000],
+            douyin_text=str(
+                plan.get("x_text") or prepared_fields["title"] or ""
+            )[:2000],
             next_retry_at=None,
             last_retry_stage="",
             error_message="",
@@ -1447,7 +1553,15 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
-        if job.get("x_post_id") or job.get("youtube_video_id"):
+        if any(
+            job.get(field)
+            for field in (
+                "x_post_id",
+                "youtube_video_id",
+                "bilibili_post_id",
+                "douyin_post_id",
+            )
+        ):
             raise ValueError("已有平台发布结果，不能替换成片")
         if not os.path.isfile(video_path):
             raise ValueError("再创作成片文件不存在")
@@ -1473,6 +1587,8 @@ class TransferCenter:
             reviewed_at=None,
             x_publish_status="pending" if "x" in targets else "skipped",
             youtube_publish_status="pending" if "youtube" in targets else "skipped",
+            bilibili_publish_status="pending" if "bilibili" in targets else "skipped",
+            douyin_publish_status="pending" if "douyin" in targets else "skipped",
             next_retry_at=None,
             last_retry_stage="",
             error_message="",
@@ -1500,12 +1616,20 @@ class TransferCenter:
                 "x_text": normalized["x_text"],
                 "youtube_title": normalized["youtube_title"],
                 "youtube_description": normalized["youtube_description"],
+                "bilibili_title": normalized["bilibili_title"],
+                "bilibili_description": normalized["bilibili_description"],
+                "douyin_text": normalized["douyin_text"],
             }
         )
         status = JOB_STATUSES["REVIEW"]
         recreation_status = "draft"
         reviewed_at = None
         if approve:
+            targets = _json_list(job.get("target_platforms"))
+            if "bilibili" in targets and not str(
+                normalized.get("bilibili_partition_id") or ""
+            ).isdigit():
+                raise ValueError("发布到 B站前请选择内容分区")
             if (
                 normalized["processing_mode"] != "direct"
                 and not int(job.get("recreation_completed") or 0)
@@ -1560,6 +1684,10 @@ class TransferCenter:
             x_text=normalized["x_text"],
             youtube_title=normalized["youtube_title"],
             youtube_description=normalized["youtube_description"],
+            bilibili_title=normalized["bilibili_title"],
+            bilibili_description=normalized["bilibili_description"],
+            bilibili_partition_id=normalized["bilibili_partition_id"],
+            douyin_text=normalized["douyin_text"],
             reviewed_at=reviewed_at,
             error_message="",
         )
@@ -1866,11 +1994,16 @@ class TransferCenter:
         else:
             result_id = f"manual-confirmed:{uuid.uuid4().hex[:12]}"
 
-        youtube_done = (
-            "youtube" not in targets
-            or bool(str(job.get("youtube_video_id") or "").strip())
+        other_targets_done = all(
+            (
+                target == "x"
+                or (target == "youtube" and bool(job.get("youtube_video_id")))
+                or (target == "bilibili" and bool(job.get("bilibili_post_id")))
+                or (target == "douyin" and bool(job.get("douyin_post_id")))
+            )
+            for target in targets
         )
-        completed = youtube_done
+        completed = other_targets_done
         self._update_job(
             job_id,
             x_publish_status="completed",
@@ -1880,8 +2013,8 @@ class TransferCenter:
             ),
             progress_percent=100 if completed else 90,
             progress_message=(
-                "X 与 YouTube 均已完成"
-                if completed and "youtube" in targets
+                "所有平台发布完成"
+                if completed and len(targets) > 1
                 else (
                     "X 已确认发布完成"
                     if completed
@@ -1893,6 +2026,220 @@ class TransferCenter:
             last_retry_stage="",
         )
         return self.get_job(job_id) or {}
+
+    def mark_douyin_manually_published(
+        self, job_id: str, post_url: str = ""
+    ) -> dict:
+        """Record completion after the creator confirms the Douyin web upload."""
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        targets = _json_list(job.get("target_platforms"))
+        if "douyin" not in targets:
+            raise ValueError("当前任务没有选择发布到抖音")
+        if str(job.get("douyin_publish_status") or "") != "manual_ready":
+            raise ValueError("抖音素材尚未准备完成或已经确认发布")
+
+        normalized_url = str(post_url or "").strip()
+        if normalized_url:
+            parsed = urlparse(normalized_url)
+            host = (parsed.hostname or "").lower()
+            if host not in {
+                "douyin.com",
+                "www.douyin.com",
+                "v.douyin.com",
+            }:
+                raise ValueError("请填写有效的抖音作品链接")
+            result_id = normalized_url
+        else:
+            result_id = f"manual-confirmed:{uuid.uuid4().hex[:12]}"
+
+        other_targets_done = all(
+            (
+                target == "douyin"
+                or (target == "x" and bool(job.get("x_post_id")))
+                or (target == "youtube" and bool(job.get("youtube_video_id")))
+                or (target == "bilibili" and bool(job.get("bilibili_post_id")))
+            )
+            for target in targets
+        )
+        self._update_job(
+            job_id,
+            douyin_publish_status="completed",
+            douyin_post_id=result_id,
+            status=(
+                JOB_STATUSES["COMPLETED"]
+                if other_targets_done
+                else JOB_STATUSES["READY"]
+            ),
+            progress_percent=100 if other_targets_done else 90,
+            progress_message=(
+                "所有平台发布完成"
+                if other_targets_done
+                else "抖音已确认发布，等待其他平台完成"
+            ),
+            error_message="",
+            next_retry_at=None,
+            last_retry_stage="",
+        )
+        return self.get_job(job_id) or {}
+
+    def _resolve_app_file(self, value: str) -> str:
+        configured = str(value or "").strip()
+        if not configured:
+            return ""
+        path = (
+            configured
+            if os.path.isabs(configured)
+            else os.path.join(get_app_subdir(""), configured)
+        )
+        resolved = os.path.realpath(path)
+        root = os.path.realpath(get_app_subdir(""))
+        try:
+            if os.path.commonpath((root, resolved)) != root:
+                return ""
+        except ValueError:
+            return ""
+        return resolved if os.path.isfile(resolved) else ""
+
+    def _bilibili_upload_cookie_path(self) -> str:
+        config = self._config()
+        candidates = (
+            config.get("BILIBILI_COOKIES_PATH") or "cookies/bili_cookies.json",
+            config.get("TRANSFER_BILIBILI_COOKIES_PATH")
+            or "cookies/bilibili_source_cookies.txt",
+        )
+        return next(
+            (
+                path
+                for path in (self._resolve_app_file(item) for item in candidates)
+                if path
+            ),
+            "",
+        )
+
+    @staticmethod
+    def _video_cover_path(job: dict) -> str:
+        video_path = str(job.get("local_video_path") or "")
+        if not video_path:
+            return ""
+        output_dir = Path(video_path).parent
+        for pattern in (
+            "video.jpg",
+            "video.jpeg",
+            "video.png",
+            "video.webp",
+            "*.jpg",
+            "*.jpeg",
+            "*.png",
+            "*.webp",
+        ):
+            match = next(
+                (
+                    item
+                    for item in sorted(output_dir.glob(pattern))
+                    if item.is_file() and item.stat().st_size > 0
+                ),
+                None,
+            )
+            if match:
+                return str(match)
+
+        cover_path = output_dir / "bilibili-cover.jpg"
+        completed = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                "1",
+                "-i",
+                video_path,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(cover_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if completed.returncode != 0 or not cover_path.is_file():
+            raise RuntimeError("无法生成 B站投稿封面")
+        return str(cover_path)
+
+    def _publish_bilibili(
+        self,
+        job: dict,
+        *,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> str:
+        from .bilibili_uploader import BilibiliUploader
+
+        video_path = self._target_video_path(job, "bilibili")
+        if not video_path:
+            raise RuntimeError("B站媒体版本未就绪")
+        cookie_path = self._bilibili_upload_cookie_path()
+        if not cookie_path:
+            raise ValueError("B站发布账号尚未登录，请先在设置中扫码连接")
+        partition_id = str(
+            job.get("bilibili_partition_id")
+            or self._config().get("FIXED_PARTITION_ID_BILIBILI")
+            or ""
+        ).strip()
+        if not partition_id.isdigit():
+            raise ValueError("发布到 B站前请选择内容分区")
+
+        metadata = {}
+        metadata_path = str(job.get("local_metadata_path") or "")
+        if metadata_path and os.path.isfile(metadata_path):
+            try:
+                metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                metadata = {}
+        tags = [
+            str(item).strip()
+            for item in (metadata.get("tags") or [])
+            if str(item).strip()
+        ][:12]
+        uploader = BilibiliUploader(cookie_file=cookie_path)
+
+        def on_progress(value: str) -> None:
+            if progress_callback is None:
+                return
+            match = re.search(r"(\d+(?:\.\d+)?)\s*%", str(value or ""))
+            if match:
+                progress_callback(max(0.0, min(1.0, float(match.group(1)) / 100)))
+
+        success, result = uploader.upload_video(
+            video_file_path=video_path,
+            cover_file_path=self._video_cover_path(
+                {**job, "local_video_path": video_path}
+            ),
+            title=str(job.get("bilibili_title") or job.get("title") or "")[:80],
+            description=str(
+                job.get("bilibili_description")
+                or job.get("youtube_description")
+                or job.get("description")
+                or ""
+            )[:2000],
+            tags=tags,
+            partition_id=partition_id,
+            youtube_url=str(job.get("source_url") or ""),
+            task_id=str(job.get("id") or ""),
+            progress_callback=on_progress,
+        )
+        if not success:
+            raise RuntimeError(str(result or "B站上传失败"))
+        if isinstance(result, dict):
+            return str(
+                result.get("url")
+                or result.get("bvid")
+                or result.get("aid")
+                or json.dumps(result, ensure_ascii=False)
+            )
+        return str(result or "uploaded")
 
     def _publish_job_guarded(self, job_id: str) -> None:
         try:
@@ -1911,6 +2258,7 @@ class TransferCenter:
                 attempts = max(
                     int(job.get("x_publish_attempts") or 0),
                     int(job.get("youtube_publish_attempts") or 0),
+                    int(job.get("bilibili_publish_attempts") or 0),
                     1,
                 )
                 self._schedule_retry(job_id, "publish", attempts, exc)
@@ -2088,6 +2436,8 @@ class TransferCenter:
         retryable_errors = []
         x_post_id = job.get("x_post_id") or ""
         youtube_video_id = job.get("youtube_video_id") or ""
+        bilibili_post_id = job.get("bilibili_post_id") or ""
+        douyin_post_id = job.get("douyin_post_id") or ""
         if "x" in targets and not x_post_id:
             x_path = self._target_video_path(job, "x")
             if not x_path:
@@ -2158,8 +2508,82 @@ class TransferCenter:
                     errors.append(message)
                     if retryable:
                         retryable_errors.append((message, youtube_attempts))
+        if "bilibili" in targets and not bilibili_post_id:
+            bilibili_path = self._target_video_path(job, "bilibili")
+            if not bilibili_path:
+                self._update_job(job_id, bilibili_publish_status="blocked")
+                errors.append("B站媒体版本未就绪")
+            else:
+                bilibili_attempts = (
+                    int(job.get("bilibili_publish_attempts") or 0) + 1
+                )
+                self._update_job(
+                    job_id,
+                    bilibili_publish_status="publishing",
+                    bilibili_publish_attempts=bilibili_attempts,
+                    progress_percent=91,
+                    progress_message="正在上传到 B站",
+                )
+                try:
+                    bilibili_job = {
+                        **job,
+                        "id": job_id,
+                        "local_video_path": bilibili_path,
+                    }
+                    bilibili_post_id = self._publish_bilibili(
+                        bilibili_job,
+                        progress_callback=lambda progress: self._update_job(
+                            job_id,
+                            progress_percent=92 + (progress * 7),
+                            progress_message=f"正在上传到 B站 {progress * 100:.0f}%",
+                        ),
+                    )
+                    self._update_job(
+                        job_id,
+                        bilibili_post_id=bilibili_post_id,
+                        bilibili_publish_status="completed",
+                        progress_percent=99,
+                        progress_message="B站上传完成",
+                    )
+                except Exception as exc:
+                    safe_message = _safe_error(exc)
+                    needs_login = "登录" in safe_message or "cookie" in safe_message.lower()
+                    self._update_job(
+                        job_id,
+                        bilibili_publish_status=(
+                            "waiting_auth" if needs_login else "failed"
+                        ),
+                        progress_percent=90,
+                        progress_message=(
+                            "B站发布账号需要重新登录"
+                            if needs_login
+                            else "B站发布失败，需要检查"
+                        ),
+                    )
+                    message = f"B站: {safe_message}"
+                    errors.append(message)
+                    if any(
+                        marker in safe_message.lower()
+                        for marker in ("timeout", "timed out", "connection", " 5")
+                    ):
+                        retryable_errors.append((message, bilibili_attempts))
+        if "douyin" in targets and not douyin_post_id:
+            douyin_path = self._target_video_path(job, "douyin")
+            if not douyin_path:
+                self._update_job(job_id, douyin_publish_status="blocked")
+                errors.append("抖音媒体版本未就绪")
+            else:
+                self._update_job(
+                    job_id,
+                    douyin_publish_status="manual_ready",
+                    progress_percent=90,
+                    progress_message="抖音素材与文案已备好，等待网页确认发布",
+                )
         completed = all(
-            (target == "x" and x_post_id) or (target == "youtube" and youtube_video_id)
+            (target == "x" and x_post_id)
+            or (target == "youtube" and youtube_video_id)
+            or (target == "bilibili" and bilibili_post_id)
+            or (target == "douyin" and douyin_post_id)
             for target in targets
         )
         self._update_job(
