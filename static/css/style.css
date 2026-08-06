@@ -2819,6 +2819,13 @@ body.login-fullscreen {
     background: #171a25;
 }
 
+.relay-path .source-tiktok,
+.relay-path .target-tiktok {
+    color: #fff;
+    border-color: #111827;
+    background: linear-gradient(135deg, #111827 0%, #0ea5e9 100%);
+}
+
 .relay-path > i {
     color: #a0a5b6;
     font-size: 10px;
@@ -2924,6 +2931,11 @@ body.login-fullscreen {
 .platform-mini.douyin {
     color: #fff;
     background: #151722;
+}
+
+.platform-mini.tiktok {
+    color: #fff;
+    background: #111827;
 }
 
 .task-updated {
@@ -3146,6 +3158,11 @@ body.login-fullscreen {
 .route-target-icon.douyin {
     color: #fff;
     background: #151722;
+}
+
+.route-target-icon.tiktok {
+    color: #fff;
+    background: linear-gradient(135deg, #111827 0%, #0ea5e9 100%);
 }
 
 .route-note {

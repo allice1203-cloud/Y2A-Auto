@@ -31,6 +31,7 @@ from modules.bilibili_auth import BilibiliQrLoginSession
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import (
+    PLATFORM_CATALOG,
     YOUTUBE_SCOPES,
     build_x_web_intent_url,
     build_youtube_oauth_redirect_uri,
@@ -3427,6 +3428,7 @@ def _source_cookie_path(platform):
     filenames = {
         'bilibili': 'bilibili_source_cookies.txt',
         'douyin': 'douyin_cookies.txt',
+        'tiktok': 'tiktok_cookies.txt',
     }
     filename = filenames.get(str(platform or '').strip().lower())
     if not filename:
@@ -3452,7 +3454,7 @@ def _source_login_helper_secret():
 def _transfer_target_list(form):
     return [
         target
-        for target in ('x', 'youtube', 'bilibili', 'douyin')
+        for target in ('x', 'youtube', 'bilibili', 'douyin', 'tiktok')
         if str(form.get(f'target_{target}', '')).lower() in ('1', 'true', 'on', 'yes')
     ]
 
@@ -3498,6 +3500,8 @@ def transfer_center_index():
             'youtube_message': youtube_state.get('message', ''),
             'bilibili_cookies_ready': _source_cookie_ready('bilibili'),
             'douyin_cookies_ready': _source_cookie_ready('douyin'),
+            'tiktok_cookies_ready': _source_cookie_ready('tiktok'),
+            'platform_catalog': PLATFORM_CATALOG,
             'source_login_helper_ready': bool(_source_login_helper_secret()),
             'youtube_privacy': config.get('TRANSFER_YOUTUBE_PRIVACY', 'public'),
             'youtube_category_id': config.get('TRANSFER_YOUTUBE_CATEGORY_ID', '22'),
@@ -3830,6 +3834,57 @@ def transfer_center_douyin_complete(job_id):
     return redirect(url_for('tasks'))
 
 
+@app.route('/transfer-center/jobs/<job_id>/tiktok-video')
+@login_required
+def transfer_center_tiktok_video(job_id):
+    job = _transfer_center().get_job(job_id)
+    variants = deserialize_plan((job or {}).get('platform_variants_json'))
+    target_variant = variants.get('tiktok') if isinstance(variants, dict) else None
+    video_path = str((target_variant or {}).get('path') or '')
+    downloads_root = os.path.realpath(get_app_subdir('downloads'))
+    resolved_path = os.path.realpath(video_path)
+    if (
+        not job
+        or not isinstance(target_variant, dict)
+        or target_variant.get('status') != 'ready'
+        or not video_path
+        or not os.path.isfile(resolved_path)
+        or os.path.commonpath((downloads_root, resolved_path)) != downloads_root
+    ):
+        return 'TikTok 发布视频不存在', 404
+    extension = os.path.splitext(resolved_path)[1] or '.mp4'
+    return send_file(
+        resolved_path,
+        as_attachment=True,
+        download_name=f'tiktok-video-{job_id[:8]}{extension}',
+        conditional=True,
+    )
+
+
+@app.route('/transfer-center/jobs/<job_id>/tiktok-compose')
+@login_required
+def transfer_center_tiktok_compose(job_id):
+    job = _transfer_center().get_job(job_id)
+    if not job or str(job.get('tiktok_publish_status') or '') != 'manual_ready':
+        flash('TikTok 素材尚未准备完成或已经确认发布。', 'warning')
+        return redirect(url_for('tasks'))
+    return redirect('https://www.tiktok.com/tiktokstudio/upload')
+
+
+@app.route('/transfer-center/jobs/<job_id>/tiktok-complete', methods=['POST'])
+@login_required
+def transfer_center_tiktok_complete(job_id):
+    try:
+        _transfer_center().mark_tiktok_manually_published(
+            job_id,
+            request.form.get('tiktok_post_url', ''),
+        )
+        flash('TikTok 发布已确认，任务状态已更新。', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+    return redirect(url_for('tasks'))
+
+
 @app.route('/transfer-center/jobs/<job_id>/review/generate', methods=['POST'])
 @login_required
 def transfer_center_generate_review(job_id):
@@ -3897,6 +3952,7 @@ def transfer_center_save_review(job_id):
                 'bilibili_description': request.form.get('bilibili_description'),
                 'bilibili_partition_id': request.form.get('bilibili_partition_id'),
                 'douyin_text': request.form.get('douyin_text'),
+                'tiktok_text': request.form.get('tiktok_text'),
             },
             approve=approve,
         )
@@ -3978,6 +4034,7 @@ def transfer_center_save_connections():
     upload_specs = (
         ('bilibili_source_cookies', get_app_subdir('cookies'), 'bilibili_source_cookies.txt', 'B站来源 Cookie'),
         ('douyin_cookies', get_app_subdir('cookies'), 'douyin_cookies.txt', '抖音 Cookie'),
+        ('tiktok_cookies', get_app_subdir('cookies'), 'tiktok_cookies.txt', 'TikTok Cookie'),
         ('youtube_client_secret', get_app_subdir('config'), 'youtube_transfer_client_secret.json', 'YouTube OAuth 客户端'),
     )
     for field_name, directory, filename, label in upload_specs:

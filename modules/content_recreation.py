@@ -253,6 +253,10 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
             payload.get("bilibili_partition_id"), 20
         ),
         "douyin_text": _clean_multiline(payload.get("douyin_text"), 2000),
+        "tiktok_text": _clean_multiline(
+            payload.get("tiktok_text") or payload.get("douyin_text") or payload.get("x_text"),
+            2000,
+        ),
     }
 
 

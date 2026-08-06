@@ -334,6 +334,12 @@
                     <textarea class="form-control" name="douyin_text" rows="4" maxlength="2000">{{ job.douyin_text or job.title or '' }}</textarea>
                 </div>
                 {% endif %}
+                {% if '"tiktok"' in job.target_platforms %}
+                <div class="mb-3">
+                    <label class="form-label">TikTok 文案</label>
+                    <textarea class="form-control" name="tiktok_text" rows="4" maxlength="2000">{{ job.tiktok_text or job.x_text or job.title or '' }}</textarea>
+                </div>
+                {% endif %}
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
                 <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
@@ -385,6 +391,15 @@
                         <span class="badge bg-dark">{{ distribution_plan.douyin.label }}</span>
                     </div>
                     <div class="small text-muted mt-2">{{ distribution_plan.douyin.note }}</div>
+                </div>
+                {% endif %}
+                {% if distribution_plan.tiktok %}
+                <div class="route-card mt-2">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>TikTok</strong>
+                        <span class="badge bg-dark">{{ distribution_plan.tiktok.label }}</span>
+                    </div>
+                    <div class="small text-muted mt-2">{{ distribution_plan.tiktok.note }}</div>
                 </div>
                 {% endif %}
             </div>
@@ -442,7 +457,7 @@
                     <div class="probe-item"><div class="small text-muted">音频编码</div><strong>{{ media_probe.audio_codec|upper or '无' }}</strong></div>
                 </div>
                 {% endif %}
-                {% for target in ['x', 'youtube', 'bilibili', 'douyin'] %}
+                {% for target in ['x', 'youtube', 'bilibili', 'douyin', 'tiktok'] %}
                     {% if target in platform_variants %}
                     {% set variant = platform_variants[target] %}
                     <div class="d-flex justify-content-between align-items-center border-top py-2">

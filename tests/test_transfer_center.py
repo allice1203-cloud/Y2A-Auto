@@ -55,6 +55,47 @@ def test_manual_job_detects_douyin_and_deduplicates(center):
         center.add_manual_job(url, ["youtube"])
 
 
+def test_manual_job_detects_tiktok_and_routes_cross_platform(center):
+    url = "https://www.tiktok.com/@creator/video/6718335390845095173"
+    job_id = center.add_manual_job(url, ["youtube", "douyin", "bilibili"])
+
+    job = center.get_job(job_id)
+    assert job["source_platform"] == "tiktok"
+    assert json.loads(job["target_platforms"]) == ["youtube", "douyin", "bilibili"]
+    assert job["tiktok_publish_status"] == "skipped"
+
+
+def test_tiktok_account_scan_uses_ytdlp_candidates(center, monkeypatch):
+    rule_id = center.save_rule(
+        {
+            "name": "TikTok 科技账号",
+            "platform": "tiktok",
+            "discovery_mode": "account",
+            "source_value": "https://www.tiktok.com/@creator",
+            "target_platforms": ["youtube", "douyin"],
+            "first_scan_preview": True,
+        }
+    )
+    monkeypatch.setattr(
+        center,
+        "_yt_dlp_json",
+        lambda *_args, **_kwargs: {
+            "entries": [
+                {
+                    "id": "6718335390845095173",
+                    "webpage_url": "https://www.tiktok.com/@creator/video/6718335390845095173",
+                    "title": "TikTok candidate",
+                }
+            ]
+        },
+    )
+
+    result = center.scan_rule(rule_id)
+    assert result["success"] is True
+    assert result["added"] == 1
+    assert center.get_job(center.list_jobs()[0]["id"])["source_platform"] == "tiktok"
+
+
 def test_ytdlp_web_job_routes_to_bilibili_and_douyin(center):
     job_id = center.add_manual_job(
         "https://www.youtube.com/watch?v=test123",
@@ -124,6 +165,18 @@ def test_chinese_source_download_bypasses_proxy(monkeypatch):
     assert "HTTPS_PROXY" not in env
     assert ".bilivideo.com" in env["NO_PROXY"]
     assert ".b23.tv" in env["NO_PROXY"]
+
+
+def test_tiktok_source_keeps_egress_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:17890")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:17890")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+
+    env = transfer_module._source_direct_env("tiktok")
+
+    assert env["HTTP_PROXY"] == "http://proxy.example:17890"
+    assert env["HTTPS_PROXY"] == "http://proxy.example:17890"
+    assert ".tiktok.com" not in env["NO_PROXY"]
 
 
 def test_publish_uses_free_manual_x_mode_without_api_token(center, tmp_path):
@@ -196,6 +249,37 @@ def test_bilibili_and_douyin_media_variants_preserve_source(
     assert variants["douyin"]["path"] == str(video_path)
     assert variants["bilibili"]["status"] == "ready"
     assert variants["douyin"]["status"] == "ready"
+
+
+def test_tiktok_media_variant_preserves_source(tmp_path, monkeypatch):
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"video")
+    monkeypatch.setattr(
+        preflight_module,
+        "probe_media",
+        lambda *_args, **_kwargs: {
+            "path": str(video_path),
+            "duration": 60,
+            "size_bytes": 5,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "width": 1080,
+            "height": 1920,
+            "fps": 30,
+            "pix_fmt": "yuv420p",
+            "audio_channels": 2,
+            "has_audio": True,
+        },
+    )
+
+    _, variants = preflight_module.prepare_platform_variants(
+        str(video_path),
+        str(tmp_path),
+        ["tiktok"],
+    )
+
+    assert variants["tiktok"]["path"] == str(video_path)
+    assert variants["tiktok"]["status"] == "ready"
 
 
 def test_x_web_intent_prefills_publish_text():
@@ -293,6 +377,38 @@ def test_douyin_publish_is_free_manual_handoff(center, tmp_path):
     )
     assert completed["status"] == "completed"
     assert completed["douyin_publish_status"] == "completed"
+
+
+def test_tiktok_publish_is_free_manual_handoff(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.youtube.com/watch?v=tiktok-upload",
+        ["tiktok"],
+    )
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"test")
+    center._update_job(
+        job_id,
+        status="ready",
+        local_video_path=str(video_path),
+        platform_variants_json=json.dumps(
+            {"tiktok": {"status": "ready", "path": str(video_path)}}
+        ),
+        source_attribution="原作者\nhttps://youtube.com/watch?v=tiktok-upload",
+        watermark_status="third_party_preserved",
+        recreation_status="approved",
+        tiktok_text="测试 TikTok 文案",
+    )
+
+    ready = center.publish_job(job_id)
+    assert ready["status"] == "ready"
+    assert ready["tiktok_publish_status"] == "manual_ready"
+
+    completed = center.mark_tiktok_manually_published(
+        job_id,
+        "https://www.tiktok.com/@creator/video/6718335390845095173",
+    )
+    assert completed["status"] == "completed"
+    assert completed["tiktok_publish_status"] == "completed"
 
 
 def test_youtube_connection_requires_verified_channel(center, tmp_path):

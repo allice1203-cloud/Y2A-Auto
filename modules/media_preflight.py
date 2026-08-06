@@ -213,6 +213,13 @@ def build_distribution_plan(
             "note": "系统准备成片与文案，最后在抖音创作者中心确认发布。",
         }
 
+    if "tiktok" in selected_targets:
+        plan["tiktok"] = {
+            "route": "creator_web",
+            "label": "TikTok Studio",
+            "note": "当前为免费半自动网页发布；官方 API 审核通过后再切换自动发布。",
+        }
+
     return plan
 
 
@@ -287,7 +294,7 @@ def prepare_platform_variants(
             "issues": [],
         }
 
-    for target in ("bilibili", "douyin"):
+    for target in ("bilibili", "douyin", "tiktok"):
         if target in targets:
             variants[target] = {
                 "status": "ready",

@@ -49,6 +49,7 @@
                 <option value="">全部来源</option>
                 <option value="bilibili">B站</option>
                 <option value="douyin">抖音</option>
+                <option value="tiktok">TikTok</option>
                 <option value="youtube">YouTube</option>
                 <option value="web">其他网站</option>
             </select>
@@ -89,7 +90,7 @@
                             'skipped': 100
                         } %}
                         {% set progress = status_progress.get(job.status, 0)|int %}
-                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-x-status="{{ job.x_publish_status }}" data-youtube-status="{{ job.youtube_publish_status }}" data-error="{{ job.error_message|e }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
+                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-x-status="{{ job.x_publish_status }}" data-youtube-status="{{ job.youtube_publish_status }}" data-tiktok-status="{{ job.tiktok_publish_status }}" data-error="{{ job.error_message|e }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
                             <td>
                                 <div class="task-video-cell">
                                     <span class="task-video-thumb">
@@ -106,13 +107,14 @@
                                 <div class="relay-path">
                                     <span class="source source-{{ job.source_platform }}">{{ {
                                         'bilibili':'B站', 'douyin':'抖音',
-                                        'youtube':'YouTube', 'web':'yt-dlp'
+                                        'youtube':'YouTube', 'tiktok':'TikTok', 'web':'yt-dlp'
                                     }.get(job.source_platform, job.source_platform) }}</span>
                                     <i class="bi bi-arrow-right"></i>
                                     {% if '"x"' in job.target_platforms %}<span class="target target-x">X</span>{% endif %}
                                     {% if '"youtube"' in job.target_platforms %}<span class="target target-youtube">YouTube</span>{% endif %}
                                     {% if '"bilibili"' in job.target_platforms %}<span class="target target-bilibili">B站</span>{% endif %}
                                     {% if '"douyin"' in job.target_platforms %}<span class="target target-douyin">抖音</span>{% endif %}
+                                    {% if '"tiktok"' in job.target_platforms %}<span class="target target-tiktok">TikTok</span>{% endif %}
                                 </div>
                             </td>
                             <td>
@@ -174,6 +176,12 @@
                                         'blocked':'媒体未就绪','skipped':'未选择'
                                     }.get(job.douyin_publish_status, job.douyin_publish_status) }}</span></span>
                                     {% endif %}
+                                    {% if '"tiktok"' in job.target_platforms %}
+                                    <span><i class="platform-mini tiktok">♪</i><span data-publish-status="tiktok">{{ {
+                                        'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待授权','publishing':'发布中',
+                                        'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
+                                    }.get(job.tiktok_publish_status, job.tiktok_publish_status) }}</span></span>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td><span class="task-updated">{{ job.updated_at[:16]|replace('T', ' ') }}</span></td>
@@ -196,6 +204,7 @@
                                         or job.youtube_publish_status in ('pending', 'failed')
                                         or job.bilibili_publish_status in ('pending', 'failed', 'waiting_auth')
                                         or job.douyin_publish_status == 'pending'
+                                        or job.tiktok_publish_status == 'pending'
                                     ) %}
                                     <form method="post" action="{{ url_for('transfer_center_publish_job', job_id=job.id) }}" class="d-inline">
                                         <button class="btn btn-sm btn-success">发布</button>
@@ -222,6 +231,17 @@
                                     data-douyin-compose-url="{{ url_for('transfer_center_douyin_compose', job_id=job.id) }}"
                                     data-douyin-complete-url="{{ url_for('transfer_center_douyin_complete', job_id=job.id) }}">
                                     <i class="bi bi-box-arrow-up-right"></i> 去抖音发布
+                                </button>
+                                {% endif %}
+                                {% if job.tiktok_publish_status == 'manual_ready' %}
+                                <button class="btn btn-sm btn-dark" type="button"
+                                    data-bs-toggle="modal" data-bs-target="#tiktokPublishModal"
+                                    data-tiktok-title="{{ (job.title or '搬运视频')|e }}"
+                                    data-tiktok-text="{{ (job.tiktok_text or job.x_text or job.title or '新视频')|e }}"
+                                    data-tiktok-video-url="{{ url_for('transfer_center_tiktok_video', job_id=job.id) }}"
+                                    data-tiktok-compose-url="{{ url_for('transfer_center_tiktok_compose', job_id=job.id) }}"
+                                    data-tiktok-complete-url="{{ url_for('transfer_center_tiktok_complete', job_id=job.id) }}">
+                                    <i class="bi bi-box-arrow-up-right"></i> 去 TikTok 发布
                                 </button>
                                 {% endif %}
                             </td>
@@ -326,6 +346,48 @@
                         </button>
                     </form>
                     <iframe class="d-none" id="douyinDownloadFrame" title="抖音视频下载"></iframe>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="tiktokPublishModal" tabindex="-1" aria-labelledby="tiktokPublishModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header border-0 pb-0">
+                    <div>
+                        <div class="text-uppercase small text-muted fw-semibold mb-1">TikTok · 免费半自动发布</div>
+                        <h2 class="modal-title h5 mb-0" id="tiktokPublishModalLabel">发布到 TikTok</h2>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body pt-3">
+                    <div class="alert alert-primary border-0 mb-3">
+                        当前版本会下载服务器成片、复制文案并打开 TikTok Studio。你只需选择刚下载的视频并确认发布；官方 API 审核通过后再切换自动发布。
+                    </div>
+                    <div class="small text-muted mb-1">当前视频</div>
+                    <div class="fw-semibold mb-3" id="tiktokPublishTitle">搬运视频</div>
+                    <label class="form-label" for="tiktokPublishText">发布文案</label>
+                    <textarea class="form-control" id="tiktokPublishText" rows="4" readonly></textarea>
+                    <button class="btn btn-sm btn-outline-secondary mt-2" type="button" id="tiktokCopyText">
+                        <i class="bi bi-copy"></i> 复制文案
+                    </button>
+                    <a class="btn btn-dark w-100 mt-3" id="tiktokLaunchPublish" href="#" target="_blank" rel="noopener">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> 下载视频并打开 TikTok Studio
+                    </a>
+                    <div class="small text-success mt-2 d-none" id="tiktokPublishLaunchStatus">
+                        视频已开始下载，文案已复制；请在 TikTok Studio 选择下载的视频。
+                    </div>
+                    <hr class="my-4">
+                    <form method="post" id="tiktokCompleteForm">
+                        <label class="form-label" for="tiktokPostUrl">发布后记录结果</label>
+                        <input class="form-control" id="tiktokPostUrl" name="tiktok_post_url" type="url"
+                            placeholder="可选：粘贴 TikTok 作品链接">
+                        <button class="btn btn-outline-success w-100 mt-2" type="submit">
+                            <i class="bi bi-check2-circle me-1"></i> 我已在 TikTok 发布，标记完成
+                        </button>
+                    </form>
+                    <iframe class="d-none" id="tiktokDownloadFrame" title="TikTok 视频下载"></iframe>
                 </div>
             </div>
         </div>
@@ -477,7 +539,7 @@
                             <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
                                    placeholder="粘贴 YouTube 或 yt-dlp 支持的视频链接">
                         </div>
-                        <div class="form-text">yt-dlp 会在 winmini 下载单条视频；不处理播放列表，也不会直接公开发布。</div>
+                        <div class="form-text">支持 B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在 winmini 下载单条视频，再按目标平台确认发布。</div>
                     </div>
 
                     <div class="source-detection-card" id="sourceDetectionCard">
@@ -486,43 +548,40 @@
                         <span class="settings-status-badge is-neutral" id="sourceDetectionBadge">未识别</span>
                     </div>
 
-                    <div class="route-panel mt-4 d-none" id="relayTargetsPanel">
+                    <div class="route-panel mt-4" id="relayTargetsPanel">
                         <div class="route-panel-head">
-                            <div><small>发布到</small><strong>B站 / 抖音来源</strong></div>
-                            <span>可多选</span>
+                            <div><small>发布到</small><strong id="targetPanelTitle">选择跨平台目标</strong></div>
+                            <span>可多选，来源平台会自动禁用</span>
                         </div>
                         <div class="route-target-grid">
                             <label class="route-target">
-                                <input type="checkbox" name="target_x" checked>
+                                <input type="checkbox" name="target_x" data-target-platform="x" checked>
                                 <span class="route-target-icon x">X</span>
                                 <span><strong>X</strong><small>免费半自动发布</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
                             <label class="route-target">
-                                <input type="checkbox" name="target_youtube" checked>
+                                <input type="checkbox" name="target_youtube" data-target-platform="youtube" checked>
                                 <span class="route-target-icon youtube"><i class="bi bi-youtube"></i></span>
                                 <span><strong>YouTube</strong><small>授权后公开发布</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
-                        </div>
-                    </div>
-
-                    <div class="route-panel mt-4" id="ytdlpTargetsPanel">
-                        <div class="route-panel-head">
-                            <div><small>发布到</small><strong>yt-dlp 下载来源</strong></div>
-                            <span>可多选</span>
-                        </div>
-                        <div class="route-target-grid">
                             <label class="route-target">
-                                <input type="checkbox" name="target_bilibili" checked>
+                                <input type="checkbox" name="target_bilibili" data-target-platform="bilibili">
                                 <span class="route-target-icon bilibili"><i class="bi bi-play-btn-fill"></i></span>
-                                <span><strong>B站</strong><small>登录后服务器自动上传</small></span>
+                                <span><strong>B站</strong><small>登录后服务器上传</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
                             <label class="route-target">
-                                <input type="checkbox" name="target_douyin" checked>
+                                <input type="checkbox" name="target_douyin" data-target-platform="douyin">
                                 <span class="route-target-icon douyin"><i class="bi bi-music-note"></i></span>
                                 <span><strong>抖音</strong><small>免费半自动发布</small></span>
+                                <i class="bi bi-check-circle-fill"></i>
+                            </label>
+                            <label class="route-target">
+                                <input type="checkbox" name="target_tiktok" data-target-platform="tiktok">
+                                <span class="route-target-icon tiktok">♪</span>
+                                <span><strong>TikTok</strong><small>Studio 半自动发布</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
                         </div>
@@ -530,7 +589,7 @@
 
                     <div class="route-note mt-4">
                         <i class="bi bi-signpost-split"></i>
-                        <div><strong>搬运路径说明</strong><span>YouTube / 其他网站 → B站、抖音；B站 / 抖音 → X、YouTube。全部先下载到 winmini，再人工确认。</span></div>
+                        <div><strong>搬运路径说明</strong><span>支持 B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到 winmini，再按平台状态发布。</span></div>
                     </div>
 
                     <label class="creation-mode-card mt-4">
@@ -861,28 +920,33 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         const label = document.getElementById('sourceDetectionLabel');
         const badge = document.getElementById('sourceDetectionBadge');
         const relayTargets = document.getElementById('relayTargetsPanel');
-        const ytdlpTargets = document.getElementById('ytdlpTargetsPanel');
-        if (!input || !label || !badge || !relayTargets || !ytdlpTargets) return;
+        const targetPanelTitle = document.getElementById('targetPanelTitle');
+        if (!input || !label || !badge || !relayTargets) return;
 
         const source = detectRelaySource(input.value);
         const names = {
             bilibili: '已识别：B站',
             douyin: '已识别：抖音',
             youtube: '已识别：YouTube · yt-dlp',
+            tiktok: '已识别：TikTok · yt-dlp',
             web: '已识别：yt-dlp 通用链接'
         };
         label.textContent = names[source] || (input.value.trim() ? '暂未识别，请检查链接' : '等待粘贴视频链接');
         badge.textContent = source ? '已识别' : '未识别';
         badge.classList.toggle('is-success', Boolean(source));
         badge.classList.toggle('is-neutral', !source);
-        const isChineseSource = source === 'bilibili' || source === 'douyin';
-        relayTargets.classList.toggle('d-none', !isChineseSource);
-        ytdlpTargets.classList.toggle('d-none', isChineseSource);
+        relayTargets.classList.toggle('d-none', !source);
+        if (targetPanelTitle) {
+            targetPanelTitle.textContent = source ? '选择跨平台目标' : '等待识别来源';
+        }
+        const defaultTargets = (source === 'bilibili' || source === 'douyin' || source === 'tiktok')
+            ? {x: true, youtube: true, bilibili: false, douyin: false, tiktok: false}
+            : {x: false, youtube: false, bilibili: true, douyin: true, tiktok: true};
         relayTargets.querySelectorAll('input[type="checkbox"]').forEach(function(field) {
-            field.disabled = !isChineseSource;
-        });
-        ytdlpTargets.querySelectorAll('input[type="checkbox"]').forEach(function(field) {
-            field.disabled = isChineseSource;
+            const target = field.dataset.targetPlatform || '';
+            field.disabled = !source || target === source;
+            if (!source || target === source) field.checked = false;
+            else field.checked = Boolean(defaultTargets[target]);
         });
     }
 
@@ -985,6 +1049,44 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             });
         }
 
+        const tiktokPublishModal = document.getElementById('tiktokPublishModal');
+        const tiktokPublishTitle = document.getElementById('tiktokPublishTitle');
+        const tiktokPublishText = document.getElementById('tiktokPublishText');
+        const tiktokCopyText = document.getElementById('tiktokCopyText');
+        const tiktokLaunchPublish = document.getElementById('tiktokLaunchPublish');
+        const tiktokCompleteForm = document.getElementById('tiktokCompleteForm');
+        const tiktokPublishLaunchStatus = document.getElementById('tiktokPublishLaunchStatus');
+        const tiktokDownloadFrame = document.getElementById('tiktokDownloadFrame');
+        if (tiktokPublishModal) {
+            tiktokPublishModal.addEventListener('show.bs.modal', function(event) {
+                const trigger = event.relatedTarget;
+                if (!trigger) return;
+                tiktokPublishTitle.textContent = trigger.dataset.tiktokTitle || '搬运视频';
+                tiktokPublishText.value = trigger.dataset.tiktokText || '';
+                tiktokLaunchPublish.href = trigger.dataset.tiktokComposeUrl || '#';
+                tiktokLaunchPublish.dataset.videoUrl = trigger.dataset.tiktokVideoUrl || '';
+                tiktokCompleteForm.action = trigger.dataset.tiktokCompleteUrl || '';
+                tiktokPublishLaunchStatus.classList.add('d-none');
+            });
+            tiktokCopyText.addEventListener('click', function() {
+                copyToClipboard(tiktokPublishText.value);
+                tiktokCopyText.innerHTML = '<i class="bi bi-check2"></i> 已复制';
+                window.setTimeout(function() {
+                    tiktokCopyText.innerHTML = '<i class="bi bi-copy"></i> 复制文案';
+                }, 1800);
+            });
+            tiktokLaunchPublish.addEventListener('click', function(event) {
+                event.preventDefault();
+                copyToClipboard(tiktokPublishText.value);
+                window.open(tiktokLaunchPublish.href, '_blank', 'noopener');
+                if (tiktokDownloadFrame && tiktokLaunchPublish.dataset.videoUrl) {
+                    const url = tiktokLaunchPublish.dataset.videoUrl;
+                    tiktokDownloadFrame.src = url + (url.includes('?') ? '&' : '?') + '_download=' + Date.now();
+                }
+                tiktokPublishLaunchStatus.classList.remove('d-none');
+            });
+        }
+
         const sourceInput = document.getElementById('source_url');
         if (sourceInput) {
             sourceInput.addEventListener('input', updateRelayRoutePreview);
@@ -1056,9 +1158,14 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                             pending: '待发布', manual_ready: '素材已备好', waiting_auth: '待登录',
                             publishing: '发布中', completed: '已发布', failed: '失败',
                             blocked: '媒体未就绪', skipped: '未选择'
+                        },
+                        tiktok: {
+                            pending: '待发布', manual_ready: '素材已备好', waiting_auth: '待授权',
+                            publishing: '发布中', completed: '已发布', failed: '失败',
+                            blocked: '媒体未就绪', skipped: '未选择'
                         }
                     };
-                    ['x', 'youtube', 'bilibili', 'douyin'].forEach(function(platform) {
+                    ['x', 'youtube', 'bilibili', 'douyin', 'tiktok'].forEach(function(platform) {
                         const field = platform + '_publish_status';
                         const datasetField = platform + 'Status';
                         const status = job[field] || '';

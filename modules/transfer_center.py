@@ -42,11 +42,22 @@ from .utils import get_app_subdir
 
 logger = logging.getLogger("transfer_center")
 
-DISCOVERY_PLATFORMS = {"bilibili", "douyin"}
-SOURCE_PLATFORMS = {"bilibili", "douyin", "youtube", "web"}
+PLATFORM_CATALOG = {
+    "bilibili": {"label": "B站", "source": True, "target": True, "discovery": True, "publish_mode": "server"},
+    "douyin": {"label": "国内抖音", "source": True, "target": True, "discovery": True, "publish_mode": "manual"},
+    "tiktok": {"label": "TikTok", "source": True, "target": True, "discovery": True, "publish_mode": "manual"},
+    "youtube": {"label": "YouTube", "source": True, "target": True, "discovery": False, "publish_mode": "oauth"},
+    "x": {"label": "X", "source": False, "target": True, "discovery": False, "publish_mode": "manual"},
+    "web": {"label": "其他网站", "source": True, "target": False, "discovery": False, "publish_mode": "download_only"},
+}
+DISCOVERY_PLATFORMS = {key for key, value in PLATFORM_CATALOG.items() if value["discovery"]}
+SOURCE_PLATFORMS = {key for key, value in PLATFORM_CATALOG.items() if value["source"]}
+# Bilibili/Douyin CDN traffic is reachable directly from winmini. TikTok is
+# intentionally excluded so it can use the existing egress proxy on hosts
+# where direct access is blocked or intermittently throttled.
 DIRECT_SOURCE_PLATFORMS = {"bilibili", "douyin"}
 DISCOVERY_MODES = {"account", "keyword", "manual"}
-TARGETS = {"x", "youtube", "bilibili", "douyin"}
+TARGETS = {key for key, value in PLATFORM_CATALOG.items() if value["target"]}
 JOB_STATUSES = {
     "DISCOVERED": "discovered",
     "DOWNLOADING": "downloading",
@@ -166,6 +177,10 @@ def _detect_platform(url: str) -> str:
         return "bilibili"
     if hostname == "douyin.com" or hostname.endswith(".douyin.com"):
         return "douyin"
+    if hostname in {"tiktok.com", "vm.tiktok.com", "vt.tiktok.com"} or hostname.endswith(
+        ".tiktok.com"
+    ):
+        return "tiktok"
     if (
         hostname == "youtu.be"
         or hostname.endswith(".youtu.be")
@@ -478,6 +493,7 @@ class TransferCenter:
                     bilibili_description TEXT DEFAULT '',
                     bilibili_partition_id TEXT DEFAULT '',
                     douyin_text TEXT DEFAULT '',
+                    tiktok_text TEXT DEFAULT '',
                     reviewed_at TEXT,
                     recreation_completed INTEGER NOT NULL DEFAULT 0,
                     mpt_project_id TEXT DEFAULT '',
@@ -490,15 +506,18 @@ class TransferCenter:
                     youtube_publish_status TEXT DEFAULT 'pending',
                     bilibili_publish_status TEXT DEFAULT 'pending',
                     douyin_publish_status TEXT DEFAULT 'pending',
+                    tiktok_publish_status TEXT DEFAULT 'pending',
                     x_publish_attempts INTEGER NOT NULL DEFAULT 0,
                     youtube_publish_attempts INTEGER NOT NULL DEFAULT 0,
                     bilibili_publish_attempts INTEGER NOT NULL DEFAULT 0,
+                    tiktok_publish_attempts INTEGER NOT NULL DEFAULT 0,
                     next_retry_at TEXT,
                     last_retry_stage TEXT DEFAULT '',
                     x_post_id TEXT DEFAULT '',
                     youtube_video_id TEXT DEFAULT '',
                     bilibili_post_id TEXT DEFAULT '',
                     douyin_post_id TEXT DEFAULT '',
+                    tiktok_post_id TEXT DEFAULT '',
                     error_message TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -592,6 +611,7 @@ class TransferCenter:
             "bilibili_description": "TEXT DEFAULT ''",
             "bilibili_partition_id": "TEXT DEFAULT ''",
             "douyin_text": "TEXT DEFAULT ''",
+            "tiktok_text": "TEXT DEFAULT ''",
             "reviewed_at": "TEXT",
             "recreation_completed": "INTEGER NOT NULL DEFAULT 0",
             "mpt_project_id": "TEXT DEFAULT ''",
@@ -604,15 +624,18 @@ class TransferCenter:
             "youtube_publish_status": "TEXT DEFAULT 'pending'",
             "bilibili_publish_status": "TEXT DEFAULT 'pending'",
             "douyin_publish_status": "TEXT DEFAULT 'pending'",
+            "tiktok_publish_status": "TEXT DEFAULT 'pending'",
             "x_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "youtube_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "bilibili_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "tiktok_publish_attempts": "INTEGER NOT NULL DEFAULT 0",
             "next_retry_at": "TEXT",
             "last_retry_stage": "TEXT DEFAULT ''",
             "progress_percent": "REAL NOT NULL DEFAULT 0",
             "progress_message": "TEXT DEFAULT ''",
             "bilibili_post_id": "TEXT DEFAULT ''",
             "douyin_post_id": "TEXT DEFAULT ''",
+            "tiktok_post_id": "TEXT DEFAULT ''",
         }
         for table_name, additions in (
             ("transfer_rules", rule_columns),
@@ -694,6 +717,8 @@ class TransferCenter:
             raise ValueError("至少选择一个发布平台")
         if platform == "douyin" and mode == "account" and "douyin.com" not in source_value.lower():
             raise ValueError("抖音账号监控需要填写公开主页链接")
+        if platform == "tiktok" and mode == "account" and "tiktok.com/@" not in source_value.lower():
+            raise ValueError("TikTok 账号监控需要填写公开主页链接")
         if platform == "bilibili" and mode == "account" and not any(
             host in source_value.lower() for host in ("bilibili.com", "b23.tv")
         ):
@@ -792,6 +817,7 @@ class TransferCenter:
                 "cookies/douyin_cookies.txt",
             ),
             "youtube": ("YOUTUBE_COOKIES_PATH", "cookies/youtube_cookies.txt"),
+            "tiktok": ("TRANSFER_TIKTOK_COOKIES_PATH", "cookies/tiktok_cookies.txt"),
         }
         config_key, default_path = settings.get(platform, ("", ""))
         if not config_key:
@@ -885,6 +911,40 @@ class TransferCenter:
             for video_id in unique_ids
         ]
 
+    def _discover_tiktok_items(self, rule: dict) -> list[dict]:
+        source = str(rule.get("source_value") or "").strip()
+        if rule.get("discovery_mode") == "keyword":
+            source = f"https://www.tiktok.com/tag/{quote(source, safe='')}"
+        data = self._yt_dlp_json(source, "tiktok", int(rule["max_items"]), flat=True)
+        entries = data.get("entries") if isinstance(data, dict) else []
+        items = []
+        for entry in entries or [data]:
+            if not isinstance(entry, dict):
+                continue
+            video_id = str(entry.get("id") or "").strip()
+            url = str(entry.get("webpage_url") or entry.get("url") or "").strip()
+            if video_id and not url.startswith("http"):
+                uploader = str(entry.get("uploader_id") or entry.get("uploader") or "").strip()
+                url = (
+                    f"https://www.tiktok.com/@{uploader}/video/{video_id}"
+                    if uploader
+                    else f"https://www.tiktok.com/video/{video_id}"
+                )
+            if video_id and url:
+                items.append(
+                    {
+                        "id": video_id,
+                        "url": url,
+                        "title": str(entry.get("title") or ""),
+                        "uploader": str(entry.get("uploader") or entry.get("channel") or ""),
+                        "description": str(entry.get("description") or ""),
+                        "thumbnail": str(entry.get("thumbnail") or ""),
+                        "duration": entry.get("duration"),
+                        "timestamp": entry.get("timestamp"),
+                    }
+                )
+        return items
+
     def _discover_items(self, rule: dict) -> list[dict]:
         if rule["platform"] == "bilibili":
             source = (
@@ -916,6 +976,8 @@ class TransferCenter:
                         }
                     )
             return items
+        if rule["platform"] == "tiktok":
+            return self._discover_tiktok_items(rule)
         return self._discover_douyin_page(rule)
 
     @staticmethod
@@ -971,9 +1033,9 @@ class TransferCenter:
                         source_uploader, title, description, thumbnail_url,
                         duration, published_at, target_platforms, status,
                         recreation_mode, x_publish_status, youtube_publish_status,
-                        bilibili_publish_status, douyin_publish_status,
+                        bilibili_publish_status, douyin_publish_status, tiktok_publish_status,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -994,6 +1056,7 @@ class TransferCenter:
                         "pending" if "youtube" in targets else "skipped",
                         "pending" if "bilibili" in targets else "skipped",
                         "pending" if "douyin" in targets else "skipped",
+                        "pending" if "tiktok" in targets else "skipped",
                         now,
                         now,
                     ),
@@ -1127,14 +1190,9 @@ class TransferCenter:
         valid_targets = [item for item in targets if item in TARGETS]
         if not valid_targets:
             raise ValueError("至少选择一个发布平台")
-        if platform in {"bilibili", "douyin"} and any(
-            target in {"bilibili", "douyin"} for target in valid_targets
-        ):
-            raise ValueError("B站/抖音来源请发布到 X 或 YouTube，避免平台内重复搬运")
-        if platform in {"youtube", "web"} and any(
-            target in {"x", "youtube"} for target in valid_targets
-        ):
-            raise ValueError("yt-dlp 通用下载任务请发布到 B站或抖音")
+        if platform in valid_targets:
+            label = PLATFORM_CATALOG.get(platform, {}).get("label", platform)
+            raise ValueError(f"{label}来源不能再次发布到同一平台，避免平台内重复搬运")
         rule = {
             "id": None,
             "platform": platform,
@@ -1182,6 +1240,7 @@ class TransferCenter:
             "bilibili_description",
             "bilibili_partition_id",
             "douyin_text",
+            "tiktok_text",
             "reviewed_at",
             "recreation_completed",
             "mpt_project_id",
@@ -1194,15 +1253,18 @@ class TransferCenter:
             "youtube_publish_status",
             "bilibili_publish_status",
             "douyin_publish_status",
+            "tiktok_publish_status",
             "x_publish_attempts",
             "youtube_publish_attempts",
             "bilibili_publish_attempts",
+            "tiktok_publish_attempts",
             "next_retry_at",
             "last_retry_stage",
             "x_post_id",
             "youtube_video_id",
             "bilibili_post_id",
             "douyin_post_id",
+            "tiktok_post_id",
             "error_message",
             "progress_percent",
             "progress_message",
@@ -1517,6 +1579,9 @@ class TransferCenter:
             douyin_text=str(
                 plan.get("x_text") or prepared_fields["title"] or ""
             )[:2000],
+            tiktok_text=str(
+                plan.get("x_text") or prepared_fields["title"] or ""
+            )[:2000],
             next_retry_at=None,
             last_retry_stage="",
             error_message="",
@@ -1560,6 +1625,7 @@ class TransferCenter:
                 "youtube_video_id",
                 "bilibili_post_id",
                 "douyin_post_id",
+                "tiktok_post_id",
             )
         ):
             raise ValueError("已有平台发布结果，不能替换成片")
@@ -1688,6 +1754,7 @@ class TransferCenter:
             bilibili_description=normalized["bilibili_description"],
             bilibili_partition_id=normalized["bilibili_partition_id"],
             douyin_text=normalized["douyin_text"],
+            tiktok_text=normalized["tiktok_text"],
             reviewed_at=reviewed_at,
             error_message="",
         )
@@ -2000,6 +2067,7 @@ class TransferCenter:
                 or (target == "youtube" and bool(job.get("youtube_video_id")))
                 or (target == "bilibili" and bool(job.get("bilibili_post_id")))
                 or (target == "douyin" and bool(job.get("douyin_post_id")))
+                or (target == "tiktok" and bool(job.get("tiktok_post_id")))
             )
             for target in targets
         )
@@ -2060,6 +2128,7 @@ class TransferCenter:
                 or (target == "x" and bool(job.get("x_post_id")))
                 or (target == "youtube" and bool(job.get("youtube_video_id")))
                 or (target == "bilibili" and bool(job.get("bilibili_post_id")))
+                or (target == "tiktok" and bool(job.get("tiktok_post_id")))
             )
             for target in targets
         )
@@ -2077,6 +2146,59 @@ class TransferCenter:
                 "所有平台发布完成"
                 if other_targets_done
                 else "抖音已确认发布，等待其他平台完成"
+            ),
+            error_message="",
+            next_retry_at=None,
+            last_retry_stage="",
+        )
+        return self.get_job(job_id) or {}
+
+    def mark_tiktok_manually_published(
+        self, job_id: str, post_url: str = ""
+    ) -> dict:
+        """Record completion after the user confirms the TikTok web upload."""
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        targets = _json_list(job.get("target_platforms"))
+        if "tiktok" not in targets:
+            raise ValueError("当前任务没有选择发布到 TikTok")
+        if str(job.get("tiktok_publish_status") or "") != "manual_ready":
+            raise ValueError("TikTok 素材尚未准备完成或已经确认发布")
+
+        normalized_url = str(post_url or "").strip()
+        if normalized_url:
+            parsed = urlparse(normalized_url)
+            host = (parsed.hostname or "").lower()
+            if not (
+                host == "tiktok.com"
+                or host.endswith(".tiktok.com")
+            ):
+                raise ValueError("请填写有效的 TikTok 作品链接")
+            result_id = normalized_url
+        else:
+            result_id = f"manual-confirmed:{uuid.uuid4().hex[:12]}"
+
+        other_targets_done = all(
+            (
+                target == "tiktok"
+                or (target == "x" and bool(job.get("x_post_id")))
+                or (target == "youtube" and bool(job.get("youtube_video_id")))
+                or (target == "bilibili" and bool(job.get("bilibili_post_id")))
+                or (target == "douyin" and bool(job.get("douyin_post_id")))
+            )
+            for target in targets
+        )
+        self._update_job(
+            job_id,
+            tiktok_publish_status="completed",
+            tiktok_post_id=result_id,
+            status=(JOB_STATUSES["COMPLETED"] if other_targets_done else JOB_STATUSES["READY"]),
+            progress_percent=100 if other_targets_done else 90,
+            progress_message=(
+                "所有平台发布完成"
+                if other_targets_done
+                else "TikTok 已确认发布，等待其他平台完成"
             ),
             error_message="",
             next_retry_at=None,
@@ -2438,6 +2560,7 @@ class TransferCenter:
         youtube_video_id = job.get("youtube_video_id") or ""
         bilibili_post_id = job.get("bilibili_post_id") or ""
         douyin_post_id = job.get("douyin_post_id") or ""
+        tiktok_post_id = job.get("tiktok_post_id") or ""
         if "x" in targets and not x_post_id:
             x_path = self._target_video_path(job, "x")
             if not x_path:
@@ -2579,11 +2702,24 @@ class TransferCenter:
                     progress_percent=90,
                     progress_message="抖音素材与文案已备好，等待网页确认发布",
                 )
+        if "tiktok" in targets and not tiktok_post_id:
+            tiktok_path = self._target_video_path(job, "tiktok")
+            if not tiktok_path:
+                self._update_job(job_id, tiktok_publish_status="blocked")
+                errors.append("TikTok 媒体版本未就绪")
+            else:
+                self._update_job(
+                    job_id,
+                    tiktok_publish_status="manual_ready",
+                    progress_percent=90,
+                    progress_message="TikTok 素材与文案已备好，等待网页确认发布",
+                )
         completed = all(
             (target == "x" and x_post_id)
             or (target == "youtube" and youtube_video_id)
             or (target == "bilibili" and bilibili_post_id)
             or (target == "douyin" and douyin_post_id)
+            or (target == "tiktok" and tiktok_post_id)
             for target in targets
         )
         self._update_job(

@@ -56,6 +56,14 @@
             <a class="platform-link" href="{{ url_for('transfer_center_douyin_login') }}">{{ '刷新登录' if transfer_config.douyin_cookies_ready else '打开登录窗口' }} <i class="bi bi-arrow-right"></i></a>
         </article>
         <article class="platform-cell">
+            <div class="platform-label">TikTok 来源 / 目标</div>
+            <div class="platform-state">
+                <span class="connection-dot {{ 'is-success' if transfer_config.tiktok_cookies_ready else 'is-warning' }}"></span>
+                {{ 'Cookie已配置' if transfer_config.tiktok_cookies_ready else '单链接可用 · 监控待验证' }}
+            </div>
+            <p>TikTok Studio 当前免费半自动；官方 API 审核后再开放自动发布。</p>
+        </article>
+        <article class="platform-cell">
             <div class="platform-label">发布到 X</div>
             <div class="platform-state"><span class="connection-dot is-primary"></span>免费半自动</div>
             <p>系统准备视频和文案，你在 X 网页确认发布</p>
@@ -117,7 +125,7 @@
                         </td>
                         <td>
                             <span class="badge {{ 'bg-info-subtle text-info-emphasis' if rule.platform == 'bilibili' else 'bg-dark-subtle text-dark' }}">
-                                {{ 'B站' if rule.platform == 'bilibili' else '抖音' }}
+                                {{ {'bilibili':'B站', 'douyin':'抖音', 'tiktok':'TikTok'}.get(rule.platform, rule.platform) }}
                             </span>
                             {{ '关键词/类别' if rule.discovery_mode == 'keyword' else '账号' }}
                             <div class="small text-muted">
@@ -128,6 +136,9 @@
                         <td>
                             {% if '"x"' in rule.target_platforms %}<span class="badge bg-dark">X</span>{% endif %}
                             {% if '"youtube"' in rule.target_platforms %}<span class="badge bg-danger">YouTube</span>{% endif %}
+                            {% if '"bilibili"' in rule.target_platforms %}<span class="badge bg-info text-dark">B站</span>{% endif %}
+                            {% if '"douyin"' in rule.target_platforms %}<span class="badge bg-warning text-dark">抖音</span>{% endif %}
+                            {% if '"tiktok"' in rule.target_platforms %}<span class="badge bg-dark">TikTok</span>{% endif %}
                             <div class="small text-warning-emphasis mt-1">选择处理方式并人工确认后发布</div>
                         </td>
                         <td>
@@ -176,7 +187,7 @@
             </div>
             <div class="modal-body">
                 <div class="source-hint small mb-3">
-                    “账号”适合持续跟踪一个发布者；“关键词/类别”适合发现一类内容。B站和抖音的自动扫描都建议配置有效 Cookie，并且仅搬运你拥有或已获授权发布的内容。
+                    “账号”适合持续跟踪一个发布者；“关键词/类别”适合发现一类内容。TikTok 当前采用 yt-dlp 实验性候选扫描，建议先用单链接验证。仅搬运你拥有或已获授权发布的内容。
                 </div>
                 <div class="row g-3">
                     <div class="col-md-6">
@@ -188,6 +199,7 @@
                         <select class="form-select" name="platform" id="transferPlatform" required>
                             <option value="bilibili">B站</option>
                             <option value="douyin">国内抖音</option>
+                            <option value="tiktok">TikTok（实验性监控）</option>
                         </select>
                     </div>
                     <div class="col-md-3">
@@ -255,6 +267,18 @@
                             <input class="form-check-input" type="checkbox" name="target_youtube" id="ruleTargetYoutube" checked>
                             <label class="form-check-label" for="ruleTargetYoutube">YouTube</label>
                         </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="target_bilibili" id="ruleTargetBilibili">
+                            <label class="form-check-label" for="ruleTargetBilibili">B站</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="target_douyin" id="ruleTargetDouyin">
+                            <label class="form-check-label" for="ruleTargetDouyin">抖音</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="target_tiktok" id="ruleTargetTiktok">
+                            <label class="form-check-label" for="ruleTargetTiktok">TikTok</label>
+                        </div>
                     </div>
                     <div class="col-12">
                         <div class="form-check">
@@ -266,7 +290,7 @@
                             <label class="form-check-label" for="firstScanPreview">首次扫描只进入候选区，不自动下载历史内容</label>
                         </div>
                         <div class="alert alert-warning small mt-3 mb-0">
-                            系统不会自动发布。每条成片必须确认版权依据，并审核实际增加的原创口播、观点、核验或叙事改造。
+                            规则会自动发现、去重和准备素材；第三方候选默认进入审核区。TikTok/抖音当前仍是半自动发布，官方应用审核通过后才会显示自动发布。
                         </div>
                         <input type="hidden" name="enabled" value="on">
                     </div>
@@ -344,6 +368,24 @@
                             </details>
                         </div>
                     </div>
+                    <div class="col-md-6">
+                        <div class="border rounded-3 p-3 h-100 bg-light-subtle">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                <div>
+                                    <strong>TikTok 账号</strong>
+                                    <div class="small text-muted">{{ 'Cookie 文件已配置，可用于受限来源扫描' if transfer_config.tiktok_cookies_ready else '单链接下载不要求 Cookie' }}</div>
+                                </div>
+                                <span class="badge {{ 'bg-success' if transfer_config.tiktok_cookies_ready else 'bg-warning text-dark' }}">
+                                    {{ '已配置' if transfer_config.tiktok_cookies_ready else '待配置' }}
+                                </span>
+                            </div>
+                            <div class="small text-muted mb-2">来源监控暂按 yt-dlp 候选扫描；发布先走 TikTok Studio 手动确认。</div>
+                            <details>
+                                <summary class="small text-muted">上传 TikTok Cookie 文件（可选）</summary>
+                                <input class="form-control form-control-sm mt-2" type="file" name="tiktok_cookies" accept=".txt">
+                            </details>
+                        </div>
+                    </div>
                 </div>
                 <h4 class="h6">发布平台</h4>
                 <div class="row g-3">
@@ -417,7 +459,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const isAccount = mode.value === 'account';
         label.textContent = isAccount ? '账号主页链接' : '关键词或类别';
         input.placeholder = isAccount
-            ? (platform.value === 'bilibili' ? 'https://space.bilibili.com/...' : 'https://www.douyin.com/user/...')
+            ? (platform.value === 'bilibili'
+                ? 'https://space.bilibili.com/...'
+                : (platform.value === 'tiktok' ? 'https://www.tiktok.com/@...' : 'https://www.douyin.com/user/...'))
             : '例如：AI工具, 人工智能';
     };
     mode.addEventListener('change', syncHint);
