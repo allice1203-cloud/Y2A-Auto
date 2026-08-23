@@ -73,6 +73,14 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
             "以原创旁白承担主要叙事，只选取解释剧情所必需的短片段，重写结构、"
             "补充人物动机和独立评价；不得整集复刻、机械拆条或仅去除水印。"
         )
+    script = (
+        f"今天我们不是简单复述《{title}》，而是拆解其中真正值得关注的逻辑。"
+        "先看结论：信息本身只是起点，更重要的是它成立的条件、可能的反例，"
+        "以及放到我们自己场景里是否仍然有效。"
+        "接下来会用几个必要片段说明背景，再补充我的核验、判断和可执行建议。"
+        "看完不要急着照搬，先检查前提，小范围验证，再决定是否应用。"
+        f"本期参考素材来自{uploader}，我们保留来源并对内容重新组织和评论。"
+    )
     return {
         "original_angle": angle,
         "original_contribution": contribution,
@@ -81,6 +89,7 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
             "选取必要片段并逐段加入分析、验证或反驳",
             "结合本地案例给出独立判断和行动建议",
         ],
+        "commentary_script": script,
         "required_edits": [
             "新增原创口播或出镜评论",
             "只保留支撑观点所需的素材片段",
@@ -120,6 +129,9 @@ def _normalize_plan(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
             3000,
         ),
         "commentary_outline": _clean_list(source.get("commentary_outline")) or fallback["commentary_outline"],
+        "commentary_script": _clean_multiline(
+            source.get("commentary_script") or fallback["commentary_script"], 8000
+        ),
         "required_edits": _clean_list(source.get("required_edits")) or fallback["required_edits"],
         "x_text": _clean_multiline(source.get("x_text") or fallback["x_text"], 260),
         "youtube_title": _clean_text(source.get("youtube_title") or fallback["youtube_title"], 100),
@@ -176,12 +188,14 @@ def generate_recreation_plan(
         }
         system_prompt = (
             "你是跨平台视频再创作总编和版权风险审校员。请输出JSON对象，字段必须包括："
-            "original_angle、original_contribution、commentary_outline、required_edits、"
+            "original_angle、original_contribution、commentary_outline、commentary_script、required_edits、"
             "x_text、youtube_title、youtube_description、risk_level、risk_notes。"
             "目标是形成具有实质性原创贡献的制作方案，而不是换标题、加字幕、加边框或去水印。"
             "不得替用户判断合理使用成立、不得建议规避平台审核。"
             "作者名和来源标识默认保留，不得建议通过去除标识掩盖来源。"
             "必须要求加入原创口播/出镜评论、事实核验、案例分析或新的叙事结构。"
+            "commentary_script要是可直接配音的完整中文解说稿，不得虚构原片未提供的事实，"
+            "应包含原创开场、分析、限定条件、独立结论和来源说明，长度控制300至1200个汉字。"
             "当授权依据不明确时 risk_level 必须为 high。"
         )
         parsed = _request_json_object(
@@ -238,6 +252,7 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "recreation_mode": recreation_mode,
         "original_angle": _clean_multiline(payload.get("original_angle"), 1200),
         "original_contribution": original_contribution,
+        "commentary_script": _clean_multiline(payload.get("commentary_script"), 8000),
         "watermark_status": watermark_status,
         "watermark_note": watermark_note,
         "publish_confirmed": processing_mode == "direct",

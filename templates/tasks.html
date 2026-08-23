@@ -39,7 +39,7 @@
         <div class="workspace-panel-head">
             <div>
                 <h2>搬运任务</h2>
-                <p>yt-dlp 下载到 winmini，确认后再发布到目标平台。</p>
+                <p>yt-dlp 下载到当前服务器，确认后再发布到目标平台。</p>
             </div>
             <span class="workspace-count">{{ transfer_jobs|length }} 条任务</span>
         </div>
@@ -171,7 +171,7 @@
                                     {% endif %}
                                     {% if '"douyin"' in job.target_platforms %}
                                     <span><i class="platform-mini douyin"><i class="bi bi-music-note"></i></i><span data-publish-status="douyin">{{ {
-                                        'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待登录',
+                                        'pending':'待发布','manual_ready':'素材已备好','waiting_auth':'待发布授权',
                                         'publishing':'发布中','completed':'已发布','failed':'失败',
                                         'blocked':'媒体未就绪','skipped':'未选择'
                                     }.get(job.douyin_publish_status, job.douyin_publish_status) }}</span></span>
@@ -223,6 +223,13 @@
                                 </button>
                                 {% endif %}
                                 {% if job.douyin_publish_status == 'manual_ready' %}
+                                {% if douyin_openapi_state.connected %}
+                                <form method="post" action="{{ url_for('transfer_center_douyin_api_publish', job_id=job.id) }}" class="d-inline" onsubmit="return confirm('确认通过抖音官方接口发布这条已审核视频？提交后会进入抖音审核。')">
+                                    <button class="btn btn-sm btn-danger" type="submit">
+                                        <i class="bi bi-cloud-arrow-up"></i> 抖音接口发布
+                                    </button>
+                                </form>
+                                {% endif %}
                                 <button class="btn btn-sm btn-dark" type="button"
                                     data-bs-toggle="modal" data-bs-target="#douyinPublishModal"
                                     data-douyin-title="{{ (job.title or '搬运视频')|e }}"
@@ -232,6 +239,11 @@
                                     data-douyin-complete-url="{{ url_for('transfer_center_douyin_complete', job_id=job.id) }}">
                                     <i class="bi bi-box-arrow-up-right"></i> 去抖音发布
                                 </button>
+                                {% if not douyin_openapi_state.connected %}
+                                <a class="btn btn-sm btn-outline-danger" href="{{ url_for('transfer_center_index') }}">
+                                    配置抖音接口
+                                </a>
+                                {% endif %}
                                 {% endif %}
                                 {% if job.tiktok_publish_status == 'manual_ready' %}
                                 <button class="btn btn-sm btn-dark" type="button"
@@ -539,7 +551,7 @@
                             <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
                                    placeholder="粘贴 YouTube 或 yt-dlp 支持的视频链接">
                         </div>
-                        <div class="form-text">支持 B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在 winmini 下载单条视频，再按目标平台确认发布。</div>
+                        <div class="form-text">支持 B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在当前服务器下载单条视频，再按目标平台确认发布。</div>
                     </div>
 
                     <div class="source-detection-card" id="sourceDetectionCard">
@@ -589,7 +601,7 @@
 
                     <div class="route-note mt-4">
                         <i class="bi bi-signpost-split"></i>
-                        <div><strong>搬运路径说明</strong><span>支持 B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到 winmini，再按平台状态发布。</span></div>
+                        <div><strong>搬运路径说明</strong><span>支持 B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到当前服务器，再按平台状态发布。</span></div>
                     </div>
 
                     <label class="creation-mode-card mt-4">

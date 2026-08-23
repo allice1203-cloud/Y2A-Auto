@@ -1,10 +1,19 @@
 import json
+import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import modules.config_manager as config_module
 import modules.media_preflight as preflight_module
 import modules.transfer_center as transfer_module
+from modules.notifications import (
+    EVENT_TRANSFER_FAILED,
+    EVENT_TRANSFER_PUBLISHED,
+    EVENT_TRANSFER_REVIEW_READY,
+    NotificationEvent,
+    build_notification_message,
+)
 
 
 @pytest.fixture()
@@ -36,11 +45,93 @@ def test_rule_supports_keyword_discovery_without_fixed_account(center):
     rule = center.get_rule(rule_id)
     assert rule["discovery_mode"] == "keyword"
     assert json.loads(rule["target_platforms"]) == ["x", "youtube"]
-    assert rule["auto_prepare"] == 1
+    assert rule["auto_prepare"] == 0
     assert rule["auto_publish"] == 0
     assert rule["max_age_hours"] == 48
     assert rule["daily_limit"] == 3
     assert rule["require_review"] == 1
+
+
+def test_account_auto_prepare_requires_enabled_allowlist(center):
+    payload = {
+        "name": "授权B站账号",
+        "platform": "bilibili",
+        "discovery_mode": "account",
+        "source_value": "https://space.bilibili.com/123456",
+        "target_platforms": ["youtube"],
+        "auto_prepare": True,
+    }
+    with pytest.raises(ValueError, match="授权来源白名单"):
+        center.save_rule(payload)
+
+    center.save_allowed_source(
+        {
+            "platform": "bilibili",
+            "account_url": "https://space.bilibili.com/123456/",
+            "display_name": "本人账号",
+            "rights_basis": "owned",
+            "rights_note": "本人运营的B站账号",
+            "enabled": True,
+        }
+    )
+    rule_id = center.save_rule(payload)
+    assert center.get_rule(rule_id)["auto_prepare"] == 1
+
+
+def test_allowlist_requires_rights_record(center):
+    with pytest.raises(ValueError, match="授权范围"):
+        center.save_allowed_source(
+            {
+                "platform": "douyin",
+                "account_url": "https://www.douyin.com/user/test-account",
+                "rights_basis": "authorized",
+                "rights_note": "",
+                "enabled": True,
+            }
+        )
+
+
+def test_scan_copies_allowlist_rights_to_discovered_job(center, monkeypatch):
+    account_url = "https://space.bilibili.com/654321"
+    center.save_allowed_source(
+        {
+            "platform": "bilibili",
+            "account_url": account_url,
+            "display_name": "授权作者",
+            "rights_basis": "licensed",
+            "rights_note": "许可协议编号 LIC-2026-001",
+            "enabled": True,
+        }
+    )
+    rule_id = center.save_rule(
+        {
+            "name": "授权账号",
+            "platform": "bilibili",
+            "discovery_mode": "account",
+            "source_value": account_url,
+            "target_platforms": ["youtube"],
+            "auto_prepare": True,
+            "first_scan_preview": True,
+        }
+    )
+    monkeypatch.setattr(
+        center,
+        "_discover_items",
+        lambda rule: [
+            {
+                "id": "BV1allowed",
+                "url": "https://www.bilibili.com/video/BV1allowed",
+                "title": "授权视频",
+                "timestamp": None,
+            }
+        ],
+    )
+    result = center.scan_rule(rule_id)
+    assert result["added"] == 1
+    job = center.list_jobs()[0]
+    assert job["status"] == "discovered"
+    assert job["rights_basis"] == "licensed"
+    assert job["rights_note"] == "许可协议编号 LIC-2026-001"
 
 
 def test_manual_job_detects_douyin_and_deduplicates(center):
@@ -74,6 +165,7 @@ def test_tiktok_account_scan_uses_ytdlp_candidates(center, monkeypatch):
             "source_value": "https://www.tiktok.com/@creator",
             "target_platforms": ["youtube", "douyin"],
             "first_scan_preview": True,
+            "auto_prepare": False,
         }
     )
     monkeypatch.setattr(
@@ -94,6 +186,83 @@ def test_tiktok_account_scan_uses_ytdlp_candidates(center, monkeypatch):
     assert result["success"] is True
     assert result["added"] == 1
     assert center.get_job(center.list_jobs()[0]["id"])["source_platform"] == "tiktok"
+
+
+def test_bilibili_account_scan_uses_space_video_api(center, monkeypatch):
+    rule = {
+        "platform": "bilibili",
+        "discovery_mode": "account",
+        "source_value": "https://space.bilibili.com/123456",
+        "max_items": 3,
+    }
+    monkeypatch.setattr(
+        center,
+        "_fetch_bilibili_space_videos",
+        lambda mid, limit: [
+            {
+                "bvid": "BV1xx411c7mD",
+                "title": "本人账号视频",
+                "author": "本人账号",
+                "description": "视频简介",
+                "pic": "https://example.com/cover.jpg",
+                "length": "01:23",
+                "created": 1_700_000_000,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        center,
+        "_yt_dlp_json",
+        lambda *_args, **_kwargs: pytest.fail("账号扫描不应把空间主页交给 yt-dlp"),
+    )
+
+    items = center._discover_items(rule)
+
+    assert items == [
+        {
+            "id": "BV1xx411c7mD",
+            "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+            "title": "本人账号视频",
+            "uploader": "本人账号",
+            "description": "视频简介",
+            "thumbnail": "https://example.com/cover.jpg",
+            "duration": 83,
+            "timestamp": 1_700_000_000,
+        }
+    ]
+
+
+def test_empty_first_scan_keeps_preview_guard_for_future_video(center, monkeypatch):
+    account_url = "https://space.bilibili.com/123456"
+    center.save_allowed_source(
+        {
+            "platform": "bilibili",
+            "account_url": account_url,
+            "display_name": "本人账号",
+            "rights_basis": "owned",
+            "rights_note": "本人运营的 B站账号",
+            "enabled": True,
+        }
+    )
+    rule_id = center.save_rule(
+        {
+            "name": "空账号安全扫描",
+            "platform": "bilibili",
+            "discovery_mode": "account",
+            "source_value": account_url,
+            "target_platforms": ["youtube"],
+            "first_scan_preview": True,
+            "auto_prepare": True,
+        }
+    )
+    monkeypatch.setattr(center, "_discover_items", lambda _rule: [])
+
+    result = center.scan_rule(rule_id)
+
+    assert result["success"] is True
+    assert result["found"] == 0
+    assert result["preview"] is True
+    assert center.get_rule(rule_id)["first_scan_completed"] == 0
 
 
 def test_ytdlp_web_job_routes_to_bilibili_and_douyin(center):
@@ -379,6 +548,46 @@ def test_douyin_publish_is_free_manual_handoff(center, tmp_path):
     assert completed["douyin_publish_status"] == "completed"
 
 
+def test_douyin_openapi_publish_keeps_explicit_review_gate(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.youtube.com/watch?v=douyin-openapi",
+        ["douyin"],
+    )
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"test")
+    center._update_job(
+        job_id,
+        status="ready",
+        local_video_path=str(video_path),
+        platform_variants_json=json.dumps(
+            {"douyin": {"status": "ready", "path": str(video_path)}}
+        ),
+        source_attribution="原作者\nhttps://youtube.com/watch?v=douyin-openapi",
+        watermark_status="third_party_preserved",
+        recreation_status="approved",
+        douyin_publish_status="manual_ready",
+        douyin_text="已审核的抖音文案",
+    )
+    received = {}
+
+    def publisher(path, text, progress_callback):
+        received.update({"path": path, "text": text})
+        progress_callback(1.0)
+        return {"item_id": "douyin-item-id", "video_id": "douyin-video-id"}
+
+    assert center._claim_active_job(job_id) is True
+    center._publish_douyin_openapi_guarded(job_id, publisher)
+
+    completed = center.get_job(job_id)
+    assert received == {
+        "path": str(video_path),
+        "text": "已审核的抖音文案",
+    }
+    assert completed["status"] == "completed"
+    assert completed["douyin_publish_status"] == "completed"
+    assert completed["douyin_post_id"] == "douyin-item-id"
+
+
 def test_tiktok_publish_is_free_manual_handoff(center, tmp_path):
     job_id = center.add_manual_job(
         "https://www.youtube.com/watch?v=tiktok-upload",
@@ -636,6 +845,8 @@ def test_review_approval_requires_new_media_and_ready_variants(center, tmp_path,
                 "original_contribution": "加入三段原创口播、事实核验、案例分析、重新编排镜头，并在结尾给出全新的独立结论。",
                 "watermark_status": "none",
                 "recreation_confirmed": "on",
+                "x_text": "原创观点核对",
+                "cover_preflight_confirmed": "on",
             },
             approve=True,
         )
@@ -666,6 +877,7 @@ def test_review_approval_requires_new_media_and_ready_variants(center, tmp_path,
             "x_text": "经过验证，我对这个观点有三个不同判断。",
             "youtube_title": "深度验证",
             "youtube_description": "原创分析",
+            "cover_preflight_confirmed": "on",
         },
         approve=True,
     )
@@ -711,6 +923,8 @@ def test_direct_transfer_can_be_approved_without_uploading_new_media(
             "watermark_status": "third_party_preserved",
             "watermark_note": "画面保留原作者账号",
             "publish_confirmed": "on",
+            "youtube_title": "原视频转发说明",
+            "cover_preflight_confirmed": "on",
         },
         approve=True,
     )
@@ -764,7 +978,7 @@ def test_money_printer_url_opens_imported_project(center):
 
     url = center.money_printer_url(center.get_job(job_id))
 
-    assert url.startswith("http://192.168.1.249:18081/app/?")
+    assert url.startswith("https://video.sg99.online/app/?")
     assert "project_id=project-123" in url
     assert "studio=quick" in url
 
@@ -827,6 +1041,145 @@ def test_send_to_money_printer_creates_project_uploads_and_analyzes(
     assert calls[0][0] == "POST"
     assert calls[1][2]["files"]["file"][0] == "source.mp4"
     assert calls[2][2]["json"] == {"asset_id": "asset-456"}
+
+
+def test_recreation_plan_contains_ready_to_voice_commentary(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1commentary",
+        ["youtube"],
+    )
+    source_path = tmp_path / "source.mp4"
+    source_path.write_bytes(b"video")
+    center._update_job(
+        job_id,
+        title="测试主题",
+        source_uploader="原账号",
+        local_video_path=str(source_path),
+        original_video_path=str(source_path),
+    )
+
+    result = center.generate_recreation_draft(job_id)
+
+    assert len(result["commentary_script"]) >= 80
+    assert "来源" in result["commentary_script"]
+
+
+def test_money_printer_connection_loads_private_credential(center, monkeypatch, tmp_path):
+    credential_path = tmp_path / "mpt_internal_credentials.json"
+    credential_path.write_text('{"api_key":"internal-test-key"}', encoding="utf-8")
+    monkeypatch.setattr(
+        transfer_module,
+        "get_app_subdir",
+        lambda name: str(tmp_path) if name == "config" else str(tmp_path / name),
+    )
+
+    base_url, headers = center._money_printer_connection()
+
+    assert base_url == "http://172.17.0.1:8080"
+    assert headers == {"x-api-key": "internal-test-key"}
+
+
+def test_transfer_notification_messages_include_review_link():
+    payload = {
+        "task_id": "job-123",
+        "title": "待审核视频",
+        "targets": "bilibili、douyin",
+        "status": "review",
+        "review_url": "https://transfer.sg99.online/transfer-center/jobs/job-123/review",
+        "error_message": "渲染失败",
+    }
+
+    review = build_notification_message(
+        NotificationEvent(EVENT_TRANSFER_REVIEW_READY, payload)
+    )
+    published = build_notification_message(
+        NotificationEvent(EVENT_TRANSFER_PUBLISHED, payload)
+    )
+    failed = build_notification_message(
+        NotificationEvent(EVENT_TRANSFER_FAILED, payload)
+    )
+
+    assert "待审核" in review.title
+    assert payload["review_url"] in review.markdown
+    assert "发布完成" in published.title
+    assert "渲染失败" in failed.markdown
+
+
+def test_maintenance_backs_up_db_and_only_cleans_old_completed_jobs(center, tmp_path):
+    completed_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1oldcompleted", ["youtube"]
+    )
+    review_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1oldreview", ["youtube"]
+    )
+    completed_dir = tmp_path / "downloads" / "transfer" / completed_id
+    review_dir = tmp_path / "downloads" / "transfer" / review_id
+    completed_dir.mkdir(parents=True)
+    review_dir.mkdir(parents=True)
+    (completed_dir / "video.mp4").write_bytes(b"completed")
+    (review_dir / "video.mp4").write_bytes(b"review")
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(timespec="seconds")
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET status='completed', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(completed_dir / "video.mp4"), completed_id),
+        )
+        conn.execute(
+            "UPDATE transfer_jobs SET status='review', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(review_dir / "video.mp4"), review_id),
+        )
+
+    result = center.run_maintenance()
+
+    assert os.path.isfile(result["backup"])
+    assert result["cleaned_jobs"] == 1
+    assert not completed_dir.exists()
+    assert review_dir.exists()
+    assert center.get_job(completed_id)["media_cleaned_at"]
+    assert center.get_job(review_id)["local_video_path"].endswith("video.mp4")
+
+
+def test_performance_summary_uses_latest_platform_snapshot(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1performance", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        title="效果测试",
+        youtube_video_id="youtube-123",
+        status="completed",
+    )
+    center.record_performance(
+        job_id,
+        {"platform": "youtube", "views": 100, "likes": 2, "comments": 1, "shares": 0},
+    )
+    center.record_performance(
+        job_id,
+        {
+            "platform": "youtube",
+            "views": 1000,
+            "likes": 60,
+            "comments": 20,
+            "shares": 10,
+            "followers_delta": 8,
+        },
+    )
+
+    summary = center.get_performance_summary(days=7)
+
+    assert len(summary["records"]) == 1
+    assert summary["totals"]["views"] == 1000
+    assert summary["totals"]["engagement_rate"] == 9.0
+    assert summary["top_platform"] == "youtube"
+    assert any("互动率较高" in item for item in summary["suggestions"])
+
+
+def test_performance_rejects_platform_without_published_post(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1notpublished", ["youtube"]
+    )
+    with pytest.raises(ValueError, match="尚无已发布"):
+        center.record_performance(job_id, {"platform": "youtube", "views": 1})
 
 
 def test_sync_money_printer_render_downloads_and_rechecks_media(

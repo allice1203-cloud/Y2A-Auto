@@ -7,13 +7,13 @@
     <title>{% block title %}视频搬运通道{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/bootstrap/bootstrap.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='lib/icons/bootstrap-icons.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=0.9.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=0.16.4">
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='img/favicon.ico') }}">
     {% block extra_css %}{% endblock %}
 </head>
 {% set is_login_page = request.endpoint == 'login' %}
-<body class="{% if is_login_page %}login-fullscreen{% else %}app-body{% endif %}">
+<body class="{% if is_login_page %}login-fullscreen{% else %}app-body{% endif %} {% block body_class %}{% endblock %}">
 {% if is_login_page %}
     <main class="login-stage">
 {% else %}
@@ -32,7 +32,7 @@
                 <a class="app-nav-link {% if request.path == url_for('settings') %}active{% endif %}" href="{{ url_for('settings') }}"><i class="bi bi-sliders2"></i><span>设置</span></a>
             </nav>
             <div class="app-sidebar-foot">
-                <div class="app-machine-state"><span></span>Win mini · 运行正常</div>
+                <div class="app-machine-state"><span></span>香港 VPS · 运行正常</div>
                 {% if show_logout_in_nav %}
                     <a class="app-logout" href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>退出登录</a>
                 {% endif %}

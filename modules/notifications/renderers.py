@@ -11,6 +11,9 @@ from .models import (
     EVENT_TASK_ADDED,
     EVENT_TASK_COMPLETED,
     EVENT_TASK_FAILED,
+    EVENT_TRANSFER_FAILED,
+    EVENT_TRANSFER_PUBLISHED,
+    EVENT_TRANSFER_REVIEW_READY,
     NotificationEvent,
     NotificationMessage,
 )
@@ -80,6 +83,35 @@ def _section_block(*kv_lines: str) -> str:
 def build_notification_message(event: NotificationEvent) -> NotificationMessage:
     payload = event.as_payload()
     event_type = event.event_type
+
+    if event_type in {EVENT_TRANSFER_REVIEW_READY, EVENT_TRANSFER_PUBLISHED, EVENT_TRANSFER_FAILED}:
+        title_text = _task_title(payload)
+        targets = _as_text(payload.get("targets")) or "未指定"
+        if event_type == EVENT_TRANSFER_REVIEW_READY:
+            title = "视频搬运 👀 成片待审核"
+            summary = f"{title_text} | {targets}"
+            heading = "**👀 二创成片已就绪，等待人工审核**"
+        elif event_type == EVENT_TRANSFER_PUBLISHED:
+            title = "视频搬运 ✅ 全部发布完成"
+            summary = f"{title_text} | {targets}"
+            heading = "**✅ 视频已完成目标平台发布**"
+        else:
+            error_text = _pretty_error_text(payload.get("error_message"))
+            title = "视频搬运 ❌ 需要人工处理"
+            summary = f"{title_text} | {error_text}"
+            heading = "**❌ 搬运或二创处理失败**"
+        body = _section_block(
+            _kv("视频", _truncate(title_text, 120)),
+            _kv("任务 ID", f"`{_as_text(payload.get('task_id'))}`"),
+            _kv("目标平台", targets),
+            _kv("当前状态", _as_text(payload.get("status"))),
+            _kv("入口", _as_text(payload.get("review_url"))),
+            _kv("时间", _as_text(payload.get("occurred_at"))),
+        )
+        markdown = _markdown_lines(heading, "", body)
+        if event_type == EVENT_TRANSFER_FAILED:
+            markdown = _markdown_lines(markdown, "", f"> **错误：**{_pretty_error_text(payload.get('error_message'))}")
+        return NotificationMessage(title=title, summary=summary, markdown=markdown)
 
     if event_type == EVENT_TASK_ADDED:
         title = "Y2A-Auto 📋 任务已添加"

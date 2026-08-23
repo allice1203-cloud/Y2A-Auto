@@ -52,7 +52,7 @@
 | 审核可控 | 支持人工审核、强制上传、内容安全检测和登录保护 |
 | 灵活部署 | Docker / 本地双模式，支持 CPU 与多种 GPU 编码 |
 | 监控拉取 | 支持 YouTube 频道 / 关键词定时抓取与历史记录 |
-| 消息推送 | 企业微信、Server酱、message-pusher 多渠道异步通知 |
+| 消息推送 | Telegram、企业微信、Server酱、message-pusher 多渠道异步通知 |
 | CookieCloud | 从 CookieCloud 服务自动同步 YouTube Cookies |
 | 安全防护 | 密码保护、暴力破解锁定、会话超时、路径遍历防护 |
 | 维护完善 | 支持日志清理、下载清理、并发控制和 FFmpeg 自动补齐 |
@@ -75,7 +75,7 @@
   - 支持 latest / historical 模式、视频类型筛选和自动加入任务队列
   - 内置历史记录与配置文件恢复
 - 通知推送
-  - 企业微信、Server酱、message-pusher 三种渠道
+  - Telegram、企业微信、Server酱、message-pusher 四种渠道
   - 任务添加 / 完成 / 失败、登录成功 / 锁定、QR 登录成功 / 失败等事件推送
   - 异步重试队列，递增间隔保证投递
 - CookieCloud 集成
@@ -149,7 +149,7 @@ docker compose up -d
 
 ## 部署与运行
 
-Mac mini 通过 Cloudflare Tunnel 提供私有源站、公网 HTTPS 入口的部署方式，见
+香港 VPS 通过 Cloudflare Tunnel 提供私有源站、公网 HTTPS 入口，见
 [公网访问运维说明](docs/public-access.md)。公网部署前必须启用系统登录保护。
 界面品牌、布局、组件和响应式约束见 [v0.5 设计系统](docs/design-system.md)。
 

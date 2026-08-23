@@ -264,6 +264,11 @@
                         <label class="form-label" id="contributionLabel">本次加工内容</label>
                         <textarea class="form-control" name="original_contribution" id="originalContribution" rows="4">{{ job.original_contribution or '' }}</textarea>
                     </div>
+                    <div class="mb-4 mode-section" data-mode-section="professional">
+                        <label class="form-label">原创解说稿</label>
+                        <textarea class="form-control" name="commentary_script" rows="10" maxlength="8000" placeholder="这份完整口播稿将用于本地配音和字幕生成。">{{ job.commentary_script or recreation_plan.commentary_script or '' }}</textarea>
+                        <div class="form-text">一键二创会使用此解说稿生成新配音、字幕和重构成片。</div>
+                    </div>
                     <div class="form-check border rounded-3 p-3 ps-5 mb-4">
                         <input class="form-check-input" type="checkbox" name="recreation_confirmed" id="recreationConfirmed">
                         <label class="form-check-label fw-semibold" for="recreationConfirmed">
@@ -340,6 +345,86 @@
                     <textarea class="form-control" name="tiktok_text" rows="4" maxlength="2000">{{ job.tiktok_text or job.x_text or job.title or '' }}</textarea>
                 </div>
                 {% endif %}
+
+                <h3 class="h6 mt-4 mb-3">5. 发布前预检</h3>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="d-flex justify-content-between gap-2 align-items-center mb-2">
+                                <strong>文案与内容</strong>
+                                {% if content_preflight and content_preflight.verdict %}
+                                <span class="badge {{ 'bg-success' if content_preflight.verdict == 'pass' else ('bg-danger' if content_preflight.verdict == 'block' else 'bg-warning text-dark') }}">
+                                    {{ '通过' if content_preflight.verdict == 'pass' else ('阻止发布' if content_preflight.verdict == 'block' else '需要确认') }}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary">尚未检测</span>
+                                {% endif %}
+                            </div>
+                            {% if content_preflight %}
+                            <div class="small text-muted mb-2">风险分：{{ content_preflight.score or 0 }}。修改文案后保存草稿即可刷新结果。</div>
+                            {% for issue in content_preflight.issues or [] %}
+                            <div class="small alert {{ 'alert-danger' if issue.severity == 'block' else 'alert-warning' }} py-2 mb-2">
+                                <strong>{{ issue.field or '文案' }}</strong>：{{ issue.reason }}
+                                {% if issue.term %}（命中“{{ issue.term }}”）{% endif %}
+                                {% if issue.replacement %}<div class="mt-1">建议：{{ issue.replacement }}</div>{% endif %}
+                            </div>
+                            {% endfor %}
+                            {% for note in content_preflight.category_notes or [] %}
+                            <div class="small text-muted mb-1"><strong>{{ note.category }}</strong>：命中 {{ (note.matched or [])|join('、') }}，{{ note.note }}</div>
+                            {% endfor %}
+                            {% for note in content_preflight.notes or [] %}
+                            <div class="small text-muted mb-1">{{ note }}</div>
+                            {% endfor %}
+                            {% if content_preflight.verdict == 'review' %}
+                            <div class="form-check border rounded-3 p-2 ps-5 mt-3">
+                                <input class="form-check-input" type="checkbox" name="content_preflight_confirmed" id="contentPreflightConfirmed">
+                                <label class="form-check-label small" for="contentPreflightConfirmed">我已人工核对以上文案风险，确认继续发布</label>
+                            </div>
+                            {% endif %}
+                            <div class="small text-muted mt-2">{{ content_preflight.disclaimer }}</div>
+                            {% else %}
+                            <div class="small text-muted">首次准备或保存草稿后生成本地检测结果。</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="d-flex justify-content-between gap-2 align-items-center mb-2">
+                                <strong>封面与画幅</strong>
+                                {% if cover_preflight and cover_preflight.verdict %}
+                                <span class="badge {{ 'bg-success' if cover_preflight.verdict == 'pass' else ('bg-danger' if cover_preflight.verdict == 'block' else 'bg-warning text-dark') }}">
+                                    {{ '通过' if cover_preflight.verdict == 'pass' else ('阻止发布' if cover_preflight.verdict == 'block' else '需要确认') }}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary">尚未检测</span>
+                                {% endif %}
+                            </div>
+                            {% if cover_preflight %}
+                            <div class="small text-muted mb-2">
+                                {% if cover_preflight.width and cover_preflight.height %}{{ cover_preflight.width }} × {{ cover_preflight.height }} · {% endif %}
+                                {{ '独立封面' if cover_preflight.source == 'dedicated_cover' else '使用视频首帧/平台自动截帧' }}
+                            </div>
+                            {% for issue in cover_preflight.issues or [] %}
+                            <div class="small alert {{ 'alert-danger' if issue.severity == 'block' else 'alert-warning' }} py-2 mb-2">
+                                {{ issue.message }}
+                            </div>
+                            {% endfor %}
+                            {% for platform, result in (cover_preflight.platforms or {}).items() %}
+                            <div class="small mb-1"><strong>{{ result.label or platform }}</strong>：推荐 {{ result.preferred_ratio }}；{{ result.safe_zone_note }}</div>
+                            {% endfor %}
+                            {% if cover_preflight.verdict == 'review' %}
+                            <div class="form-check border rounded-3 p-2 ps-5 mt-3">
+                                <input class="form-check-input" type="checkbox" name="cover_preflight_confirmed" id="coverPreflightConfirmed">
+                                <label class="form-check-label small" for="coverPreflightConfirmed">我已预览封面和安全区，确认继续发布</label>
+                            </div>
+                            {% endif %}
+                            <div class="small text-muted mt-2">{{ cover_preflight.disclaimer }}</div>
+                            {% else %}
+                            <div class="small text-muted">首次准备或保存草稿后生成本地检测结果。</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
                 <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
@@ -409,11 +494,12 @@
         <div class="card review-card production-card mb-4">
             <div class="card-header py-3"><h2 class="h6 mb-0">超级印钞机 · 可选加工</h2></div>
             <div class="card-body">
-                <p class="small mb-3">不加工可直接跳过。需要加工时先选简单模式；只有确实要重做内容才进入专业模式。</p>
+                <p class="small mb-3">一键二创会自动生成原创解说、本地配音、字幕和重构成片；专业加工可继续手工深调。</p>
                 <div class="production-state mb-3">
                     <div class="small">联动状态</div>
                     <div class="fw-semibold mt-1">
                         {% if job.mpt_status == 'imported' %}加工成片已同步，等待最终确认
+                        {% elif job.mpt_status == 'rendering' %}正在后台生成配音、字幕和成片
                         {% elif job.mpt_status == 'ready' %}项目已建立，原片已就绪
                         {% elif job.mpt_status == 'failed' %}联动失败，可以重试
                         {% elif job.mpt_status == 'sending' %}正在送入超级印钞机
@@ -436,7 +522,7 @@
                 {% else %}
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
                     <input type="hidden" name="workflow" value="quick">
-                    <button class="btn btn-light w-100"><i class="bi bi-lightning-charge me-1"></i>开始简单加工</button>
+                    <button class="btn btn-light w-100"><i class="bi bi-stars me-1"></i>一键生成二创成片</button>
                 </form>
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}">
                     <input type="hidden" name="workflow" value="professional">

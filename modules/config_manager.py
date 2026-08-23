@@ -51,6 +51,9 @@ DEFAULT_CONFIG = {
     "NOTIFY_EVENT_LOGIN_LOCKED": True,
     "NOTIFY_EVENT_QR_LOGIN_SUCCESS": True,
     "NOTIFY_EVENT_QR_LOGIN_FAILED": True,
+    "NOTIFY_TELEGRAM_ENABLED": False,
+    "NOTIFY_TELEGRAM_BOT_TOKEN": "",
+    "NOTIFY_TELEGRAM_CHAT_ID": "",
     "NOTIFY_WECOM_ENABLED": False,
     "NOTIFY_WECOM_WEBHOOK_URL": "",
     "NOTIFY_SERVERCHAN_ENABLED": False,
@@ -73,8 +76,11 @@ DEFAULT_CONFIG = {
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
     # 搬运中心：来源发现与目标发布
-    "TRANSFER_BILIBILI_COOKIES_PATH": "cookies/bilibili_source_cookies.txt",
+    "TRANSFER_BILIBILI_COOKIES_PATH": "cookies/bilibili_unified_cookies.txt",
     "TRANSFER_DOUYIN_COOKIES_PATH": "cookies/douyin_cookies.txt",
+    "TRANSFER_MAINTENANCE_ENABLED": True,
+    "TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS": 30,
+    "TRANSFER_DB_BACKUP_RETENTION_DAYS": 14,
     "TRANSFER_X_ACCESS_TOKEN": "",
     "TRANSFER_PUBLIC_BASE_URL": "",
     "TRANSFER_YOUTUBE_CATEGORY_ID": "22",

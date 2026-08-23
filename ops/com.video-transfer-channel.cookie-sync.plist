@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>__REPO_ROOT__/scripts/sync_source_cookies_to_winmini.sh</string>
+        <string>__REPO_ROOT__/scripts/sync_source_cookies_to_server.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__REPO_ROOT__</string>
