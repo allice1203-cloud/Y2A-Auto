@@ -52,7 +52,7 @@ def test_rule_supports_keyword_discovery_without_fixed_account(center):
     assert rule["require_review"] == 1
 
 
-def test_account_auto_prepare_requires_enabled_allowlist(center):
+def test_account_auto_prepare_requires_enabled_tracking_source(center):
     payload = {
         "name": "授权B站账号",
         "platform": "bilibili",
@@ -61,7 +61,7 @@ def test_account_auto_prepare_requires_enabled_allowlist(center):
         "target_platforms": ["youtube"],
         "auto_prepare": True,
     }
-    with pytest.raises(ValueError, match="授权来源白名单"):
+    with pytest.raises(ValueError, match="来源跟踪列表"):
         center.save_rule(payload)
 
     center.save_allowed_source(
@@ -78,17 +78,20 @@ def test_account_auto_prepare_requires_enabled_allowlist(center):
     assert center.get_rule(rule_id)["auto_prepare"] == 1
 
 
-def test_allowlist_requires_rights_record(center):
-    with pytest.raises(ValueError, match="授权范围"):
-        center.save_allowed_source(
-            {
-                "platform": "douyin",
-                "account_url": "https://www.douyin.com/user/test-account",
-                "rights_basis": "authorized",
-                "rights_note": "",
-                "enabled": True,
-            }
-        )
+def test_tracking_source_allows_unconfirmed_non_blocking_risk(center):
+    source_id = center.save_allowed_source(
+        {
+            "platform": "douyin",
+            "account_url": "https://www.douyin.com/user/test-account",
+            "rights_basis": "unconfirmed",
+            "rights_note": "",
+            "enabled": True,
+        }
+    )
+
+    source = next(item for item in center.list_allowed_sources() if item["id"] == source_id)
+    assert source["rights_basis"] == "unconfirmed"
+    assert source["rights_note"] == ""
 
 
 def test_scan_copies_allowlist_rights_to_discovered_job(center, monkeypatch):
@@ -130,6 +133,7 @@ def test_scan_copies_allowlist_rights_to_discovered_job(center, monkeypatch):
     assert result["added"] == 1
     job = center.list_jobs()[0]
     assert job["status"] == "discovered"
+    assert job["processing_mode"] == "professional"
     assert job["rights_basis"] == "licensed"
     assert job["rights_note"] == "许可协议编号 LIC-2026-001"
 
@@ -980,7 +984,8 @@ def test_money_printer_url_opens_imported_project(center):
 
     assert url.startswith("https://video.sg99.online/app/?")
     assert "project_id=project-123" in url
-    assert "studio=quick" in url
+    assert "studio=intelligence" in url
+    assert "workflow=professional" in url
 
     professional_url = center.money_printer_url(
         center.get_job(job_id), workflow="professional"
@@ -1037,7 +1042,7 @@ def test_send_to_money_printer_creates_project_uploads_and_analyzes(
     assert result["mpt_status"] == "ready"
     assert result["mpt_project_id"] == "project-123"
     assert result["mpt_asset_id"] == "asset-456"
-    assert result["processing_mode"] == "quick"
+    assert result["processing_mode"] == "professional"
     assert calls[0][0] == "POST"
     assert calls[1][2]["files"]["file"][0] == "source.mp4"
     assert calls[2][2]["json"] == {"asset_id": "asset-456"}

@@ -1,6 +1,7 @@
 import pytest
 
 from modules.content_recreation import (
+    build_rights_risk,
     generate_recreation_plan,
     validate_review_payload,
 )
@@ -21,6 +22,34 @@ def test_fallback_plan_demands_substantive_original_contribution():
     assert plan["risk_level"] == "high"
     assert "原创口播" in plan["original_contribution"]
     assert len(plan["commentary_outline"]) >= 3
+    assert len(plan["hook_options"]) >= 3
+    assert len(plan["segment_plan"]) >= 4
+    assert set(plan["platform_versions"]) == {"bilibili", "douyin", "youtube"}
+    assert plan["bilibili_title"]
+    assert plan["douyin_text"]
+
+
+def test_unconfirmed_rights_are_a_non_blocking_risk_hint():
+    risk = build_rights_risk(
+        {"rights_basis": "unconfirmed", "rights_note": "热点观察账号"}
+    )
+
+    assert risk["level"] == "red"
+    assert risk["blocking"] is False
+    assert risk["note"] == "热点观察账号"
+
+
+def test_review_defaults_to_standard_remix_mode():
+    result = validate_review_payload(
+        {
+            "source_attribution": "原作者：https://example.com/source",
+            "original_contribution": "加入中文旁白、重排镜头、补充 B-roll 和独立结论，形成标准二剪成片。",
+            "watermark_status": "none",
+            "recreation_confirmed": "on",
+        }
+    )
+
+    assert result["processing_mode"] == "professional"
 
 
 def test_review_payload_requires_source_attribution():

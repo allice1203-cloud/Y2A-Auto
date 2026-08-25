@@ -4269,14 +4269,15 @@ def transfer_center_send_to_money_printer(job_id):
     workflow = (
         request.form.get('workflow')
         if request.form.get('workflow') in ('quick', 'professional')
-        else 'quick'
+        else 'professional'
     )
+    operation = str(request.form.get('operation') or '').strip().lower()
     try:
         center = _transfer_center()
-        if workflow == 'quick':
+        if operation == 'ai_rebuild':
             started = center.recreate_with_money_printer_async(job_id)
             flash(
-                '已开始后台生成原创解说、本地配音、字幕和重构成片。'
+                '已开始后台生成二剪脚本、本地配音、字幕和 AI 混合成片。'
                 if started else '该任务正在处理，请稍后刷新。',
                 'success' if started else 'warning',
             )
@@ -4284,9 +4285,9 @@ def transfer_center_send_to_money_printer(job_id):
         job = center.send_to_money_printer(job_id, workflow=workflow)
         flash(
             (
-                '已进入超级印钞机简单加工，只需确认画幅、片头片尾和来源标识。'
+                '已进入超级印钞机快速二剪，可调整画幅、节奏、字幕和包装。'
                 if workflow == 'quick'
-                else '已进入超级印钞机专业加工，可继续镜头重组、配音和深度包装。'
+                else '已进入标准二剪编辑台，可继续镜头重组、配音、B-roll 和深度包装。'
             ),
             'success',
         )

@@ -21,9 +21,9 @@ RECREATION_MODES = {
 }
 
 PROCESSING_MODES = {
-    "direct": "直接转发",
-    "quick": "简单加工",
-    "professional": "专业加工",
+    "direct": "原片分发",
+    "quick": "快速二剪",
+    "professional": "标准二剪 / AI 重制",
 }
 
 WATERMARK_STATES = {
@@ -50,6 +50,68 @@ def _clean_list(value: Any, limit: int = 8) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [_clean_text(item, 300) for item in value if _clean_text(item, 300)][:limit]
+
+
+def _clean_segment_plan(value: Any, limit: int = 8) -> list[dict[str, str]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        segment = {
+            "stage": _clean_text(item.get("stage"), 80),
+            "source_action": _clean_text(item.get("source_action"), 300),
+            "narration": _clean_multiline(item.get("narration"), 800),
+            "visual": _clean_multiline(item.get("visual"), 500),
+        }
+        if any(segment.values()):
+            result.append(segment)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _clean_platform_versions(value: Any) -> dict[str, dict[str, Any]]:
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for platform in ("bilibili", "douyin", "youtube"):
+        item = source.get(platform)
+        if not isinstance(item, dict):
+            continue
+        result[platform] = {
+            "format": _clean_text(item.get("format"), 80),
+            "duration": _clean_text(item.get("duration"), 80),
+            "hook": _clean_multiline(item.get("hook"), 300),
+            "edit_note": _clean_multiline(item.get("edit_note"), 600),
+        }
+    return result
+
+
+def build_rights_risk(job: dict[str, Any]) -> dict[str, Any]:
+    """Return a non-blocking publication risk hint for the current source."""
+
+    basis = str(job.get("rights_basis") or "unconfirmed").strip().lower()
+    note = _clean_multiline(job.get("rights_note"), 1000)
+    if basis in {"owned", "licensed", "public_domain"}:
+        level = "green"
+        label = "来源风险较低"
+        summary = "已记录为自有、许可覆盖或公版素材；发布前仍需核对素材中的第三方元素。"
+    elif basis == "authorized":
+        level = "yellow"
+        label = "来源需要留意"
+        summary = "已记录作者授权，但授权范围尚由人工判断；不影响脚本、粗剪和成片制作。"
+    else:
+        level = "red"
+        label = "来源尚未确认"
+        summary = "当前未确认使用范围；允许继续制作测试，公开发布前请人工判断风险。"
+    return {
+        "level": level,
+        "label": label,
+        "summary": summary,
+        "note": note,
+        "blocking": False,
+    }
 
 
 def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -81,6 +143,67 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
         "看完不要急着照搬，先检查前提，小范围验证，再决定是否应用。"
         f"本期参考素材来自{uploader}，我们保留来源并对内容重新组织和评论。"
     )
+    hook_options = [
+        f"《{title}》真正值得看的不是结论，而是它省略的三个前提。",
+        f"如果只照搬《{title}》的方法，你很可能在第一步就做错。",
+        f"我把《{title}》重新拆了一遍，最有价值的其实是这一点。",
+    ]
+    segment_plan = [
+        {
+            "stage": "0-3 秒开场",
+            "source_action": "不用原片片头，直接抛出结论或冲突",
+            "narration": hook_options[0],
+            "visual": "使用结果画面、关键数字或重新制作的标题卡快速进入主题",
+        },
+        {
+            "stage": "背景与问题",
+            "source_action": "只截取说明背景所需的短片段，删除停顿和重复表达",
+            "narration": "交代原视频观点，并说明这次重做要解决的具体问题。",
+            "visual": "原片必要镜头与中文信息卡交替，避免连续长时间沿用原画面",
+        },
+        {
+            "stage": "核心拆解",
+            "source_action": "重排观点顺序，把同类信息合并为三段",
+            "narration": "加入核验、反例、本地场景和自己的判断。",
+            "visual": "补充 B-roll、图表、截图、录屏或 AI 生成画面",
+        },
+        {
+            "stage": "结论与互动",
+            "source_action": "不沿用原片结尾，重新收束并提出讨论问题",
+            "narration": "给出可执行结论，并邀请观众评论自己的场景。",
+            "visual": "使用独立结论卡、账号包装和下一期预告",
+        },
+    ]
+    broll_suggestions = [
+        "与核心观点对应的产品录屏或实际操作",
+        "关键数字、步骤和对比关系的信息卡",
+        "中文用户熟悉的本地案例或场景镜头",
+        "无法补拍时使用风格统一的 AI 图片或短视频片段",
+    ]
+    ai_visual_prompts = [
+        f"为《{title}》制作一张无文字的竖版开场背景，主体明确、留出中文字幕安全区",
+        f"把《{title}》的核心逻辑表现为简洁的三步流程画面，适合视频中段讲解",
+    ]
+    platform_versions = {
+        "bilibili": {
+            "format": "16:9 横版深度版",
+            "duration": "保留完整解释，不机械限制时长",
+            "hook": hook_options[2],
+            "edit_note": "增加背景、观点推导和章节感，标题突出信息增量。",
+        },
+        "douyin": {
+            "format": "9:16 竖版高密度版",
+            "duration": "优先生成 30-60 秒测试版，并保留 60-180 秒信息版",
+            "hook": hook_options[1],
+            "edit_note": "前三秒直接给冲突或结果，强化大字幕、节奏和评论引导。",
+        },
+        "youtube": {
+            "format": "16:9 横版独立叙事版",
+            "duration": "按主题完整度决定",
+            "hook": hook_options[0],
+            "edit_note": "以新脚本、新旁白和补充画面承担主要叙事，避免只翻译原片。",
+        },
+    }
     return {
         "original_angle": angle,
         "original_contribution": contribution,
@@ -96,6 +219,15 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
             "重新设计叙事结构、字幕和画面节奏",
             "在简介中准确标注素材来源和授权基础",
         ],
+        "hook_options": hook_options,
+        "segment_plan": segment_plan,
+        "broll_suggestions": broll_suggestions,
+        "ai_visual_prompts": ai_visual_prompts,
+        "platform_versions": platform_versions,
+        "production_tracks": [
+            "正常制作：人工调整脚本、镜头和素材后导出成片",
+            "AI 混合制作：AI 配音、B-roll/生成画面和自动粗剪，人工终审",
+        ],
         "x_text": _clean_text(f"{title}｜我的三个观察：信息、判断和实际启发。", 260),
         "youtube_title": _clean_text(f"{title}：加入验证与独立观点后的深度解读", 100),
         "youtube_description": _clean_multiline(
@@ -106,6 +238,13 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
             ),
             5000,
         ),
+        "bilibili_title": _clean_text(f"{title}：重新拆解后，我发现真正关键的是这几点", 80),
+        "bilibili_description": _clean_multiline(
+            f"围绕《{title}》重新组织内容，加入中文解说、背景补充和独立判断。\n\n参考来源：{uploader}\n{source_url}",
+            2000,
+        ),
+        "douyin_text": _clean_multiline(f"{hook_options[1]} #二剪 #内容解读", 2000),
+        "tiktok_text": _clean_multiline(f"{hook_options[1]} #remix #explained", 2000),
         "risk_level": "medium" if job.get("recreation_completed") else "high",
         "risk_notes": [
             "AI草案不等于已完成再创作，必须人工确认实际成片具有实质性原创贡献",
@@ -117,6 +256,7 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
             "但必须在成片或发布文案中保留清晰来源署名。"
         ),
         "generated_by": "safe_fallback",
+        "rights_risk": build_rights_risk(job),
     }
 
 
@@ -133,11 +273,34 @@ def _normalize_plan(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
             source.get("commentary_script") or fallback["commentary_script"], 8000
         ),
         "required_edits": _clean_list(source.get("required_edits")) or fallback["required_edits"],
+        "hook_options": _clean_list(source.get("hook_options"), limit=5) or fallback["hook_options"],
+        "segment_plan": _clean_segment_plan(source.get("segment_plan")) or fallback["segment_plan"],
+        "broll_suggestions": _clean_list(source.get("broll_suggestions"), limit=10)
+        or fallback["broll_suggestions"],
+        "ai_visual_prompts": _clean_list(source.get("ai_visual_prompts"), limit=8)
+        or fallback["ai_visual_prompts"],
+        "platform_versions": _clean_platform_versions(source.get("platform_versions"))
+        or fallback["platform_versions"],
+        "production_tracks": _clean_list(source.get("production_tracks"), limit=4)
+        or fallback["production_tracks"],
         "x_text": _clean_multiline(source.get("x_text") or fallback["x_text"], 260),
         "youtube_title": _clean_text(source.get("youtube_title") or fallback["youtube_title"], 100),
         "youtube_description": _clean_multiline(
             source.get("youtube_description") or fallback["youtube_description"],
             5000,
+        ),
+        "bilibili_title": _clean_text(
+            source.get("bilibili_title") or fallback["bilibili_title"], 80
+        ),
+        "bilibili_description": _clean_multiline(
+            source.get("bilibili_description") or fallback["bilibili_description"],
+            2000,
+        ),
+        "douyin_text": _clean_multiline(
+            source.get("douyin_text") or fallback["douyin_text"], 2000
+        ),
+        "tiktok_text": _clean_multiline(
+            source.get("tiktok_text") or fallback["tiktok_text"], 2000
         ),
         "risk_level": str(source.get("risk_level") or fallback["risk_level"]).lower(),
         "risk_notes": _clean_list(source.get("risk_notes")) or fallback["risk_notes"],
@@ -146,6 +309,7 @@ def _normalize_plan(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
             1200,
         ),
         "generated_by": str(source.get("generated_by") or fallback["generated_by"]),
+        "rights_risk": fallback["rights_risk"],
     }
     if plan["risk_level"] not in {"low", "medium", "high"}:
         plan["risk_level"] = fallback["risk_level"]
@@ -187,16 +351,18 @@ def generate_recreation_plan(
             },
         }
         system_prompt = (
-            "你是跨平台视频再创作总编和版权风险审校员。请输出JSON对象，字段必须包括："
+            "你是跨平台视频二剪总编。请输出JSON对象，字段必须包括："
             "original_angle、original_contribution、commentary_outline、commentary_script、required_edits、"
-            "x_text、youtube_title、youtube_description、risk_level、risk_notes。"
+            "hook_options、segment_plan、broll_suggestions、ai_visual_prompts、platform_versions、production_tracks、"
+            "x_text、youtube_title、youtube_description、bilibili_title、bilibili_description、douyin_text、"
+            "tiktok_text、risk_level、risk_notes。"
             "目标是形成具有实质性原创贡献的制作方案，而不是换标题、加字幕、加边框或去水印。"
             "不得替用户判断合理使用成立、不得建议规避平台审核。"
             "作者名和来源标识默认保留，不得建议通过去除标识掩盖来源。"
             "必须要求加入原创口播/出镜评论、事实核验、案例分析或新的叙事结构。"
             "commentary_script要是可直接配音的完整中文解说稿，不得虚构原片未提供的事实，"
             "应包含原创开场、分析、限定条件、独立结论和来源说明，长度控制300至1200个汉字。"
-            "当授权依据不明确时 risk_level 必须为 high。"
+            "版权状态只作为非阻塞风险提示，不得影响脚本拆解、粗剪和制作建议。"
         )
         parsed = _request_json_object(
             client,
@@ -224,9 +390,9 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     recreation_mode = str(payload.get("recreation_mode") or "commentary").strip().lower()
     if recreation_mode not in RECREATION_MODES:
         recreation_mode = "commentary"
-    processing_mode = str(payload.get("processing_mode") or "direct").strip().lower()
+    processing_mode = str(payload.get("processing_mode") or "professional").strip().lower()
     if processing_mode not in PROCESSING_MODES:
-        processing_mode = "direct"
+        processing_mode = "professional"
     original_contribution = _clean_multiline(payload.get("original_contribution"), 3000)
     if processing_mode == "quick" and len(original_contribution) < 4:
         raise ValueError("请简单说明本次加工内容，例如画幅、片头片尾、字幕或品牌包装")

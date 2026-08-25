@@ -505,7 +505,7 @@ class TransferCenter:
                     watermark_status TEXT DEFAULT 'unreviewed',
                     watermark_note TEXT DEFAULT '',
                     recreation_mode TEXT DEFAULT 'commentary',
-                    processing_mode TEXT DEFAULT 'direct',
+                    processing_mode TEXT DEFAULT 'professional',
                     recreation_status TEXT DEFAULT 'pending',
                     recreation_plan_json TEXT DEFAULT '{}',
                     original_angle TEXT DEFAULT '',
@@ -667,7 +667,7 @@ class TransferCenter:
             "watermark_status": "TEXT DEFAULT 'unreviewed'",
             "watermark_note": "TEXT DEFAULT ''",
             "recreation_mode": "TEXT DEFAULT 'commentary'",
-            "processing_mode": "TEXT DEFAULT 'direct'",
+            "processing_mode": "TEXT DEFAULT 'professional'",
             "recreation_status": "TEXT DEFAULT 'pending'",
             "recreation_plan_json": "TEXT DEFAULT '{}'",
             "original_angle": "TEXT DEFAULT ''",
@@ -799,12 +799,16 @@ class TransferCenter:
             platform, str(payload.get("account_url") or "").strip()
         )
         display_name = str(payload.get("display_name") or "").strip()[:120]
-        rights_basis = str(payload.get("rights_basis") or "authorized").strip().lower()
-        if rights_basis not in {"owned", "authorized", "licensed", "public_domain"}:
-            raise ValueError("请选择有效的授权依据")
+        rights_basis = str(payload.get("rights_basis") or "unconfirmed").strip().lower()
+        if rights_basis not in {
+            "unconfirmed",
+            "owned",
+            "authorized",
+            "licensed",
+            "public_domain",
+        }:
+            raise ValueError("请选择有效的来源状态")
         rights_note = str(payload.get("rights_note") or "").strip()[:1000]
-        if len(rights_note) < 4:
-            raise ValueError("请填写授权范围、本人账号说明或许可记录位置")
         now = _utc_now()
         source_id = str(payload.get("id") or uuid.uuid4())
         with self._connect() as conn:
@@ -912,11 +916,16 @@ class TransferCenter:
         )
         requested_auto_prepare = _as_bool(payload.get("auto_prepare", True))
         if mode == "account" and requested_auto_prepare and not allowed_source:
-            raise ValueError("自动下载前，请先把该账号加入并启用授权来源白名单")
+            raise ValueError("自动下载前，请先把该账号加入并启用来源跟踪列表")
         if mode == "keyword":
             requested_auto_prepare = False
         recreation_mode = str(payload.get("recreation_mode") or "commentary").strip().lower()
-        if recreation_mode not in {"commentary", "localized", "drama_recap", "authorized_repost"}:
+        if recreation_mode not in {
+            "commentary",
+            "localized",
+            "drama_recap",
+            "structured_remix",
+        }:
             recreation_mode = "commentary"
 
         now = _utc_now()
@@ -1306,10 +1315,10 @@ class TransferCenter:
                         id, rule_id, source_platform, source_id, source_url,
                         source_uploader, title, description, thumbnail_url,
                         duration, published_at, target_platforms, status,
-                        recreation_mode, x_publish_status, youtube_publish_status,
+                        recreation_mode, processing_mode, x_publish_status, youtube_publish_status,
                         bilibili_publish_status, douyin_publish_status, tiktok_publish_status,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -1326,6 +1335,7 @@ class TransferCenter:
                         rule["target_platforms"],
                         JOB_STATUSES["DISCOVERED"],
                         str(rule.get("recreation_mode") or "commentary"),
+                        "professional",
                         "pending" if "x" in targets else "skipped",
                         "pending" if "youtube" in targets else "skipped",
                         "pending" if "bilibili" in targets else "skipped",
@@ -1356,7 +1366,7 @@ class TransferCenter:
                 )
                 if rule.get("auto_prepare") and not allowed_source:
                     raise ValueError(
-                        "授权来源白名单已停用或不存在；已阻止自动下载"
+                        "来源跟踪列表已停用或不存在；已阻止自动下载"
                     )
             items = self._discover_items(rule)
             candidates = [
@@ -2629,18 +2639,28 @@ class TransferCenter:
             "youtube_title": str(plan.get("youtube_title") or ""),
             "youtube_description": str(plan.get("youtube_description") or ""),
             "bilibili_title": str(
-                plan.get("youtube_title") or prepared_fields["title"] or ""
+                plan.get("bilibili_title")
+                or plan.get("youtube_title")
+                or prepared_fields["title"]
+                or ""
             )[:80],
             "bilibili_description": str(
-                plan.get("youtube_description")
+                plan.get("bilibili_description")
+                or plan.get("youtube_description")
                 or prepared_fields["description"]
                 or ""
             )[:2000],
             "douyin_text": str(
-                plan.get("x_text") or prepared_fields["title"] or ""
+                plan.get("douyin_text")
+                or plan.get("x_text")
+                or prepared_fields["title"]
+                or ""
             )[:2000],
             "tiktok_text": str(
-                plan.get("x_text") or prepared_fields["title"] or ""
+                plan.get("tiktok_text")
+                or plan.get("x_text")
+                or prepared_fields["title"]
+                or ""
             )[:2000],
         }
         content_preflight = run_content_preflight(generated_fields, targets)
@@ -2651,7 +2671,7 @@ class TransferCenter:
             job_id,
             status=JOB_STATUSES["REVIEW"],
             progress_percent=72,
-            progress_message="素材已就绪，等待选择处理方式",
+            progress_message="素材已就绪，默认进入标准二剪",
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
@@ -2660,7 +2680,7 @@ class TransferCenter:
             cover_preflight_json=json.dumps(cover_preflight, ensure_ascii=False),
             recreation_status="draft",
             recreation_completed=0,
-            processing_mode="direct",
+            processing_mode="professional",
             recreation_plan_json=serialize_plan(plan),
             original_angle=str(plan.get("original_angle") or ""),
             original_contribution=str(plan.get("original_contribution") or ""),
@@ -2694,6 +2714,10 @@ class TransferCenter:
             x_text=str(plan.get("x_text") or ""),
             youtube_title=str(plan.get("youtube_title") or ""),
             youtube_description=str(plan.get("youtube_description") or ""),
+            bilibili_title=str(plan.get("bilibili_title") or ""),
+            bilibili_description=str(plan.get("bilibili_description") or ""),
+            douyin_text=str(plan.get("douyin_text") or ""),
+            tiktok_text=str(plan.get("tiktok_text") or ""),
             reviewed_at=None,
             error_message="",
         )
@@ -2890,7 +2914,7 @@ class TransferCenter:
         self,
         job_id: str,
         *,
-        workflow: str = "quick",
+        workflow: str = "professional",
     ) -> dict:
         job = self.get_job(job_id)
         if not job:
@@ -2898,7 +2922,7 @@ class TransferCenter:
         video_path = str(job.get("original_video_path") or job.get("local_video_path") or "")
         if not video_path or not os.path.isfile(video_path):
             raise ValueError("原视频尚未下载完成")
-        workflow = workflow if workflow in {"quick", "professional"} else "quick"
+        workflow = workflow if workflow in {"quick", "professional"} else "professional"
         if job.get("mpt_project_id") and job.get("mpt_asset_id"):
             self._update_job(
                 job_id,
@@ -2939,7 +2963,7 @@ class TransferCenter:
                 json={
                     "name": f"搬运加工｜{str(job.get('title') or '未命名视频')[:36]}",
                     "description": (
-                        "来自视频搬运通道。可选择简单加工或专业加工；"
+                        "来自视频搬运通道。默认进行标准二剪，也可使用 AI 重制；"
                         "导出后回传成片，再由用户确认发布。\n"
                         f"来源：{job.get('source_uploader') or '原发布者'}\n"
                         f"{job.get('source_url') or ''}"
@@ -2984,9 +3008,9 @@ class TransferCenter:
                 processing_mode=workflow,
                 mpt_workflow=workflow,
                 mpt_message=(
-                    "原片已就绪，可以一键生成简单成片"
+                    "原片已就绪，可以生成快速二剪成片"
                     if workflow == "quick"
-                    else "原片分析完成，可以进行专业加工"
+                    else "原片分析完成，可以进行标准二剪或 AI 重制"
                 ),
             )
             return self.get_job(job_id) or {}
@@ -3084,7 +3108,7 @@ class TransferCenter:
             mpt_status="rendering",
             mpt_message="正在建立项目并分析原片",
         )
-        job = self.send_to_money_printer(job_id, workflow="quick")
+        job = self.send_to_money_printer(job_id, workflow="professional")
         base_url, auth_headers = self._money_printer_connection()
         if not auth_headers:
             raise ValueError("超级印钞机内部访问凭证未配置")
@@ -3188,10 +3212,10 @@ class TransferCenter:
         selected_workflow = (
             workflow
             if workflow in {"quick", "professional"}
-            else str(job.get("mpt_workflow") or job.get("processing_mode") or "quick")
+            else str(job.get("mpt_workflow") or job.get("processing_mode") or "professional")
         )
         if selected_workflow not in {"quick", "professional"}:
-            selected_workflow = "quick"
+            selected_workflow = "professional"
         public_url = str(
             self._config().get("TRANSFER_MPT_PUBLIC_URL")
             or "https://video.sg99.online/app/"
@@ -3284,7 +3308,7 @@ class TransferCenter:
             result = self.replace_recreated_media(job_id, str(target_path))
             self._update_job(
                 job_id,
-                processing_mode=str(job.get("mpt_workflow") or "quick"),
+                processing_mode=str(job.get("mpt_workflow") or "professional"),
                 mpt_status="imported",
                 mpt_message="加工成片已自动同步，请完成最终确认",
             )
