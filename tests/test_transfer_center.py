@@ -1517,6 +1517,158 @@ def test_performance_rejects_platform_without_published_post(center):
         center.record_performance(job_id, {"platform": "youtube", "views": 1})
 
 
+def test_fetch_youtube_video_statistics_batches_and_normalizes_counts():
+    calls = []
+
+    class FakeRequest:
+        def __init__(self, ids):
+            self.ids = ids
+
+        def execute(self):
+            return {
+                "items": [
+                    {
+                        "id": video_id,
+                        "statistics": {
+                            "viewCount": "100",
+                            "likeCount": "8",
+                            "commentCount": "3",
+                        },
+                    }
+                    for video_id in self.ids
+                ]
+            }
+
+    class FakeVideos:
+        def list(self, **kwargs):
+            assert kwargs["part"] == "statistics"
+            ids = kwargs["id"].split(",")
+            calls.append(ids)
+            return FakeRequest(ids)
+
+    class FakeService:
+        def videos(self):
+            return FakeVideos()
+
+    video_ids = [f"video-{index}" for index in range(51)]
+    result = transfer_module.fetch_youtube_video_statistics(
+        video_ids, service=FakeService()
+    )
+
+    assert len(calls) == 2
+    assert len(calls[0]) == 50
+    assert result["video-50"] == {"views": 100, "likes": 8, "comments": 3}
+
+
+def test_fetch_bilibili_video_statistics_normalizes_public_counters():
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "code": 0,
+                "data": {
+                    "stat": {"view": 900, "like": 70, "reply": 12, "share": 9}
+                },
+            }
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            assert url.endswith("/x/web-interface/view")
+            assert kwargs["params"] == {"bvid": "BV1xx411c7mD"}
+            return FakeResponse()
+
+    result = transfer_module.fetch_bilibili_video_statistics(
+        "BV1xx411c7mD", session=FakeSession()
+    )
+
+    assert result == {"views": 900, "likes": 70, "comments": 12, "shares": 9}
+
+
+def test_sync_performance_preserves_manual_metrics_and_skips_unchanged(center):
+    job_id = center.add_manual_job(
+        "https://www.douyin.com/video/1234567890123456789",
+        ["youtube", "bilibili"],
+    )
+    center._update_job(
+        job_id,
+        youtube_video_id="youtube-sync-1",
+        bilibili_post_id="BV1xx411c7mD",
+        status="completed",
+    )
+    center.record_performance(
+        job_id,
+        {
+            "platform": "youtube",
+            "views": 10,
+            "shares": 7,
+            "completion_rate": 42,
+            "revenue_cny": 12.5,
+            "production_cost_cny": 1.5,
+            "note": "24小时手工数据",
+        },
+    )
+
+    def youtube_fetcher(video_ids):
+        assert video_ids == ["youtube-sync-1"]
+        return {
+            "youtube-sync-1": {"views": 120, "likes": 8, "comments": 3}
+        }
+
+    def bilibili_fetcher(bvid):
+        assert bvid == "BV1xx411c7mD"
+        return {"views": 900, "likes": 70, "comments": 12, "shares": 9}
+
+    first = center.sync_performance_metrics(
+        youtube_fetcher=youtube_fetcher,
+        bilibili_fetcher=bilibili_fetcher,
+    )
+    youtube_snapshot = center._latest_performance_snapshot(job_id, "youtube")
+
+    assert first["synced"] == 2
+    assert first["failed"] == 0
+    assert youtube_snapshot["views"] == 120
+    assert youtube_snapshot["shares"] == 7
+    assert youtube_snapshot["completion_rate"] == 42
+    assert youtube_snapshot["revenue_cny"] == 12.5
+    assert youtube_snapshot["production_cost_cny"] == 1.5
+    assert "24小时手工数据" in youtube_snapshot["note"]
+
+    second = center.sync_performance_metrics(
+        youtube_fetcher=youtube_fetcher,
+        bilibili_fetcher=bilibili_fetcher,
+    )
+
+    assert second["synced"] == 0
+    assert second["unchanged"] == 2
+
+
+def test_sync_performance_marks_platforms_without_data_permission_manual(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1xx411c7mD", ["douyin"]
+    )
+    center._update_job(
+        job_id,
+        douyin_post_id="douyin-item-id",
+        status="completed",
+    )
+
+    result = center.sync_performance_metrics(
+        youtube_fetcher=lambda _ids: {},
+        bilibili_fetcher=lambda _bvid: {},
+    )
+
+    assert result["manual"] == 1
+    assert result["manual_platforms"] == [
+        {
+            "platform": "douyin",
+            "count": 1,
+            "reason": "当前只有发布授权，数据权限需平台另行审核",
+        }
+    ]
+
+
 def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
     database = sqlite3.connect(tmp_path / "legacy.db")
     database.row_factory = sqlite3.Row

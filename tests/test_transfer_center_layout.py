@@ -48,3 +48,15 @@ def test_standard_remix_is_the_default_review_experience():
     assert 'name="revenue_cny"' in center
     assert 'name="local_visual_ratio"' in center
     assert "下一批{% if not performance.strategy.sample_size %}" in center
+
+
+def test_performance_panel_exposes_one_click_sync_route():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    center = (ROOT / "templates" / "transfer_center.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "@app.route('/transfer-center/performance/sync', methods=['POST'])" in app_source
+    assert "def transfer_center_sync_performance():" in app_source
+    assert "url_for('transfer_center_sync_performance')" in center
+    assert "不会覆盖已手工填写" in center

@@ -349,6 +349,108 @@ def youtube_connection_state() -> dict[str, Any]:
     }
 
 
+def fetch_youtube_video_statistics(
+    video_ids: list[str],
+    *,
+    token_path: str = "",
+    service: Any = None,
+) -> dict[str, dict[str, int]]:
+    """Fetch public counters for published YouTube videos with existing OAuth."""
+    normalized_ids = list(
+        dict.fromkeys(
+            str(video_id or "").strip()
+            for video_id in video_ids
+            if str(video_id or "").strip()
+        )
+    )
+    if not normalized_ids:
+        return {}
+    if service is None:
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+        except Exception as exc:
+            raise RuntimeError("YouTube数据同步依赖未安装") from exc
+        resolved_token_path = Path(token_path) if token_path else _youtube_connection_paths()[0]
+        if not resolved_token_path.is_file():
+            raise ValueError("请先连接 YouTube 频道")
+        credentials = Credentials.from_authorized_user_file(
+            str(resolved_token_path),
+            scopes=list(YOUTUBE_SCOPES),
+        )
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+            resolved_token_path.write_text(credentials.to_json(), encoding="utf-8")
+        service = build(
+            "youtube", "v3", credentials=credentials, cache_discovery=False
+        )
+
+    results: dict[str, dict[str, int]] = {}
+    for start in range(0, len(normalized_ids), 50):
+        chunk = normalized_ids[start : start + 50]
+        response = (
+            service.videos()
+            .list(part="statistics", id=",".join(chunk))
+            .execute()
+        )
+        for item in response.get("items") or []:
+            video_id = str(item.get("id") or "").strip()
+            if not video_id:
+                continue
+            statistics = item.get("statistics") or {}
+            results[video_id] = {
+                "views": int(statistics.get("viewCount") or 0),
+                "likes": int(statistics.get("likeCount") or 0),
+                "comments": int(statistics.get("commentCount") or 0),
+            }
+    return results
+
+
+def fetch_bilibili_video_statistics(
+    bvid: str,
+    *,
+    session: requests.Session | None = None,
+) -> dict[str, int]:
+    """Fetch counters exposed by Bilibili's public video page API."""
+    normalized_bvid = str(bvid or "").strip()
+    if not re.fullmatch(r"BV[0-9A-Za-z]{10,16}", normalized_bvid):
+        raise ValueError("B站作品 BV 号格式无效")
+    request_session = session or requests.Session()
+    if session is None:
+        request_session.trust_env = False
+        request_session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+                ),
+                "Referer": "https://www.bilibili.com/",
+            }
+        )
+    response = request_session.get(
+        "https://api.bilibili.com/x/web-interface/view",
+        params={"bvid": normalized_bvid},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or int(payload.get("code") or 0) != 0:
+        message = str(
+            payload.get("message")
+            if isinstance(payload, dict)
+            else "B站未返回有效数据"
+        )
+        raise RuntimeError(_safe_error(message))
+    statistics = ((payload.get("data") or {}).get("stat") or {})
+    return {
+        "views": int(statistics.get("view") or 0),
+        "likes": int(statistics.get("like") or 0),
+        "comments": int(statistics.get("reply") or 0),
+        "shares": int(statistics.get("share") or 0),
+    }
+
+
 def verify_youtube_credentials(credentials: Any) -> dict[str, str]:
     """Verify that OAuth credentials resolve to an upload-capable channel."""
     try:
@@ -1771,6 +1873,163 @@ class TransferCenter:
                 ),
             )
         return record_id
+
+    def _latest_performance_snapshot(
+        self, job_id: str, platform: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM transfer_metrics
+                WHERE job_id = ? AND platform = ?
+                ORDER BY recorded_at DESC, rowid DESC LIMIT 1
+                """,
+                (job_id, platform),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def sync_performance_metrics(
+        self,
+        *,
+        youtube_fetcher: Callable[
+            [list[str]], dict[str, dict[str, int]]
+        ] | None = None,
+        bilibili_fetcher: Callable[[str], dict[str, int]] | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Refresh counters that existing platform access can read safely."""
+        jobs = self.list_published_jobs(limit=limit)
+        youtube_fetcher = youtube_fetcher or fetch_youtube_video_statistics
+        bilibili_fetcher = bilibili_fetcher or fetch_bilibili_video_statistics
+        result: dict[str, Any] = {
+            "synced": 0,
+            "unchanged": 0,
+            "failed": 0,
+            "manual": 0,
+            "errors": [],
+            "manual_platforms": [],
+        }
+        supported_fields = {
+            "views",
+            "likes",
+            "comments",
+            "shares",
+            "followers_delta",
+            "impressions",
+            "average_view_duration",
+            "completion_rate",
+            "retention_3s",
+            "revenue_cny",
+            "production_cost_cny",
+            "violation_count",
+            "source_visual_ratio",
+            "local_visual_ratio",
+            "ai_visual_ratio",
+            "hook_type",
+            "voice_type",
+            "monetization_status",
+        }
+
+        def persist(
+            job: dict[str, Any],
+            platform: str,
+            counters: dict[str, Any],
+            label: str,
+        ) -> None:
+            previous = self._latest_performance_snapshot(job["id"], platform)
+            changed = previous is None or any(
+                str(previous.get(field) or 0) != str(value or 0)
+                for field, value in counters.items()
+            )
+            if not changed:
+                result["unchanged"] += 1
+                return
+            payload = {
+                field: previous.get(field)
+                for field in supported_fields
+                if previous is not None and field in previous
+            }
+            payload.update(counters)
+            payload["platform"] = platform
+            previous_note = str((previous or {}).get("note") or "").strip()
+            sync_note = f"{label}公开数据自动同步"
+            payload["note"] = (
+                f"{sync_note}；{previous_note}"
+                if previous_note and sync_note not in previous_note
+                else previous_note or sync_note
+            )[:500]
+            self.record_performance(job["id"], payload)
+            result["synced"] += 1
+
+        youtube_jobs = [
+            job for job in jobs if str(job.get("youtube_video_id") or "").strip()
+        ]
+        youtube_statistics: dict[str, dict[str, int]] = {}
+        youtube_error = ""
+        if youtube_jobs:
+            try:
+                youtube_statistics = youtube_fetcher(
+                    [str(job["youtube_video_id"]).strip() for job in youtube_jobs]
+                )
+            except Exception as exc:
+                youtube_error = _safe_error(exc)
+        for job in youtube_jobs:
+            video_id = str(job.get("youtube_video_id") or "").strip()
+            try:
+                if youtube_error:
+                    raise RuntimeError(youtube_error)
+                counters = youtube_statistics.get(video_id)
+                if counters is None:
+                    raise RuntimeError("YouTube作品不存在或当前授权不可读")
+                persist(job, "youtube", counters, "YouTube")
+            except Exception as exc:
+                result["failed"] += 1
+                result["errors"].append(
+                    {
+                        "job_id": job["id"],
+                        "platform": "youtube",
+                        "message": _safe_error(exc),
+                    }
+                )
+
+        for job in jobs:
+            bvid = str(job.get("bilibili_post_id") or "").strip()
+            if not bvid:
+                continue
+            try:
+                persist(job, "bilibili", bilibili_fetcher(bvid), "B站")
+            except Exception as exc:
+                result["failed"] += 1
+                result["errors"].append(
+                    {
+                        "job_id": job["id"],
+                        "platform": "bilibili",
+                        "message": _safe_error(exc),
+                    }
+                )
+
+        manual_fields = {
+            "douyin": "douyin_post_id",
+            "tiktok": "tiktok_post_id",
+            "x": "x_post_id",
+        }
+        for platform, field in manual_fields.items():
+            count = sum(bool(str(job.get(field) or "").strip()) for job in jobs)
+            if not count:
+                continue
+            result["manual"] += count
+            result["manual_platforms"].append(
+                {
+                    "platform": platform,
+                    "count": count,
+                    "reason": (
+                        "当前只有发布授权，数据权限需平台另行审核"
+                        if platform == "douyin"
+                        else "当前未配置官方数据读取权限"
+                    ),
+                }
+            )
+        return result
 
     def get_performance_summary(self, days: int = 7) -> dict[str, Any]:
         days = max(1, min(365, int(days)))

@@ -3671,6 +3671,28 @@ def transfer_center_record_performance():
     return redirect(url_for('transfer_center_index'))
 
 
+@app.route('/transfer-center/performance/sync', methods=['POST'])
+@login_required
+def transfer_center_sync_performance():
+    try:
+        result = _transfer_center().sync_performance_metrics()
+        message = (
+            f"平台数据同步完成：更新 {result['synced']} 条，"
+            f"无变化 {result['unchanged']} 条"
+        )
+        if result['failed']:
+            first_error = str((result.get('errors') or [{}])[0].get('message') or '')
+            message += f"，失败 {result['failed']} 条"
+            if first_error:
+                message += f"（{first_error}）"
+        if result['manual']:
+            message += f"；另有 {result['manual']} 条需手工补录"
+        flash(message + '。', 'warning' if result['failed'] else 'success')
+    except Exception as exc:
+        flash(f'同步平台数据失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
 @app.route('/transfer-center/candidates/refresh', methods=['POST'])
 @login_required
 def transfer_center_refresh_candidates():
