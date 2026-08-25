@@ -83,6 +83,7 @@ RETRY_DELAYS_SECONDS = (60, 300, 1800)
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE)
+PERFORMANCE_CHECKPOINT_HOURS = (24, 72, 168)
 
 
 def _utc_now() -> str:
@@ -520,6 +521,7 @@ class TransferCenter:
         self._config_provider = config_provider or (lambda: {})
         self._lock = threading.RLock()
         self._worker_lock = threading.Lock()
+        self._performance_sync_lock = threading.Lock()
         self._active_jobs_lock = threading.Lock()
         self._active_jobs: set[str] = set()
         self._scheduler = None
@@ -692,6 +694,23 @@ class TransferCenter:
                 );
                 CREATE INDEX IF NOT EXISTS idx_transfer_metrics_job_platform
                     ON transfer_metrics(job_id, platform, recorded_at DESC);
+
+                CREATE TABLE IF NOT EXISTS transfer_metric_checkpoints (
+                    job_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    post_id TEXT NOT NULL,
+                    checkpoint_hours INTEGER NOT NULL,
+                    due_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT DEFAULT '',
+                    completed_at TEXT DEFAULT '',
+                    error_message TEXT DEFAULT '',
+                    PRIMARY KEY(job_id, platform, post_id, checkpoint_hours),
+                    FOREIGN KEY(job_id) REFERENCES transfer_jobs(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_transfer_metric_checkpoints_due
+                    ON transfer_metric_checkpoints(status, due_at, last_attempt_at);
 
                 CREATE TABLE IF NOT EXISTS transfer_candidates (
                     id TEXT PRIMARY KEY,
@@ -1896,6 +1915,7 @@ class TransferCenter:
         ] | None = None,
         bilibili_fetcher: Callable[[str], dict[str, int]] | None = None,
         limit: int = 100,
+        job_platforms: set[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Refresh counters that existing platform access can read safely."""
         jobs = self.list_published_jobs(limit=limit)
@@ -1908,7 +1928,16 @@ class TransferCenter:
             "manual": 0,
             "errors": [],
             "manual_platforms": [],
+            "outcomes": [],
         }
+        normalized_targets = (
+            {
+                (str(job_id).strip(), str(platform).strip().lower())
+                for job_id, platform in job_platforms
+            }
+            if job_platforms is not None
+            else None
+        )
         supported_fields = {
             "views",
             "likes",
@@ -1943,6 +1972,13 @@ class TransferCenter:
             )
             if not changed:
                 result["unchanged"] += 1
+                result["outcomes"].append(
+                    {
+                        "job_id": job["id"],
+                        "platform": platform,
+                        "status": "unchanged",
+                    }
+                )
                 return
             payload = {
                 field: previous.get(field)
@@ -1960,9 +1996,22 @@ class TransferCenter:
             )[:500]
             self.record_performance(job["id"], payload)
             result["synced"] += 1
+            result["outcomes"].append(
+                {
+                    "job_id": job["id"],
+                    "platform": platform,
+                    "status": "synced",
+                }
+            )
 
         youtube_jobs = [
-            job for job in jobs if str(job.get("youtube_video_id") or "").strip()
+            job
+            for job in jobs
+            if str(job.get("youtube_video_id") or "").strip()
+            and (
+                normalized_targets is None
+                or (str(job["id"]), "youtube") in normalized_targets
+            )
         ]
         youtube_statistics: dict[str, dict[str, int]] = {}
         youtube_error = ""
@@ -1991,10 +2040,21 @@ class TransferCenter:
                         "message": _safe_error(exc),
                     }
                 )
+                result["outcomes"].append(
+                    {
+                        "job_id": job["id"],
+                        "platform": "youtube",
+                        "status": "failed",
+                        "message": _safe_error(exc),
+                    }
+                )
 
         for job in jobs:
             bvid = str(job.get("bilibili_post_id") or "").strip()
-            if not bvid:
+            if not bvid or (
+                normalized_targets is not None
+                and (str(job["id"]), "bilibili") not in normalized_targets
+            ):
                 continue
             try:
                 persist(job, "bilibili", bilibili_fetcher(bvid), "B站")
@@ -2007,6 +2067,14 @@ class TransferCenter:
                         "message": _safe_error(exc),
                     }
                 )
+                result["outcomes"].append(
+                    {
+                        "job_id": job["id"],
+                        "platform": "bilibili",
+                        "status": "failed",
+                        "message": _safe_error(exc),
+                    }
+                )
 
         manual_fields = {
             "douyin": "douyin_post_id",
@@ -2014,6 +2082,8 @@ class TransferCenter:
             "x": "x_post_id",
         }
         for platform, field in manual_fields.items():
+            if normalized_targets is not None:
+                continue
             count = sum(bool(str(job.get(field) or "").strip()) for job in jobs)
             if not count:
                 continue
@@ -2030,6 +2100,219 @@ class TransferCenter:
                 }
             )
         return result
+
+    def _register_performance_checkpoints(
+        self,
+        job: dict[str, Any],
+        platform: str,
+        *,
+        published_at: str = "",
+    ) -> int:
+        post_fields = {
+            "youtube": "youtube_video_id",
+            "bilibili": "bilibili_post_id",
+        }
+        post_field = post_fields.get(platform)
+        post_id = str(job.get(post_field or "") or "").strip()
+        if not post_field or not post_id:
+            return 0
+        base_text = str(published_at or job.get("updated_at") or _utc_now()).strip()
+        try:
+            base_time = datetime.fromisoformat(base_text)
+            if base_time.tzinfo is None:
+                base_time = base_time.replace(tzinfo=timezone.utc)
+            base_time = base_time.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            base_time = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        if base_time > now:
+            base_time = now
+        inserted = 0
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE transfer_metric_checkpoints
+                SET status='superseded', error_message='作品 ID 已更新'
+                WHERE job_id=? AND platform=? AND post_id<>?
+                  AND status IN ('pending', 'retry')
+                """,
+                (str(job["id"]), platform, post_id),
+            )
+            for checkpoint_hours in PERFORMANCE_CHECKPOINT_HOURS:
+                due_at = (base_time + timedelta(hours=checkpoint_hours)).isoformat(
+                    timespec="seconds"
+                )
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO transfer_metric_checkpoints (
+                        job_id, platform, post_id, checkpoint_hours, due_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(job["id"]),
+                        platform,
+                        post_id,
+                        checkpoint_hours,
+                        due_at,
+                    ),
+                )
+                inserted += int(cursor.rowcount or 0)
+        return inserted
+
+    def ensure_performance_checkpoints(self, limit: int = 500) -> int:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE transfer_metric_checkpoints AS checkpoint
+                SET status='superseded', error_message='作品 ID 已更新或移除'
+                WHERE status IN ('pending', 'retry')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transfer_jobs AS job
+                      WHERE job.id=checkpoint.job_id AND (
+                          (checkpoint.platform='youtube'
+                           AND job.youtube_video_id=checkpoint.post_id)
+                          OR (checkpoint.platform='bilibili'
+                              AND job.bilibili_post_id=checkpoint.post_id)
+                      )
+                  )
+                """
+            )
+        inserted = 0
+        for job in self.list_published_jobs(limit=limit):
+            inserted += self._register_performance_checkpoints(job, "youtube")
+            inserted += self._register_performance_checkpoints(job, "bilibili")
+        return inserted
+
+    def get_performance_sync_status(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS total
+                FROM transfer_metric_checkpoints GROUP BY status
+                """
+            ).fetchall()
+            next_due = conn.execute(
+                """
+                SELECT MIN(due_at) AS due_at FROM transfer_metric_checkpoints
+                WHERE status IN ('pending', 'retry')
+                """
+            ).fetchone()
+        counts = {str(row["status"]): int(row["total"]) for row in rows}
+        return {
+            "enabled": _as_bool(
+                self._config().get("TRANSFER_PERFORMANCE_AUTO_SYNC_ENABLED", True)
+            ),
+            "pending": counts.get("pending", 0) + counts.get("retry", 0),
+            "completed": counts.get("complete", 0),
+            "retry": counts.get("retry", 0),
+            "next_due_at": str(next_due["due_at"] or "") if next_due else "",
+        }
+
+    def sync_due_performance_metrics(
+        self,
+        *,
+        youtube_fetcher: Callable[
+            [list[str]], dict[str, dict[str, int]]
+        ] | None = None,
+        bilibili_fetcher: Callable[[str], dict[str, int]] | None = None,
+    ) -> dict[str, Any]:
+        if not _as_bool(
+            self._config().get("TRANSFER_PERFORMANCE_AUTO_SYNC_ENABLED", True)
+        ):
+            return {"enabled": False, "due_checkpoints": 0, "completed": 0, "failed": 0}
+        if not self._performance_sync_lock.acquire(blocking=False):
+            return {
+                "enabled": True,
+                "busy": True,
+                "due_checkpoints": 0,
+                "completed": 0,
+                "failed": 0,
+            }
+        try:
+            self.ensure_performance_checkpoints()
+            now = _utc_now()
+            retry_cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=6)
+            ).isoformat(timespec="seconds")
+            with self._connect() as conn:
+                due_rows = conn.execute(
+                    """
+                    SELECT * FROM transfer_metric_checkpoints
+                    WHERE status IN ('pending', 'retry') AND due_at <= ?
+                      AND (last_attempt_at = '' OR last_attempt_at <= ?)
+                    ORDER BY due_at ASC LIMIT 100
+                    """,
+                    (now, retry_cutoff),
+                ).fetchall()
+            due = [dict(row) for row in due_rows]
+            if not due:
+                return {
+                    "enabled": True,
+                    "due_checkpoints": 0,
+                    "completed": 0,
+                    "failed": 0,
+                }
+            targets = {
+                (str(row["job_id"]), str(row["platform"])) for row in due
+            }
+            sync_result = self.sync_performance_metrics(
+                youtube_fetcher=youtube_fetcher,
+                bilibili_fetcher=bilibili_fetcher,
+                limit=500,
+                job_platforms=targets,
+            )
+            outcomes = {
+                (str(item["job_id"]), str(item["platform"])): item
+                for item in sync_result.get("outcomes") or []
+            }
+            completed = 0
+            failed = 0
+            with self._connect() as conn:
+                for row in due:
+                    key = (str(row["job_id"]), str(row["platform"]))
+                    outcome = outcomes.get(key) or {
+                        "status": "failed",
+                        "message": "未找到待同步作品",
+                    }
+                    if outcome.get("status") in {"synced", "unchanged"}:
+                        status = "complete"
+                        completed_at = now
+                        error_message = ""
+                        completed += 1
+                    else:
+                        status = "retry"
+                        completed_at = ""
+                        error_message = _safe_error(outcome.get("message"))
+                        failed += 1
+                    conn.execute(
+                        """
+                        UPDATE transfer_metric_checkpoints
+                        SET status=?, attempt_count=attempt_count+1,
+                            last_attempt_at=?, completed_at=?, error_message=?
+                        WHERE job_id=? AND platform=? AND post_id=?
+                          AND checkpoint_hours=?
+                        """,
+                        (
+                            status,
+                            now,
+                            completed_at,
+                            error_message,
+                            row["job_id"],
+                            row["platform"],
+                            row["post_id"],
+                            row["checkpoint_hours"],
+                        ),
+                    )
+            return {
+                "enabled": True,
+                "due_checkpoints": len(due),
+                "completed": completed,
+                "failed": failed,
+                "synced": int(sync_result.get("synced") or 0),
+                "unchanged": int(sync_result.get("unchanged") or 0),
+            }
+        finally:
+            self._performance_sync_lock.release()
 
     def get_performance_summary(self, days: int = 7) -> dict[str, Any]:
         days = max(1, min(365, int(days)))
@@ -5013,6 +5296,7 @@ class TransferCenter:
                             progress_message=f"正在上传到 YouTube {progress * 100:.0f}%",
                         ),
                     )
+                    youtube_published_at = _utc_now()
                     self._update_job(
                         job_id,
                         youtube_video_id=youtube_video_id,
@@ -5020,6 +5304,13 @@ class TransferCenter:
                         progress_percent=99,
                         progress_message="YouTube 上传完成",
                     )
+                    published_job = self.get_job(job_id)
+                    if published_job:
+                        self._register_performance_checkpoints(
+                            published_job,
+                            "youtube",
+                            published_at=youtube_published_at,
+                        )
                 except Exception as exc:
                     friendly, retryable, reconnect_required = (
                         _friendly_youtube_publish_error(exc)
@@ -5072,6 +5363,7 @@ class TransferCenter:
                             progress_message=f"正在上传到 B站 {progress * 100:.0f}%",
                         ),
                     )
+                    bilibili_published_at = _utc_now()
                     self._update_job(
                         job_id,
                         bilibili_post_id=bilibili_post_id,
@@ -5079,6 +5371,13 @@ class TransferCenter:
                         progress_percent=99,
                         progress_message="B站上传完成",
                     )
+                    published_job = self.get_job(job_id)
+                    if published_job:
+                        self._register_performance_checkpoints(
+                            published_job,
+                            "bilibili",
+                            published_at=bilibili_published_at,
+                        )
                 except Exception as exc:
                     safe_message = _safe_error(exc)
                     needs_login = "登录" in safe_message or "cookie" in safe_message.lower()
@@ -5186,6 +5485,16 @@ class TransferCenter:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=30,
+        )
+        self._scheduler.add_job(
+            self.sync_due_performance_metrics,
+            "interval",
+            minutes=30,
+            id="transfer-center-performance-sync",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=900,
         )
         self._scheduler.add_job(
             self.run_maintenance,

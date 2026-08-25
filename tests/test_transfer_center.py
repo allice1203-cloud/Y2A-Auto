@@ -1669,6 +1669,172 @@ def test_sync_performance_marks_platforms_without_data_permission_manual(center)
     ]
 
 
+def test_performance_checkpoints_are_persistent_and_idempotent(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1checkpoint1", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        youtube_video_id="youtube-checkpoint-1",
+        status="completed",
+    )
+    published_at = (
+        datetime.now(timezone.utc) - timedelta(hours=2)
+    ).isoformat(timespec="seconds")
+    job = center.get_job(job_id)
+
+    first = center._register_performance_checkpoints(
+        job, "youtube", published_at=published_at
+    )
+    second = center._register_performance_checkpoints(
+        job, "youtube", published_at=published_at
+    )
+
+    with center._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT checkpoint_hours, status FROM transfer_metric_checkpoints
+            WHERE job_id=? AND platform='youtube' ORDER BY checkpoint_hours
+            """,
+            (job_id,),
+        ).fetchall()
+    assert first == 3
+    assert second == 0
+    assert [row["checkpoint_hours"] for row in rows] == [24, 72, 168]
+    assert {row["status"] for row in rows} == {"pending"}
+
+
+def test_performance_checkpoints_supersede_pending_old_post(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1checkpoint2", ["youtube"]
+    )
+    center._update_job(job_id, youtube_video_id="youtube-old", status="completed")
+    center._register_performance_checkpoints(center.get_job(job_id), "youtube")
+    center._update_job(job_id, youtube_video_id="youtube-new")
+
+    inserted = center._register_performance_checkpoints(
+        center.get_job(job_id), "youtube"
+    )
+
+    with center._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT post_id, status, COUNT(*) AS total
+            FROM transfer_metric_checkpoints WHERE job_id=?
+            GROUP BY post_id, status ORDER BY post_id
+            """,
+            (job_id,),
+        ).fetchall()
+    assert inserted == 3
+    assert [dict(row) for row in rows] == [
+        {"post_id": "youtube-new", "status": "pending", "total": 3},
+        {"post_id": "youtube-old", "status": "superseded", "total": 3},
+    ]
+
+
+def test_due_performance_sync_completes_all_due_checkpoints_once(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1autosync001", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        youtube_video_id="youtube-auto-sync-1",
+        status="completed",
+    )
+    old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+        timespec="seconds"
+    )
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET updated_at=? WHERE id=?", (old, job_id)
+        )
+    fetch_calls = []
+
+    def youtube_fetcher(video_ids):
+        fetch_calls.append(video_ids)
+        return {
+            "youtube-auto-sync-1": {"views": 500, "likes": 20, "comments": 4}
+        }
+
+    first = center.sync_due_performance_metrics(
+        youtube_fetcher=youtube_fetcher,
+        bilibili_fetcher=lambda _bvid: {},
+    )
+    restarted = transfer_module.TransferCenter(config_provider=lambda: {})
+    second = restarted.sync_due_performance_metrics(
+        youtube_fetcher=lambda _ids: pytest.fail("已完成检查点不应重复同步"),
+        bilibili_fetcher=lambda _bvid: {},
+    )
+
+    assert fetch_calls == [["youtube-auto-sync-1"]]
+    assert first["due_checkpoints"] == 3
+    assert first["completed"] == 3
+    assert first["synced"] == 1
+    assert second["due_checkpoints"] == 0
+    with center._connect() as conn:
+        rows = conn.execute(
+            "SELECT status, attempt_count FROM transfer_metric_checkpoints WHERE job_id=?",
+            (job_id,),
+        ).fetchall()
+    assert len(rows) == 3
+    assert {row["status"] for row in rows} == {"complete"}
+    assert {row["attempt_count"] for row in rows} == {1}
+
+
+def test_due_performance_sync_failure_uses_six_hour_retry_cooldown(center):
+    job_id = center.add_manual_job(
+        "https://www.douyin.com/video/1234567890123456001", ["bilibili"]
+    )
+    center._update_job(
+        job_id,
+        bilibili_post_id="BV1xx411c7mD",
+        status="completed",
+    )
+    old = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat(
+        timespec="seconds"
+    )
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET updated_at=? WHERE id=?", (old, job_id)
+        )
+
+    first = center.sync_due_performance_metrics(
+        youtube_fetcher=lambda _ids: {},
+        bilibili_fetcher=lambda _bvid: (_ for _ in ()).throw(
+            RuntimeError("temporary unavailable")
+        ),
+    )
+    second = center.sync_due_performance_metrics(
+        youtube_fetcher=lambda _ids: {},
+        bilibili_fetcher=lambda _bvid: pytest.fail("冷却期内不应重试"),
+    )
+
+    assert first["due_checkpoints"] == 3
+    assert first["failed"] == 3
+    assert second["due_checkpoints"] == 0
+    status = center.get_performance_sync_status()
+    assert status["retry"] == 3
+    assert status["pending"] == 3
+
+
+def test_due_performance_sync_respects_disabled_config(center):
+    center._config_provider = lambda: {
+        "TRANSFER_PERFORMANCE_AUTO_SYNC_ENABLED": False
+    }
+
+    result = center.sync_due_performance_metrics(
+        youtube_fetcher=lambda _ids: pytest.fail("关闭后不应请求平台"),
+        bilibili_fetcher=lambda _bvid: pytest.fail("关闭后不应请求平台"),
+    )
+
+    assert result == {
+        "enabled": False,
+        "due_checkpoints": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+
+
 def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
     database = sqlite3.connect(tmp_path / "legacy.db")
     database.row_factory = sqlite3.Row

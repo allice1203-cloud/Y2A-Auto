@@ -59,4 +59,8 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert "@app.route('/transfer-center/performance/sync', methods=['POST'])" in app_source
     assert "def transfer_center_sync_performance():" in app_source
     assert "url_for('transfer_center_sync_performance')" in center
-    assert "不会覆盖已手工填写" in center
+    assert "不覆盖已手工填写" in center
+    assert "transfer-center-performance-sync" in (
+        ROOT / "modules" / "transfer_center.py"
+    ).read_text(encoding="utf-8")
+    assert "发布后 24 小时、72 小时和 7 天自动同步" in center

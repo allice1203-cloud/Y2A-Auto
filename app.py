@@ -3613,6 +3613,7 @@ def transfer_center_index():
         archive_summaries=center.list_archive_summaries(),
         published_jobs=center.list_published_jobs(limit=100),
         performance=center.get_performance_summary(days=7),
+        performance_sync=center.get_performance_sync_status(),
         transfer_config={
             'x_mode': 'manual_free',
             'youtube_connected': youtube_state.get('connected', False),

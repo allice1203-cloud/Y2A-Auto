@@ -264,7 +264,11 @@
             </div>
         </div>
         {% if published_jobs %}
-        <div class="small text-muted mb-3">YouTube 自动更新播放、点赞、评论；B站额外更新分享。自动同步不会覆盖已手工填写的完播率、收益、成本和制作特征。</div>
+        <div class="small text-muted mb-3">
+            <span class="badge {{ 'bg-success' if performance_sync.enabled else 'bg-secondary' }} me-1">自动采样{{ '已开启' if performance_sync.enabled else '已关闭' }}</span>
+            发布后 24 小时、72 小时和 7 天自动同步，待执行 {{ performance_sync.pending }} 个，已完成 {{ performance_sync.completed }} 个。
+            YouTube 自动更新播放、点赞、评论；B站额外更新分享。不覆盖已手工填写的完播率、收益、成本和制作特征。
+        </div>
         <form method="post" action="{{ url_for('transfer_center_record_performance') }}" class="row g-3">
             <div class="col-md-4"><label class="form-label">已发布任务</label><select class="form-select" name="job_id" required>{% for job in published_jobs %}<option value="{{ job.id }}">{{ job.title or job.id[:8] }}</option>{% endfor %}</select></div>
             <div class="col-md-2"><label class="form-label">平台</label><select class="form-select" name="platform" required><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="youtube">YouTube</option><option value="x">X</option><option value="tiktok">TikTok</option></select></div>
