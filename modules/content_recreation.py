@@ -179,6 +179,13 @@ def _build_executable_segments(
 
     selected = _sample_evenly(windows, 8)
     stages = ["开场钩子", "背景交代", "核心信息", "验证与反例", "本地案例", "观点收束", "行动建议", "结尾互动"]
+    replacement_indexes: set[int] = set()
+    if len(selected) >= 4:
+        replacement_indexes.update({0, len(selected) - 1})
+    if len(selected) >= 6:
+        replacement_indexes.add(len(selected) // 2)
+    elif len(selected) == 3:
+        replacement_indexes.add(1)
     segments: list[dict[str, Any]] = []
     for index, window in enumerate(selected):
         start = round(float(window["source_start"]), 2)
@@ -190,19 +197,27 @@ def _build_executable_segments(
             if index == 0
             else "对这段信息加入核验、限定条件和自己的判断。"
         )
+        action = "replace" if index in replacement_indexes else "trim"
+        source_action = (
+            f"用零成本本地信息卡替换 {start:.1f}-{start + duration:.1f} 秒画面"
+            if action == "replace"
+            else f"保留 {start:.1f}-{start + duration:.1f} 秒的必要信息，删除停顿和重复表达"
+        )
         segments.append(
             {
                 "stage": stages[min(index, len(stages) - 1)],
                 "source_start": start,
                 "source_end": round(start + duration, 2),
                 "duration": duration,
-                "action": "trim",
-                "source_action": (
-                    f"保留 {start:.1f}-{start + duration:.1f} 秒的必要信息，删除停顿和重复表达"
-                ),
+                "action": action,
+                "source_action": source_action,
                 "narration": narration,
                 "visual": (
-                    f"原片信息：{transcript}；交替加入信息卡或 B-roll"
+                    f"围绕“{transcript}”制作无文字信息卡与电影式慢运镜"
+                    if action == "replace" and transcript
+                    else "制作与本段观点对应的无文字信息卡与电影式慢运镜"
+                    if action == "replace"
+                    else f"原片信息：{transcript}；交替加入信息卡或 B-roll"
                     if transcript
                     else "使用该时间段的必要原画面，交替加入信息卡或 B-roll"
                 ),

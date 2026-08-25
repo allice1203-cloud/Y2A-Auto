@@ -3188,7 +3188,13 @@ class TransferCenter:
             included = action != "exclude"
             if not included:
                 excluded += 1
-            visual_prompt = visual_prompts[index % len(visual_prompts)] if visual_prompts else ""
+            shared_visual_prompt = (
+                visual_prompts[index % len(visual_prompts)] if visual_prompts else ""
+            )
+            segment_visual = str(segment.get("visual") or "").strip()
+            visual_prompt = "；".join(
+                item for item in (segment_visual, shared_visual_prompt) if item
+            )
             asset_hint = broll[index % len(broll)] if broll else ""
             stage = str(segment.get("stage") or f"镜头 {index + 1}")[:80]
             update = {
@@ -3224,6 +3230,189 @@ class TransferCenter:
             "excluded_shots": excluded,
             "warnings": warnings,
             "paid_generation_triggered": False,
+        }
+
+    def _wait_for_local_visual_version(
+        self,
+        session: requests.Session,
+        base_url: str,
+        auth_headers: dict[str, str],
+        shot_id: str,
+        version_id: str,
+    ) -> None:
+        timeout = int(self._config().get("TRANSFER_MPT_LOCAL_VISUAL_TIMEOUT_SECONDS") or 600)
+        deadline = time.monotonic() + max(30, timeout)
+        while time.monotonic() < deadline:
+            shot = self._money_printer_json(
+                session,
+                base_url,
+                auth_headers,
+                "GET",
+                f"/api/v1/shots/{quote(shot_id)}",
+                timeout=(5, 30),
+            )
+            version = next(
+                (
+                    item
+                    for item in (shot.get("versions") or [])
+                    if str(item.get("version_id") or "") == version_id
+                ),
+                None,
+            )
+            if version and str(version.get("status") or "") == "ready":
+                return
+            if version and str(version.get("status") or "") == "failed":
+                raise RuntimeError(str(version.get("error") or "本地画面生成失败"))
+            time.sleep(2)
+        raise TimeoutError("本地画面生成超时")
+
+    def _materialize_local_replacement_shots(
+        self,
+        session: requests.Session,
+        base_url: str,
+        auth_headers: dict[str, str],
+        project_id: str,
+        plan: dict[str, Any],
+        *,
+        aspect: str,
+    ) -> dict[str, Any]:
+        response = self._money_printer_json(
+            session,
+            base_url,
+            auth_headers,
+            "GET",
+            f"/api/v1/projects/{project_id}/shots?page=1&page_size=500",
+        )
+        shots = response.get("shots") if isinstance(response.get("shots"), list) else []
+        segments = [item for item in (plan.get("segment_plan") or []) if isinstance(item, dict)]
+        candidates = [
+            (index, segment)
+            for index, segment in enumerate(segments[: len(shots)])
+            if str(segment.get("action") or "").lower() == "replace"
+        ]
+        max_local_visuals = 3
+        selected_candidates = candidates[:max_local_visuals]
+        completed = 0
+        reused = 0
+        warnings: list[str] = []
+        if len(candidates) > max_local_visuals:
+            warnings.append(
+                f"替换镜头共 {len(candidates)} 个，本次按零成本上限先生成 {max_local_visuals} 个"
+            )
+
+        for index, segment in selected_candidates:
+            shot = shots[index]
+            shot_id = str(shot.get("shot_id") or "")
+            if not shot_id:
+                warnings.append(f"第 {index + 1} 个镜头缺少编号，已保留原片")
+                continue
+            prompt = str(
+                segment.get("visual")
+                or segment.get("narration")
+                or segment.get("stage")
+                or "原创信息卡"
+            )[:2000]
+            existing = next(
+                (
+                    version
+                    for version in reversed(shot.get("versions") or [])
+                    if version.get("provider") == "local_motion"
+                    and str(version.get("prompt") or "") == prompt
+                    and str(version.get("status") or "") in {"queued", "generating", "ready"}
+                ),
+                None,
+            )
+            try:
+                if existing:
+                    version_id = str(existing.get("version_id") or "")
+                    reused += 1
+                else:
+                    generated = self._money_printer_json(
+                        session,
+                        base_url,
+                        auth_headers,
+                        "POST",
+                        f"/api/v1/shots/{quote(shot_id)}/generate",
+                        json={
+                            "provider": "local_motion",
+                            "model": "cinematic-pan-zoom",
+                            "resolution": "720p",
+                            "duration": min(15.0, max(1.0, float(segment.get("duration") or 3))),
+                            "aspect_ratio": aspect,
+                            "native_audio": False,
+                            "prompt": prompt,
+                            "idempotency_key": (
+                                f"transfer-local-{project_id}-{shot_id}-"
+                                f"{float(segment.get('source_start') or 0):.2f}"
+                            ),
+                        },
+                    )
+                    version = generated.get("version") if isinstance(generated.get("version"), dict) else {}
+                    version_id = str(version.get("version_id") or "")
+                if not version_id:
+                    raise RuntimeError("本地画面生成未返回版本编号")
+                self._wait_for_local_visual_version(
+                    session, base_url, auth_headers, shot_id, version_id
+                )
+                original_source_start = max(
+                    0.0, float(segment.get("source_start") or 0)
+                )
+                self._money_printer_json(
+                    session,
+                    base_url,
+                    auth_headers,
+                    "PUT",
+                    f"/api/v1/shots/{quote(shot_id)}",
+                    json={
+                        "source_start": 0,
+                        "duration": min(
+                            15.0, max(1.0, float(segment.get("duration") or 3))
+                        ),
+                    },
+                )
+                try:
+                    self._money_printer_json(
+                        session,
+                        base_url,
+                        auth_headers,
+                        "POST",
+                        f"/api/v1/shots/{quote(shot_id)}/versions/{quote(version_id)}/select",
+                    )
+                except Exception:
+                    self._money_printer_json(
+                        session,
+                        base_url,
+                        auth_headers,
+                        "PUT",
+                        f"/api/v1/shots/{quote(shot_id)}",
+                        json={"source_start": original_source_start},
+                    )
+                    raise
+                completed += 1
+            except Exception as exc:
+                warnings.append(
+                    f"{str(segment.get('stage') or f'第 {index + 1} 段')}未替换："
+                    f"{_safe_error(exc, limit=180)}；已保留原片"
+                )
+
+        return {
+            "status": (
+                "skipped"
+                if not candidates
+                else "completed"
+                if completed == len(candidates)
+                else "partial"
+            ),
+            "requested_shots": len(candidates),
+            "attempted_shots": len(selected_candidates),
+            "completed_shots": completed,
+            "fallback_shots": len(candidates) - completed,
+            "reused_versions": reused,
+            "provider": "local_motion",
+            "billing_mode": "local_compute",
+            "cost_cny": 0.0,
+            "paid_generation_triggered": False,
+            "warnings": warnings,
         }
 
     def recreate_with_money_printer_async(self, job_id: str) -> bool:
@@ -3313,6 +3502,16 @@ class TransferCenter:
             aspect=aspect,
         )
         plan["timeline_sync"] = timeline_sync
+        self._update_job(job_id, mpt_message="正在生成零成本本地信息卡和运镜")
+        material_fulfillment = self._materialize_local_replacement_shots(
+            session,
+            base_url,
+            auth_headers,
+            project_id,
+            plan,
+            aspect=aspect,
+        )
+        plan["material_fulfillment"] = material_fulfillment
         self._update_job(job_id, recreation_plan_json=serialize_plan(plan))
         self._update_job(job_id, mpt_message="正在生成本地配音和字幕")
         audio = self._money_printer_json(

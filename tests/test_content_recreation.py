@@ -26,6 +26,7 @@ def test_fallback_plan_demands_substantive_original_contribution():
     assert len(plan["segment_plan"]) >= 4
     assert all(segment["duration"] <= 15 for segment in plan["segment_plan"])
     assert all("source_start" in segment for segment in plan["segment_plan"])
+    assert sum(segment["action"] == "replace" for segment in plan["segment_plan"]) >= 2
     assert set(plan["platform_versions"]) == {"bilibili", "douyin", "youtube"}
     assert plan["bilibili_title"]
     assert plan["douyin_text"]

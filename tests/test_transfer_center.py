@@ -1153,9 +1153,151 @@ def test_sync_recreation_plan_updates_existing_shots_without_paid_generation(
     assert summary["paid_generation_triggered"] is False
     assert put_calls[0][2]["json"]["source_start"] == 5.0
     assert put_calls[0][2]["json"]["asset_hint"] == "产品录屏"
-    assert put_calls[0][2]["json"]["image_prompt"] == "无文字背景"
+    assert put_calls[0][2]["json"]["image_prompt"] == "结果画面；无文字背景"
     assert put_calls[-1][2]["json"]["included"] is False
     assert not any("/generate" in path for _, path, _ in calls)
+
+
+def test_local_replacement_materialization_uses_only_zero_cost_provider(
+    center, monkeypatch
+):
+    calls = []
+
+    def fake_api(session, base_url, headers, method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET" and "/projects/" in path:
+            return {"shots": [{"shot_id": "shot-1", "versions": []}]}
+        if method == "POST" and path.endswith("/generate"):
+            return {"version": {"version_id": "version-local-1"}}
+        if method == "GET" and path.endswith("/shots/shot-1"):
+            return {
+                "shot_id": "shot-1",
+                "versions": [
+                    {
+                        "version_id": "version-local-1",
+                        "provider": "local_motion",
+                        "status": "ready",
+                    }
+                ],
+            }
+        if method == "POST" and path.endswith("/versions/version-local-1/select"):
+            return {"shot_id": "shot-1", "selected_version_id": "version-local-1"}
+        if method == "PUT" and path.endswith("/shots/shot-1"):
+            return {"shot_id": "shot-1", "source_start": 0}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(center, "_money_printer_json", fake_api)
+    summary = center._materialize_local_replacement_shots(
+        object(),
+        "http://mpt.local",
+        {"x-api-key": "test"},
+        "project-1",
+        {
+            "segment_plan": [
+                {
+                    "stage": "开场信息卡",
+                    "source_start": 0,
+                    "duration": 4,
+                    "action": "replace",
+                    "visual": "简洁的三步流程画面",
+                }
+            ]
+        },
+        aspect="9:16",
+    )
+
+    generate_body = next(
+        kwargs["json"] for method, path, kwargs in calls if path.endswith("/generate")
+    )
+    assert summary["status"] == "completed"
+    assert summary["completed_shots"] == 1
+    assert summary["provider"] == "local_motion"
+    assert summary["billing_mode"] == "local_compute"
+    assert summary["cost_cny"] == 0.0
+    assert summary["paid_generation_triggered"] is False
+    assert generate_body["provider"] == "local_motion"
+    assert "confirm_paid_generation" not in generate_body
+    reset_body = next(
+        kwargs["json"] for method, path, kwargs in calls if method == "PUT"
+    )
+    assert reset_body["source_start"] == 0
+
+
+def test_local_replacement_failure_keeps_source_as_fallback(center, monkeypatch):
+    def fake_api(session, base_url, headers, method, path, **kwargs):
+        if method == "GET":
+            return {"shots": [{"shot_id": "shot-1", "versions": []}]}
+        raise RuntimeError("本地 FFmpeg 不可用")
+
+    monkeypatch.setattr(center, "_money_printer_json", fake_api)
+    summary = center._materialize_local_replacement_shots(
+        object(),
+        "http://mpt.local",
+        {},
+        "project-1",
+        {
+            "segment_plan": [
+                {
+                    "stage": "结尾信息卡",
+                    "source_start": 50,
+                    "duration": 5,
+                    "action": "replace",
+                    "visual": "独立结论卡",
+                }
+            ]
+        },
+        aspect="16:9",
+    )
+
+    assert summary["status"] == "partial"
+    assert summary["completed_shots"] == 0
+    assert summary["fallback_shots"] == 1
+    assert "已保留原片" in summary["warnings"][0]
+
+
+def test_local_selection_failure_restores_original_source_start(center, monkeypatch):
+    put_values = []
+
+    def fake_api(session, base_url, headers, method, path, **kwargs):
+        if method == "GET" and "/projects/" in path:
+            return {"shots": [{"shot_id": "shot-1", "versions": []}]}
+        if method == "POST" and path.endswith("/generate"):
+            return {"version": {"version_id": "version-local-1"}}
+        if method == "GET" and path.endswith("/shots/shot-1"):
+            return {
+                "versions": [
+                    {"version_id": "version-local-1", "status": "ready"}
+                ]
+            }
+        if method == "PUT":
+            put_values.append(kwargs["json"]["source_start"])
+            return {"shot_id": "shot-1"}
+        if method == "POST" and path.endswith("/select"):
+            raise RuntimeError("质检未通过")
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(center, "_money_printer_json", fake_api)
+    summary = center._materialize_local_replacement_shots(
+        object(),
+        "http://mpt.local",
+        {},
+        "project-1",
+        {
+            "segment_plan": [
+                {
+                    "stage": "中段信息卡",
+                    "source_start": 40,
+                    "duration": 5,
+                    "action": "replace",
+                    "visual": "关键数据卡",
+                }
+            ]
+        },
+        aspect="16:9",
+    )
+
+    assert summary["fallback_shots"] == 1
+    assert put_values == [0, 40.0]
 
 
 def test_money_printer_connection_loads_private_credential(center, monkeypatch, tmp_path):

@@ -619,6 +619,22 @@
                     {% endif %}
                 </div>
                 {% endif %}
+                {% if recreation_plan.material_fulfillment %}
+                <div class="alert {{ 'alert-success' if recreation_plan.material_fulfillment.status == 'completed' else ('alert-secondary' if recreation_plan.material_fulfillment.status == 'skipped' else 'alert-warning') }} py-2 px-3 small mt-2 mb-0">
+                    {% if recreation_plan.material_fulfillment.status == 'skipped' %}
+                    当前时间线没有需要替换的镜头，已保留按时间码裁剪的原片。
+                    {% else %}
+                    零成本画面补全：已完成 {{ recreation_plan.material_fulfillment.completed_shots }}/{{ recreation_plan.material_fulfillment.attempted_shots }} 个本地运镜，
+                    费用 ¥{{ '%.2f'|format(recreation_plan.material_fulfillment.cost_cny) }}。
+                    {% if recreation_plan.material_fulfillment.fallback_shots %}
+                    未成功的 {{ recreation_plan.material_fulfillment.fallback_shots }} 个镜头已自动保留原片。
+                    {% endif %}
+                    {% if recreation_plan.material_fulfillment.warnings %}
+                    <div class="mt-1">{{ recreation_plan.material_fulfillment.warnings|join('；') }}</div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% if recreation_plan.segment_plan %}
                 <details class="border rounded-3 p-3 mt-3">
                     <summary class="small fw-semibold">查看镜头执行表</summary>
