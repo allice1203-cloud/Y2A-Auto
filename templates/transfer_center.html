@@ -237,27 +237,56 @@
     </div>
     <div class="workspace-panel-body">
         <div class="row g-3 mb-4">
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">曝光</div><strong>{{ performance.totals.impressions }}</strong></div></div>
             <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">播放</div><strong>{{ performance.totals.views }}</strong></div></div>
-            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">点赞</div><strong>{{ performance.totals.likes }}</strong></div></div>
-            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">评论</div><strong>{{ performance.totals.comments }}</strong></div></div>
-            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">分享</div><strong>{{ performance.totals.shares }}</strong></div></div>
-            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">粉丝变化</div><strong>{{ performance.totals.followers_delta }}</strong></div></div>
-            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">互动率</div><strong>{{ performance.totals.engagement_rate }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">点击率</div><strong>{{ performance.totals.ctr }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">完播率</div><strong>{{ performance.totals.completion_rate }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">涨粉转化</div><strong>{{ performance.totals.follow_conversion_rate }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">净收益</div><strong>¥{{ '%.2f'|format(performance.totals.net_revenue_cny) }}</strong></div></div>
+        </div>
+        <div class="small text-muted mb-3">
+            平均观看 {{ performance.totals.average_view_duration }} 秒 · 3 秒留存 {{ performance.totals.retention_3s }}% ·
+            互动率 {{ performance.totals.engagement_rate }}% · 每千次播放净收益 ¥{{ '%.2f'|format(performance.totals.net_rpm_cny) }} ·
+            已结算 {{ performance.totals.settled_records }} 条 · 变现受限 {{ performance.totals.restricted_records }} 条 · 违规/限流 {{ performance.totals.violation_count }} 次
         </div>
         <div class="alert alert-primary">
             {% for suggestion in performance.suggestions %}<div>{{ suggestion }}</div>{% endfor %}
+            <div class="border-top border-primary-subtle mt-2 pt-2">
+                下一批{% if not performance.strategy.sample_size %}（暂用默认值）{% endif %}：{{ performance.strategy.hook_guidance }}；{{ performance.strategy.duration_guidance }}；
+                零成本本地画面目标占比约 {{ performance.strategy.target_local_visual_ratio }}%。
+            </div>
         </div>
         {% if published_jobs %}
         <form method="post" action="{{ url_for('transfer_center_record_performance') }}" class="row g-3">
-            <div class="col-md-5"><label class="form-label">已发布任务</label><select class="form-select" name="job_id" required>{% for job in published_jobs %}<option value="{{ job.id }}">{{ job.title or job.id[:8] }}</option>{% endfor %}</select></div>
+            <div class="col-md-4"><label class="form-label">已发布任务</label><select class="form-select" name="job_id" required>{% for job in published_jobs %}<option value="{{ job.id }}">{{ job.title or job.id[:8] }}</option>{% endfor %}</select></div>
             <div class="col-md-2"><label class="form-label">平台</label><select class="form-select" name="platform" required><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="youtube">YouTube</option><option value="x">X</option><option value="tiktok">TikTok</option></select></div>
-            <div class="col-md-1"><label class="form-label">播放</label><input class="form-control" type="number" name="views" min="0" value="0"></div>
-            <div class="col-md-1"><label class="form-label">点赞</label><input class="form-control" type="number" name="likes" min="0" value="0"></div>
-            <div class="col-md-1"><label class="form-label">评论</label><input class="form-control" type="number" name="comments" min="0" value="0"></div>
-            <div class="col-md-1"><label class="form-label">分享</label><input class="form-control" type="number" name="shares" min="0" value="0"></div>
-            <div class="col-md-1"><label class="form-label">涨粉</label><input class="form-control" type="number" name="followers_delta" value="0"></div>
-            <div class="col-md-10"><label class="form-label">备注</label><input class="form-control" name="note" placeholder="例如：发布后 24 小时数据"></div>
-            <div class="col-md-2 d-flex align-items-end"><button class="btn btn-primary w-100">记录并更新建议</button></div>
+            <div class="col-md-2"><label class="form-label">曝光</label><input class="form-control" type="number" name="impressions" min="0" value="0"></div>
+            <div class="col-md-2"><label class="form-label">播放</label><input class="form-control" type="number" name="views" min="0" value="0"></div>
+            <div class="col-md-2"><label class="form-label">完播率 %</label><input class="form-control" type="number" name="completion_rate" min="0" max="100" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">平均观看秒数</label><input class="form-control" type="number" name="average_view_duration" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">3 秒留存 %</label><input class="form-control" type="number" name="retention_3s" min="0" max="100" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">涨粉</label><input class="form-control" type="number" name="followers_delta" value="0"></div>
+            <div class="col-md-2"><label class="form-label">平台收益 ¥</label><input class="form-control" type="number" name="revenue_cny" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">制作成本 ¥</label><input class="form-control" type="number" name="production_cost_cny" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">变现状态</label><select class="form-select" name="monetization_status"><option value="unknown">尚未确认</option><option value="eligible">已具备资格</option><option value="settled">已结算</option><option value="restricted">被限制</option><option value="ineligible">不具备资格</option></select></div>
+            <div class="col-12">
+                <details class="border rounded-3 p-3">
+                    <summary class="fw-semibold">补充互动和制作特征（可选）</summary>
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-2"><label class="form-label">点赞</label><input class="form-control" type="number" name="likes" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">评论</label><input class="form-control" type="number" name="comments" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">分享</label><input class="form-control" type="number" name="shares" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">违规/限流次数</label><input class="form-control" type="number" name="violation_count" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">开场类型</label><select class="form-select" name="hook_type"><option value="">未记录</option><option value="result_first">结果前置</option><option value="question">问题开场</option><option value="conflict">冲突开场</option><option value="story">故事开场</option><option value="other">其他</option></select></div>
+                        <div class="col-md-2"><label class="form-label">声音类型</label><select class="form-select" name="voice_type"><option value="">未记录</option><option value="local_tts">本地 TTS</option><option value="ai_voice">AI 配音</option><option value="human">真人配音</option><option value="mixed">混合</option></select></div>
+                        <div class="col-md-2"><label class="form-label">原片画面 %</label><input class="form-control" type="number" name="source_visual_ratio" min="0" max="100" step="0.01" placeholder="自动计算"></div>
+                        <div class="col-md-2"><label class="form-label">本地画面 %</label><input class="form-control" type="number" name="local_visual_ratio" min="0" max="100" step="0.01" placeholder="自动计算"></div>
+                        <div class="col-md-2"><label class="form-label">AI 画面 %</label><input class="form-control" type="number" name="ai_visual_ratio" min="0" max="100" step="0.01" value="0"></div>
+                        <div class="col-md-6"><label class="form-label">备注</label><input class="form-control" name="note" placeholder="例如：发布后 24 小时数据"></div>
+                    </div>
+                </details>
+            </div>
+            <div class="col-12 d-flex justify-content-end"><button class="btn btn-primary px-4">记录并更新建议</button></div>
         </form>
         {% else %}
         <div class="text-muted">完成第一条平台发布后，这里会开放效果录入。</div>

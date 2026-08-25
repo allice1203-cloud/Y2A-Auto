@@ -17,6 +17,7 @@ import http.cookiejar
 import ipaddress
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -570,6 +571,19 @@ class TransferCenter:
                     comments INTEGER NOT NULL DEFAULT 0,
                     shares INTEGER NOT NULL DEFAULT 0,
                     followers_delta INTEGER NOT NULL DEFAULT 0,
+                    impressions INTEGER NOT NULL DEFAULT 0,
+                    average_view_duration REAL NOT NULL DEFAULT 0,
+                    completion_rate REAL NOT NULL DEFAULT 0,
+                    retention_3s REAL NOT NULL DEFAULT 0,
+                    revenue_cny REAL NOT NULL DEFAULT 0,
+                    production_cost_cny REAL NOT NULL DEFAULT 0,
+                    violation_count INTEGER NOT NULL DEFAULT 0,
+                    source_visual_ratio REAL NOT NULL DEFAULT 0,
+                    local_visual_ratio REAL NOT NULL DEFAULT 0,
+                    ai_visual_ratio REAL NOT NULL DEFAULT 0,
+                    hook_type TEXT DEFAULT '',
+                    voice_type TEXT DEFAULT '',
+                    monetization_status TEXT DEFAULT 'unknown',
                     note TEXT DEFAULT '',
                     recorded_at TEXT NOT NULL,
                     FOREIGN KEY(job_id) REFERENCES transfer_jobs(id) ON DELETE CASCADE
@@ -710,9 +724,25 @@ class TransferCenter:
             "douyin_post_id": "TEXT DEFAULT ''",
             "tiktok_post_id": "TEXT DEFAULT ''",
         }
+        metric_columns = {
+            "impressions": "INTEGER NOT NULL DEFAULT 0",
+            "average_view_duration": "REAL NOT NULL DEFAULT 0",
+            "completion_rate": "REAL NOT NULL DEFAULT 0",
+            "retention_3s": "REAL NOT NULL DEFAULT 0",
+            "revenue_cny": "REAL NOT NULL DEFAULT 0",
+            "production_cost_cny": "REAL NOT NULL DEFAULT 0",
+            "violation_count": "INTEGER NOT NULL DEFAULT 0",
+            "source_visual_ratio": "REAL NOT NULL DEFAULT 0",
+            "local_visual_ratio": "REAL NOT NULL DEFAULT 0",
+            "ai_visual_ratio": "REAL NOT NULL DEFAULT 0",
+            "hook_type": "TEXT DEFAULT ''",
+            "voice_type": "TEXT DEFAULT ''",
+            "monetization_status": "TEXT DEFAULT 'unknown'",
+        }
         for table_name, additions in (
             ("transfer_rules", rule_columns),
             ("transfer_jobs", job_columns),
+            ("transfer_metrics", metric_columns),
         ):
             existing = {
                 str(row["name"])
@@ -1636,14 +1666,83 @@ class TransferCenter:
                 raise ValueError("播放、点赞、评论和分享不能为负数")
             return value
 
+        def decimal(
+            name: str,
+            *,
+            default: float = 0.0,
+            maximum: float | None = None,
+        ) -> float:
+            raw = payload.get(name)
+            if raw is None or str(raw).strip() == "":
+                return default
+            try:
+                value = float(str(raw).strip())
+            except ValueError as exc:
+                raise ValueError("观看、比例和金额数据必须是数字") from exc
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("观看、比例和金额数据不能为负数")
+            if maximum is not None and value > maximum:
+                raise ValueError(f"{name} 不能超过 {maximum:g}")
+            return round(value, 2)
+
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        fulfillment = plan.get("material_fulfillment") if isinstance(plan, dict) else {}
+        timeline = plan.get("timeline_sync") if isinstance(plan, dict) else {}
+        mapped_shots = int((timeline or {}).get("mapped_shots") or 0)
+        local_shots = int((fulfillment or {}).get("completed_shots") or 0)
+        inferred_local_ratio = (
+            round(100 * local_shots / mapped_shots, 2) if mapped_shots else 0.0
+        )
+        ai_visual_ratio = decimal("ai_visual_ratio", maximum=100)
+        source_ratio_supplied = str(payload.get("source_visual_ratio") or "").strip() != ""
+        local_ratio_supplied = str(payload.get("local_visual_ratio") or "").strip() != ""
+        source_visual_ratio = (
+            decimal("source_visual_ratio", maximum=100)
+            if source_ratio_supplied
+            else 0.0
+        )
+        local_visual_ratio = decimal(
+            "local_visual_ratio",
+            default=(
+                max(0.0, 100.0 - source_visual_ratio - ai_visual_ratio)
+                if source_ratio_supplied and not local_ratio_supplied
+                else inferred_local_ratio
+            ),
+            maximum=100,
+        )
+        if not source_ratio_supplied:
+            source_visual_ratio = max(
+                0.0, 100.0 - local_visual_ratio - ai_visual_ratio
+            )
+        if source_visual_ratio + local_visual_ratio + ai_visual_ratio > 100.01:
+            raise ValueError("原片、本地画面和 AI 画面占比合计不能超过 100%")
+
+        hook_type = str(payload.get("hook_type") or "").strip().lower()
+        if hook_type not in {"", "result_first", "question", "conflict", "story", "other"}:
+            raise ValueError("开场类型无效")
+        voice_type = str(payload.get("voice_type") or "").strip().lower()
+        if voice_type not in {"", "local_tts", "ai_voice", "human", "mixed"}:
+            raise ValueError("声音类型无效")
+        monetization_status = str(
+            payload.get("monetization_status") or "unknown"
+        ).strip().lower()
+        if monetization_status not in {
+            "unknown", "eligible", "ineligible", "restricted", "settled"
+        }:
+            raise ValueError("变现状态无效")
+
         record_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO transfer_metrics (
                     id, job_id, platform, views, likes, comments, shares,
-                    followers_delta, note, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    followers_delta, impressions, average_view_duration,
+                    completion_rate, retention_3s, revenue_cny,
+                    production_cost_cny, violation_count, source_visual_ratio,
+                    local_visual_ratio, ai_visual_ratio, hook_type, voice_type,
+                    monetization_status, note, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record_id,
@@ -1654,6 +1753,19 @@ class TransferCenter:
                     metric("comments"),
                     metric("shares"),
                     metric("followers_delta", signed=True),
+                    metric("impressions"),
+                    decimal("average_view_duration", maximum=86400),
+                    decimal("completion_rate", maximum=100),
+                    decimal("retention_3s", maximum=100),
+                    decimal("revenue_cny", maximum=100_000_000),
+                    decimal("production_cost_cny", maximum=100_000_000),
+                    metric("violation_count"),
+                    source_visual_ratio,
+                    local_visual_ratio,
+                    ai_visual_ratio,
+                    hook_type,
+                    voice_type,
+                    monetization_status,
                     str(payload.get("note") or "").strip()[:500],
                     _utc_now(),
                 ),
@@ -1675,16 +1787,48 @@ class TransferCenter:
                     ) AS rank_no
                     FROM transfer_metrics m WHERE m.recorded_at >= ?
                 )
-                SELECT r.*, j.title, j.source_platform, j.recreation_mode
+                SELECT r.*, j.title, j.source_platform, j.recreation_mode,
+                       j.processing_mode, j.duration
                 FROM ranked r JOIN transfer_jobs j ON j.id=r.job_id
                 WHERE r.rank_no=1 ORDER BY r.views DESC
                 """,
                 (cutoff,),
             ).fetchall()
         records = [dict(row) for row in rows]
+        for row in records:
+            views = int(row.get("views") or 0)
+            impressions = int(row.get("impressions") or 0)
+            row["ctr"] = round(100 * views / impressions, 2) if impressions else 0.0
+            row["engagement_rate"] = (
+                round(
+                    100
+                    * (
+                        int(row.get("likes") or 0)
+                        + int(row.get("comments") or 0)
+                        + int(row.get("shares") or 0)
+                    )
+                    / views,
+                    2,
+                )
+                if views
+                else 0.0
+            )
+            row["follow_conversion_rate"] = (
+                round(100 * int(row.get("followers_delta") or 0) / views, 2)
+                if views
+                else 0.0
+            )
+            row["net_revenue_cny"] = round(
+                float(row.get("revenue_cny") or 0)
+                - float(row.get("production_cost_cny") or 0),
+                2,
+            )
         totals = {
             key: sum(int(row.get(key) or 0) for row in records)
-            for key in ("views", "likes", "comments", "shares", "followers_delta")
+            for key in (
+                "impressions", "views", "likes", "comments", "shares",
+                "followers_delta", "violation_count",
+            )
         }
         totals["engagement_rate"] = (
             round(
@@ -1696,14 +1840,148 @@ class TransferCenter:
             if totals["views"]
             else 0.0
         )
+        totals["ctr"] = (
+            round(100 * totals["views"] / totals["impressions"], 2)
+            if totals["impressions"]
+            else 0.0
+        )
+        totals["follow_conversion_rate"] = (
+            round(100 * totals["followers_delta"] / totals["views"], 2)
+            if totals["views"]
+            else 0.0
+        )
+
+        def weighted_average(field: str) -> float:
+            visual_fields = {
+                "source_visual_ratio", "local_visual_ratio", "ai_visual_ratio"
+            }
+            usable = [
+                row
+                for row in records
+                if int(row.get("views") or 0) > 0
+                and (
+                    field not in visual_fields
+                    or sum(
+                        float(row.get(item) or 0)
+                        for item in visual_fields
+                    )
+                    > 0
+                )
+            ]
+            weight = sum(int(row.get("views") or 0) for row in usable)
+            return (
+                round(
+                    sum(
+                        float(row.get(field) or 0) * int(row.get("views") or 0)
+                        for row in usable
+                    )
+                    / weight,
+                    2,
+                )
+                if weight
+                else 0.0
+            )
+
+        for field in (
+            "average_view_duration", "completion_rate", "retention_3s",
+            "source_visual_ratio", "local_visual_ratio", "ai_visual_ratio",
+        ):
+            totals[field] = weighted_average(field)
+        totals["revenue_cny"] = round(
+            sum(float(row.get("revenue_cny") or 0) for row in records), 2
+        )
+        totals["production_cost_cny"] = round(
+            sum(float(row.get("production_cost_cny") or 0) for row in records), 2
+        )
+        totals["net_revenue_cny"] = round(
+            totals["revenue_cny"] - totals["production_cost_cny"], 2
+        )
+        totals["net_rpm_cny"] = (
+            round(1000 * totals["net_revenue_cny"] / totals["views"], 2)
+            if totals["views"]
+            else 0.0
+        )
+        totals["settled_records"] = sum(
+            str(row.get("monetization_status") or "") == "settled"
+            for row in records
+        )
+        totals["restricted_records"] = sum(
+            str(row.get("monetization_status") or "") in {"restricted", "ineligible"}
+            for row in records
+        )
         platform_views: dict[str, int] = {}
         for row in records:
             key = str(row.get("platform") or "")
             platform_views[key] = platform_views.get(key, 0) + int(row.get("views") or 0)
         top_platform = max(platform_views, key=platform_views.get) if platform_views else ""
+        visual_records = [
+            row
+            for row in records
+            if sum(
+                float(row.get(item) or 0)
+                for item in (
+                    "source_visual_ratio", "local_visual_ratio", "ai_visual_ratio"
+                )
+            )
+            > 0
+            and float(row.get("completion_rate") or 0) > 0
+        ]
+        local_records = [
+            row for row in visual_records
+            if float(row.get("local_visual_ratio") or 0) >= 20
+        ]
+        source_records = [
+            row for row in visual_records
+            if float(row.get("local_visual_ratio") or 0) < 20
+        ]
+
+        def group_completion(group: list[dict[str, Any]]) -> float:
+            weight = sum(int(row.get("views") or 0) for row in group)
+            return (
+                round(
+                    sum(
+                        float(row.get("completion_rate") or 0)
+                        * int(row.get("views") or 0)
+                        for row in group
+                    )
+                    / weight,
+                    2,
+                )
+                if weight
+                else 0.0
+            )
+
+        local_completion = group_completion(local_records)
+        source_completion = group_completion(source_records)
+        target_local_visual_ratio = 40
+        if local_completion and source_completion:
+            if local_completion >= source_completion + 5:
+                target_local_visual_ratio = 45
+            elif local_completion + 5 <= source_completion:
+                target_local_visual_ratio = 15
+            else:
+                target_local_visual_ratio = 30
+        completion_rate = float(totals.get("completion_rate") or 0)
+        retention_3s = float(totals.get("retention_3s") or 0)
+        strategy = {
+            "sample_size": len(records),
+            "hook_guidance": (
+                "前 3 秒直接给出结果或冲突"
+                if retention_3s and retention_3s < 65
+                else "保持当前开场节奏，继续做钩子对照"
+            ),
+            "duration_guidance": (
+                "优先 30-60 秒高密度版"
+                if completion_rate and completion_rate < 35
+                else "可测试 60-120 秒完整信息版"
+                if completion_rate >= 55
+                else "优先 45-90 秒，保留核心解释"
+            ),
+            "target_local_visual_ratio": target_local_visual_ratio,
+        }
         suggestions = []
         if not records:
-            suggestions.append("发布后录入一次播放、点赞、评论和分享，系统才能形成对比建议。")
+            suggestions.append("发布后录入曝光、播放、完播和收益，系统才能形成真实的下一轮策略。")
         else:
             if top_platform:
                 suggestions.append(
@@ -1715,12 +1993,32 @@ class TransferCenter:
                 suggestions.append("互动率偏低，下一轮将开场结论前置，并在结尾增加一个具体问题。")
             if totals["shares"] < totals["comments"]:
                 suggestions.append("转发弱于评论，可增加清单、步骤或可保存的结论卡。")
+            if totals["impressions"] and totals["ctr"] < 4:
+                suggestions.append("曝光已有但点击率低于 4%，优先改标题与封面，不要先加长正片。")
+            if retention_3s and retention_3s < 65:
+                suggestions.append("3 秒留存偏低，下一批改为结果前置，删掉账号介绍式片头。")
+            if completion_rate and completion_rate < 35:
+                suggestions.append("完播率偏低，下一批优先缩短到 30-60 秒并减少重复解释。")
+            if totals["views"] and totals["follow_conversion_rate"] < 0.3:
+                suggestions.append("播放到涨粉的转化偏低，结尾应强化系列定位和下一期承诺。")
+            if totals["violation_count"]:
+                suggestions.append("已记录违规或限流，同类选题暂停自动复制，先复核标题、画面和平台状态。")
+            if totals["restricted_records"]:
+                suggestions.append("存在变现受限或不具备资格的样本，该平台暂不作为收益预测依据。")
+            if totals["net_revenue_cny"] < 0:
+                suggestions.append("当前净收益为负，保持零成本本地运镜，暂不增加付费 AI 视频。")
+            if local_completion and source_completion:
+                if local_completion >= source_completion + 5:
+                    suggestions.append("本地替换画面样本的完播更高，下一批可把零成本运镜占比提到约 45%。")
+                elif local_completion + 5 <= source_completion:
+                    suggestions.append("本地信息卡样本的完播更低，下一批降到约 15%，优先保留有信息量的原片镜头。")
         return {
             "days": days,
             "records": records,
             "totals": totals,
             "top_platform": top_platform,
             "suggestions": suggestions,
+            "strategy": strategy,
         }
 
     # ---- hot candidate pool ------------------------------------------
@@ -2059,6 +2357,9 @@ class TransferCenter:
         transcript = self._timecoded_transcript(str(job.get("local_video_path") or ""))
         enriched["source_transcript"] = transcript["cues"]
         enriched["transcript_source"] = transcript["source"]
+        enriched["performance_strategy"] = self.get_performance_summary(days=30).get(
+            "strategy", {}
+        )
         return enriched
 
     def _ensure_archive_markdown(self, job_id: str) -> str:

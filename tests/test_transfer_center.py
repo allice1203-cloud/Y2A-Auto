@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1410,12 +1411,157 @@ def test_performance_summary_uses_latest_platform_snapshot(center):
     assert any("互动率较高" in item for item in summary["suggestions"])
 
 
+def test_performance_summary_calculates_retention_profit_and_visual_mix(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1businessloop", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        title="收益闭环测试",
+        youtube_video_id="youtube-business-1",
+        status="completed",
+        recreation_plan_json=json.dumps(
+            {
+                "timeline_sync": {"mapped_shots": 4},
+                "material_fulfillment": {"completed_shots": 2},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    center.record_performance(
+        job_id,
+        {
+            "platform": "youtube",
+            "impressions": 2000,
+            "views": 1000,
+            "likes": 50,
+            "comments": 10,
+            "shares": 5,
+            "followers_delta": 8,
+            "average_view_duration": 42.5,
+            "completion_rate": 40,
+            "retention_3s": 60,
+            "revenue_cny": 50,
+            "production_cost_cny": 5,
+            "monetization_status": "settled",
+        },
+    )
+
+    summary = center.get_performance_summary(days=7)
+    record = summary["records"][0]
+
+    assert record["ctr"] == 50.0
+    assert record["net_revenue_cny"] == 45.0
+    assert record["source_visual_ratio"] == 50.0
+    assert record["local_visual_ratio"] == 50.0
+    assert summary["totals"]["average_view_duration"] == 42.5
+    assert summary["totals"]["completion_rate"] == 40.0
+    assert summary["totals"]["follow_conversion_rate"] == 0.8
+    assert summary["totals"]["net_rpm_cny"] == 45.0
+    assert "结果" in summary["strategy"]["hook_guidance"]
+
+
+def test_performance_strategy_compares_local_visual_completion(center):
+    for suffix, local_ratio, completion in (
+        ("local", 40, 60),
+        ("source", 5, 35),
+    ):
+        job_id = center.add_manual_job(
+            f"https://www.bilibili.com/video/BV1strategy{suffix}", ["youtube"]
+        )
+        center._update_job(
+            job_id,
+            youtube_video_id=f"youtube-{suffix}",
+            status="completed",
+        )
+        center.record_performance(
+            job_id,
+            {
+                "platform": "youtube",
+                "views": 1000,
+                "completion_rate": completion,
+                "source_visual_ratio": 100 - local_ratio,
+                "local_visual_ratio": local_ratio,
+            },
+        )
+
+    summary = center.get_performance_summary(days=7)
+
+    assert summary["strategy"]["target_local_visual_ratio"] == 45
+    assert any("提到约 45%" in item for item in summary["suggestions"])
+
+
+def test_performance_rejects_visual_ratios_over_one_hundred(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1invalidratio", ["youtube"]
+    )
+    center._update_job(job_id, youtube_video_id="youtube-invalid", status="completed")
+
+    with pytest.raises(ValueError, match="合计不能超过"):
+        center.record_performance(
+            job_id,
+            {
+                "platform": "youtube",
+                "views": 100,
+                "source_visual_ratio": 80,
+                "local_visual_ratio": 30,
+            },
+        )
+
+
 def test_performance_rejects_platform_without_published_post(center):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1notpublished", ["youtube"]
     )
     with pytest.raises(ValueError, match="尚无已发布"):
         center.record_performance(job_id, {"platform": "youtube", "views": 1})
+
+
+def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
+    database = sqlite3.connect(tmp_path / "legacy.db")
+    database.row_factory = sqlite3.Row
+    database.executescript(
+        """
+        CREATE TABLE transfer_rules (id TEXT PRIMARY KEY);
+        CREATE TABLE transfer_jobs (
+            id TEXT PRIMARY KEY,
+            local_video_path TEXT DEFAULT '',
+            recreation_completed INTEGER DEFAULT 0,
+            source_uploader TEXT DEFAULT '',
+            source_url TEXT DEFAULT '',
+            progress_message TEXT DEFAULT ''
+        );
+        CREATE TABLE transfer_metrics (
+            id TEXT PRIMARY KEY,
+            job_id TEXT,
+            platform TEXT,
+            views INTEGER DEFAULT 0,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            followers_delta INTEGER DEFAULT 0,
+            note TEXT DEFAULT '',
+            recorded_at TEXT
+        );
+        """
+    )
+
+    transfer_module.TransferCenter._migrate_schema(database)
+    columns = {
+        row["name"]
+        for row in database.execute("PRAGMA table_info(transfer_metrics)").fetchall()
+    }
+    database.close()
+
+    assert {
+        "impressions",
+        "completion_rate",
+        "retention_3s",
+        "revenue_cny",
+        "production_cost_cny",
+        "local_visual_ratio",
+        "monetization_status",
+    }.issubset(columns)
 
 
 def test_sync_money_printer_render_downloads_and_rechecks_media(

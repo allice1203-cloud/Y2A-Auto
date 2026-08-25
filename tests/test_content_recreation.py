@@ -57,6 +57,25 @@ def test_fallback_plan_uses_real_subtitle_timecodes():
     assert all(segment["action"] in {"keep", "trim", "replace", "exclude"} for segment in segments)
 
 
+def test_performance_strategy_changes_local_visual_ratio_for_next_plan():
+    plan = generate_recreation_plan(
+        {
+            "title": "数据反馈二剪",
+            "duration": 240,
+            "performance_strategy": {
+                "sample_size": 6,
+                "target_local_visual_ratio": 15,
+                "hook_guidance": "前 3 秒直接给结果",
+            },
+        },
+        config={},
+    )
+
+    assert plan["performance_strategy"]["sample_size"] == 6
+    assert len(plan["segment_plan"]) == 8
+    assert sum(item["action"] == "replace" for item in plan["segment_plan"]) == 1
+
+
 def test_unconfirmed_rights_are_a_non_blocking_risk_hint():
     risk = build_rights_risk(
         {"rights_basis": "unconfirmed", "rights_note": "热点观察账号"}

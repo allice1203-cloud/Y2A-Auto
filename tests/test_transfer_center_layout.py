@@ -44,3 +44,7 @@ def test_standard_remix_is_the_default_review_experience():
     assert "仅提示，不阻塞" in review
     assert "来源跟踪列表" in center
     assert "value=\"unconfirmed\" selected" in center
+    assert 'name="completion_rate"' in center
+    assert 'name="revenue_cny"' in center
+    assert 'name="local_visual_ratio"' in center
+    assert "下一批{% if not performance.strategy.sample_size %}" in center
