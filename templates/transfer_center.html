@@ -261,12 +261,14 @@
             <div class="border-top border-primary-subtle mt-2 pt-2">
                 下一批{% if not performance.strategy.sample_size %}（暂用默认值）{% endif %}：{{ performance.strategy.hook_guidance }}；{{ performance.strategy.duration_guidance }}；
                 零成本本地画面目标占比约 {{ performance.strategy.target_local_visual_ratio }}%。
+                <div class="mt-1">选题动作：{{ performance.strategy.topic_guidance }}。</div>
             </div>
         </div>
         {% if published_jobs %}
         <div class="small text-muted mb-3">
             <span class="badge {{ 'bg-success' if performance_sync.enabled else 'bg-secondary' }} me-1">自动采样{{ '已开启' if performance_sync.enabled else '已关闭' }}</span>
             发布后 24 小时、72 小时和 7 天自动同步，待执行 {{ performance_sync.pending }} 个，已完成 {{ performance_sync.completed }} 个。
+            {% if performance_sync.missed %}错过历史窗口 {{ performance_sync.missed }} 个（不补造数据）。{% endif %}
             YouTube 自动更新播放、点赞、评论；B站额外更新分享。不覆盖已手工填写的完播率、收益、成本和制作特征。
         </div>
         <form method="post" action="{{ url_for('transfer_center_record_performance') }}" class="row g-3">

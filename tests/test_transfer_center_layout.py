@@ -64,3 +64,5 @@ def test_performance_panel_exposes_one_click_sync_route():
         ROOT / "modules" / "transfer_center.py"
     ).read_text(encoding="utf-8")
     assert "发布后 24 小时、72 小时和 7 天自动同步" in center
+    assert "选题动作：{{ performance.strategy.topic_guidance }}" in center
+    assert "不补造数据" in center

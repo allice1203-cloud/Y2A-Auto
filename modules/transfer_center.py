@@ -688,6 +688,8 @@ class TransferCenter:
                     hook_type TEXT DEFAULT '',
                     voice_type TEXT DEFAULT '',
                     monetization_status TEXT DEFAULT 'unknown',
+                    checkpoint_hours INTEGER NOT NULL DEFAULT 0,
+                    sync_source TEXT DEFAULT 'manual',
                     note TEXT DEFAULT '',
                     recorded_at TEXT NOT NULL,
                     FOREIGN KEY(job_id) REFERENCES transfer_jobs(id) ON DELETE CASCADE
@@ -734,6 +736,10 @@ class TransferCenter:
                 """
             )
             self._migrate_schema(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transfer_metrics_checkpoint "
+                "ON transfer_metrics(checkpoint_hours, recorded_at DESC)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transfer_jobs_retry "
                 "ON transfer_jobs(next_retry_at, status)"
@@ -859,6 +865,8 @@ class TransferCenter:
             "hook_type": "TEXT DEFAULT ''",
             "voice_type": "TEXT DEFAULT ''",
             "monetization_status": "TEXT DEFAULT 'unknown'",
+            "checkpoint_hours": "INTEGER NOT NULL DEFAULT 0",
+            "sync_source": "TEXT DEFAULT 'manual'",
         }
         for table_name, additions in (
             ("transfer_rules", rule_columns),
@@ -1851,6 +1859,15 @@ class TransferCenter:
             "unknown", "eligible", "ineligible", "restricted", "settled"
         }:
             raise ValueError("变现状态无效")
+        try:
+            checkpoint_hours = int(payload.get("checkpoint_hours") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("采样检查点无效") from exc
+        if checkpoint_hours not in {0, *PERFORMANCE_CHECKPOINT_HOURS}:
+            raise ValueError("采样检查点无效")
+        sync_source = str(payload.get("sync_source") or "manual").strip().lower()
+        if sync_source not in {"manual", "platform_sync", "scheduled"}:
+            raise ValueError("效果数据来源无效")
 
         record_id = str(uuid.uuid4())
         with self._connect() as conn:
@@ -1862,8 +1879,9 @@ class TransferCenter:
                     completion_rate, retention_3s, revenue_cny,
                     production_cost_cny, violation_count, source_visual_ratio,
                     local_visual_ratio, ai_visual_ratio, hook_type, voice_type,
-                    monetization_status, note, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    monetization_status, checkpoint_hours, sync_source,
+                    note, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record_id,
@@ -1887,6 +1905,8 @@ class TransferCenter:
                     hook_type,
                     voice_type,
                     monetization_status,
+                    checkpoint_hours,
+                    sync_source,
                     str(payload.get("note") or "").strip()[:500],
                     _utc_now(),
                 ),
@@ -1916,6 +1936,7 @@ class TransferCenter:
         bilibili_fetcher: Callable[[str], dict[str, int]] | None = None,
         limit: int = 100,
         job_platforms: set[tuple[str, str]] | None = None,
+        sample_contexts: dict[tuple[str, str], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Refresh counters that existing platform access can read safely."""
         jobs = self.list_published_jobs(limit=limit)
@@ -1938,6 +1959,7 @@ class TransferCenter:
             if job_platforms is not None
             else None
         )
+        sample_contexts = sample_contexts or {}
         supported_fields = {
             "views",
             "likes",
@@ -1966,7 +1988,10 @@ class TransferCenter:
             label: str,
         ) -> None:
             previous = self._latest_performance_snapshot(job["id"], platform)
-            changed = previous is None or any(
+            sample_context = sample_contexts.get((str(job["id"]), platform)) or {}
+            checkpoint_hours = int(sample_context.get("checkpoint_hours") or 0)
+            scheduled_sample = checkpoint_hours in PERFORMANCE_CHECKPOINT_HOURS
+            changed = scheduled_sample or previous is None or any(
                 str(previous.get(field) or 0) != str(value or 0)
                 for field, value in counters.items()
             )
@@ -1987,8 +2012,16 @@ class TransferCenter:
             }
             payload.update(counters)
             payload["platform"] = platform
+            payload["checkpoint_hours"] = checkpoint_hours
+            payload["sync_source"] = (
+                "scheduled" if scheduled_sample else "platform_sync"
+            )
             previous_note = str((previous or {}).get("note") or "").strip()
-            sync_note = f"{label}公开数据自动同步"
+            sync_note = (
+                f"{label}发布后 {checkpoint_hours} 小时自动采样"
+                if scheduled_sample
+                else f"{label}公开数据自动同步"
+            )
             payload["note"] = (
                 f"{sync_note}；{previous_note}"
                 if previous_note and sync_note not in previous_note
@@ -2001,6 +2034,7 @@ class TransferCenter:
                     "job_id": job["id"],
                     "platform": platform,
                     "status": "synced",
+                    "checkpoint_hours": checkpoint_hours,
                 }
             )
 
@@ -2204,6 +2238,7 @@ class TransferCenter:
             ),
             "pending": counts.get("pending", 0) + counts.get("retry", 0),
             "completed": counts.get("complete", 0),
+            "missed": counts.get("missed", 0),
             "retry": counts.get("retry", 0),
             "next_due_at": str(next_due["due_at"] or "") if next_due else "",
         }
@@ -2252,14 +2287,25 @@ class TransferCenter:
                     "completed": 0,
                     "failed": 0,
                 }
-            targets = {
-                (str(row["job_id"]), str(row["platform"])) for row in due
+            selected: dict[tuple[str, str], dict[str, Any]] = {}
+            for row in due:
+                key = (str(row["job_id"]), str(row["platform"]))
+                current = selected.get(key)
+                if current is None or int(row["checkpoint_hours"]) > int(
+                    current["checkpoint_hours"]
+                ):
+                    selected[key] = row
+            targets = set(selected)
+            sample_contexts = {
+                key: {"checkpoint_hours": int(row["checkpoint_hours"])}
+                for key, row in selected.items()
             }
             sync_result = self.sync_performance_metrics(
                 youtube_fetcher=youtube_fetcher,
                 bilibili_fetcher=bilibili_fetcher,
                 limit=500,
                 job_platforms=targets,
+                sample_contexts=sample_contexts,
             )
             outcomes = {
                 (str(item["job_id"]), str(item["platform"])): item
@@ -2267,33 +2313,43 @@ class TransferCenter:
             }
             completed = 0
             failed = 0
+            missed = 0
             with self._connect() as conn:
                 for row in due:
                     key = (str(row["job_id"]), str(row["platform"]))
-                    outcome = outcomes.get(key) or {
-                        "status": "failed",
-                        "message": "未找到待同步作品",
-                    }
-                    if outcome.get("status") in {"synced", "unchanged"}:
+                    is_selected = row is selected.get(key)
+                    outcome = outcomes.get(key) or {}
+                    if not is_selected:
+                        status = "missed"
+                        completed_at = now
+                        error_message = "已超过采样窗口，未伪造历史数据"
+                        attempt_increment = 0
+                        missed += 1
+                    elif outcome.get("status") in {"synced", "unchanged"}:
                         status = "complete"
                         completed_at = now
                         error_message = ""
+                        attempt_increment = 1
                         completed += 1
                     else:
                         status = "retry"
                         completed_at = ""
-                        error_message = _safe_error(outcome.get("message"))
+                        error_message = _safe_error(
+                            outcome.get("message") or "未找到待同步作品"
+                        )
+                        attempt_increment = 1
                         failed += 1
                     conn.execute(
                         """
                         UPDATE transfer_metric_checkpoints
-                        SET status=?, attempt_count=attempt_count+1,
+                        SET status=?, attempt_count=attempt_count+?,
                             last_attempt_at=?, completed_at=?, error_message=?
                         WHERE job_id=? AND platform=? AND post_id=?
                           AND checkpoint_hours=?
                         """,
                         (
                             status,
+                            attempt_increment,
                             now,
                             completed_at,
                             error_message,
@@ -2307,6 +2363,7 @@ class TransferCenter:
                 "enabled": True,
                 "due_checkpoints": len(due),
                 "completed": completed,
+                "missed": missed,
                 "failed": failed,
                 "synced": int(sync_result.get("synced") or 0),
                 "unchanged": int(sync_result.get("unchanged") or 0),
@@ -2314,8 +2371,170 @@ class TransferCenter:
         finally:
             self._performance_sync_lock.release()
 
+    def get_performance_growth(self, days: int = 30) -> dict[str, Any]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, days))).isoformat(
+            timespec="seconds"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.*, j.title
+                FROM transfer_metrics AS m
+                JOIN transfer_jobs AS j ON j.id=m.job_id
+                WHERE m.checkpoint_hours IN (24, 72, 168)
+                  AND m.recorded_at >= ?
+                ORDER BY m.recorded_at ASC, m.rowid ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        latest: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            latest[
+                (
+                    str(item["job_id"]),
+                    str(item["platform"]),
+                    int(item["checkpoint_hours"]),
+                )
+            ] = item
+        grouped: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
+        for (job_id, platform, checkpoint_hours), item in latest.items():
+            grouped.setdefault((job_id, platform), {})[checkpoint_hours] = item
+
+        transitions = []
+        for (job_id, platform), samples in grouped.items():
+            for start_hour, end_hour in ((24, 72), (72, 168)):
+                start = samples.get(start_hour)
+                end = samples.get(end_hour)
+                if not start or not end:
+                    continue
+                start_views = int(start.get("views") or 0)
+                end_views = int(end.get("views") or 0)
+                delta_views = end_views - start_views
+                transitions.append(
+                    {
+                        "job_id": job_id,
+                        "platform": platform,
+                        "title": str(end.get("title") or job_id[:8]),
+                        "from_hours": start_hour,
+                        "to_hours": end_hour,
+                        "views_delta": delta_views,
+                        "views_growth_rate": (
+                            round(100 * delta_views / start_views, 2)
+                            if start_views
+                            else 0.0
+                        ),
+                        "views_per_hour": round(
+                            delta_views / (end_hour - start_hour), 2
+                        ),
+                    }
+                )
+
+        early_samples = [samples[24] for samples in grouped.values() if 24 in samples]
+        early_views = sorted(int(item.get("views") or 0) for item in early_samples)
+        if not early_views:
+            median_early_views = 0.0
+        elif len(early_views) % 2:
+            median_early_views = float(early_views[len(early_views) // 2])
+        else:
+            middle = len(early_views) // 2
+            median_early_views = round(
+                (early_views[middle - 1] + early_views[middle]) / 2,
+                2,
+            )
+        candidates = []
+        for (job_id, platform), samples in grouped.items():
+            early = samples.get(24)
+            transition = next(
+                (
+                    item
+                    for item in transitions
+                    if item["job_id"] == job_id
+                    and item["platform"] == platform
+                    and item["from_hours"] == 24
+                ),
+                None,
+            )
+            if not early:
+                continue
+            views = int(early.get("views") or 0)
+            interactions = sum(
+                int(early.get(field) or 0)
+                for field in ("likes", "comments", "shares")
+            )
+            engagement = round(100 * interactions / views, 2) if views else 0.0
+            strong_early = bool(
+                views
+                and views >= median_early_views
+                and engagement >= 5
+            )
+            sustained = bool(
+                transition and float(transition["views_growth_rate"]) >= 50
+            )
+            if strong_early or sustained:
+                candidates.append(
+                    {
+                        "job_id": job_id,
+                        "platform": platform,
+                        "title": str(early.get("title") or job_id[:8]),
+                        "views_24h": views,
+                        "engagement_24h": engagement,
+                        "growth_24h_72h": float(
+                            (transition or {}).get("views_growth_rate") or 0
+                        ),
+                    }
+                )
+        candidates.sort(
+            key=lambda item: (
+                item["growth_24h_72h"],
+                item["engagement_24h"],
+                item["views_24h"],
+            ),
+            reverse=True,
+        )
+        seven_day_samples = [
+            samples[168] for samples in grouped.values() if 168 in samples
+        ]
+        profitable_7d = sum(
+            float(item.get("revenue_cny") or 0)
+            - float(item.get("production_cost_cny") or 0)
+            > 0
+            for item in seven_day_samples
+        )
+        rising = sum(
+            float(item["views_growth_rate"]) >= 50 for item in transitions
+        )
+        slowing = sum(
+            float(item["views_growth_rate"]) < 20 for item in transitions
+        )
+        if candidates:
+            guidance = f"优先续做《{candidates[0]['title']}》的同类选题，保留其开场和画面结构"
+        elif latest:
+            guidance = "暂不扩大同类生产，继续累积 24 小时和 72 小时配对样本"
+        else:
+            guidance = "等待首批 24 小时自动样本后再判断是否追加同类选题"
+        summary = (
+            f"已累积 {len(latest)} 个定时样本，"
+            f"{len(transitions)} 组增长对照；"
+            f"高增长 {rising} 组，明显放缓 {slowing} 组，"
+            f"7 天净收益为正 {profitable_7d} 条。"
+        )
+        return {
+            "checkpoint_samples": len(latest),
+            "paired_growth": len(transitions),
+            "rising": rising,
+            "slowing": slowing,
+            "profitable_7d": profitable_7d,
+            "median_views_24h": median_early_views,
+            "transitions": transitions,
+            "repeat_candidates": candidates[:5],
+            "summary": summary,
+            "guidance": guidance,
+        }
+
     def get_performance_summary(self, days: int = 7) -> dict[str, Any]:
         days = max(1, min(365, int(days)))
+        growth = self.get_performance_growth(days=max(30, days))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(
             timespec="seconds"
         )
@@ -2520,6 +2739,7 @@ class TransferCenter:
                 else "优先 45-90 秒，保留核心解释"
             ),
             "target_local_visual_ratio": target_local_visual_ratio,
+            "topic_guidance": growth["guidance"],
         }
         suggestions = []
         if not records:
@@ -2554,6 +2774,8 @@ class TransferCenter:
                     suggestions.append("本地替换画面样本的完播更高，下一批可把零成本运镜占比提到约 45%。")
                 elif local_completion + 5 <= source_completion:
                     suggestions.append("本地信息卡样本的完播更低，下一批降到约 15%，优先保留有信息量的原片镜头。")
+        if growth["checkpoint_samples"]:
+            suggestions.append(growth["summary"])
         return {
             "days": days,
             "records": records,
@@ -2561,6 +2783,7 @@ class TransferCenter:
             "top_platform": top_platform,
             "suggestions": suggestions,
             "strategy": strategy,
+            "growth": growth,
         }
 
     # ---- hot candidate pool ------------------------------------------

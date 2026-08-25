@@ -1644,6 +1644,44 @@ def test_sync_performance_preserves_manual_metrics_and_skips_unchanged(center):
     assert second["unchanged"] == 2
 
 
+def test_scheduled_checkpoint_records_unchanged_counters_as_real_sample(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1samplestable", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        youtube_video_id="youtube-stable-1",
+        status="completed",
+    )
+    center.record_performance(
+        job_id,
+        {"platform": "youtube", "views": 100, "likes": 8, "comments": 2},
+    )
+
+    result = center.sync_performance_metrics(
+        youtube_fetcher=lambda _ids: {
+            "youtube-stable-1": {"views": 100, "likes": 8, "comments": 2}
+        },
+        bilibili_fetcher=lambda _bvid: {},
+        job_platforms={(job_id, "youtube")},
+        sample_contexts={(job_id, "youtube"): {"checkpoint_hours": 24}},
+    )
+
+    with center._connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT checkpoint_hours, sync_source FROM transfer_metrics
+            WHERE job_id=? ORDER BY recorded_at, rowid
+            """,
+            (job_id,),
+        ).fetchall()
+    assert result["synced"] == 1
+    assert [dict(row) for row in rows] == [
+        {"checkpoint_hours": 0, "sync_source": "manual"},
+        {"checkpoint_hours": 24, "sync_source": "scheduled"},
+    ]
+
+
 def test_sync_performance_marks_platforms_without_data_permission_manual(center):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1xx411c7mD", ["douyin"]
@@ -1732,7 +1770,7 @@ def test_performance_checkpoints_supersede_pending_old_post(center):
     ]
 
 
-def test_due_performance_sync_completes_all_due_checkpoints_once(center):
+def test_due_performance_sync_samples_latest_and_marks_older_windows_missed(center):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1autosync001", ["youtube"]
     )
@@ -1768,17 +1806,29 @@ def test_due_performance_sync_completes_all_due_checkpoints_once(center):
 
     assert fetch_calls == [["youtube-auto-sync-1"]]
     assert first["due_checkpoints"] == 3
-    assert first["completed"] == 3
+    assert first["completed"] == 1
+    assert first["missed"] == 2
     assert first["synced"] == 1
     assert second["due_checkpoints"] == 0
     with center._connect() as conn:
         rows = conn.execute(
-            "SELECT status, attempt_count FROM transfer_metric_checkpoints WHERE job_id=?",
+            """
+            SELECT status, attempt_count FROM transfer_metric_checkpoints
+            WHERE job_id=? ORDER BY checkpoint_hours
+            """,
             (job_id,),
         ).fetchall()
+        metric = conn.execute(
+            """
+            SELECT checkpoint_hours, sync_source FROM transfer_metrics
+            WHERE job_id=? ORDER BY recorded_at DESC LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
     assert len(rows) == 3
-    assert {row["status"] for row in rows} == {"complete"}
-    assert {row["attempt_count"] for row in rows} == {1}
+    assert [row["status"] for row in rows] == ["missed", "missed", "complete"]
+    assert [row["attempt_count"] for row in rows] == [0, 0, 1]
+    assert dict(metric) == {"checkpoint_hours": 168, "sync_source": "scheduled"}
 
 
 def test_due_performance_sync_failure_uses_six_hour_retry_cooldown(center):
@@ -1810,11 +1860,13 @@ def test_due_performance_sync_failure_uses_six_hour_retry_cooldown(center):
     )
 
     assert first["due_checkpoints"] == 3
-    assert first["failed"] == 3
+    assert first["failed"] == 1
+    assert first["missed"] == 2
     assert second["due_checkpoints"] == 0
     status = center.get_performance_sync_status()
-    assert status["retry"] == 3
-    assert status["pending"] == 3
+    assert status["retry"] == 1
+    assert status["pending"] == 1
+    assert status["missed"] == 2
 
 
 def test_due_performance_sync_respects_disabled_config(center):
@@ -1833,6 +1885,49 @@ def test_due_performance_sync_respects_disabled_config(center):
         "completed": 0,
         "failed": 0,
     }
+
+
+def test_growth_analysis_feeds_timed_samples_back_into_topic_strategy(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1growthloop1", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        title="AI 工具实测",
+        youtube_video_id="youtube-growth-1",
+        status="completed",
+    )
+    for checkpoint_hours, views, likes, revenue in (
+        (24, 100, 10, 0),
+        (72, 300, 25, 0),
+        (168, 450, 40, 30),
+    ):
+        center.record_performance(
+            job_id,
+            {
+                "platform": "youtube",
+                "views": views,
+                "likes": likes,
+                "comments": 2,
+                "shares": 1,
+                "revenue_cny": revenue,
+                "production_cost_cny": 5,
+                "checkpoint_hours": checkpoint_hours,
+                "sync_source": "scheduled",
+            },
+        )
+
+    growth = center.get_performance_growth(days=30)
+    summary = center.get_performance_summary(days=7)
+
+    assert growth["checkpoint_samples"] == 3
+    assert growth["paired_growth"] == 2
+    assert growth["rising"] == 2
+    assert growth["profitable_7d"] == 1
+    assert growth["repeat_candidates"][0]["title"] == "AI 工具实测"
+    assert growth["repeat_candidates"][0]["growth_24h_72h"] == 200.0
+    assert "AI 工具实测" in summary["strategy"]["topic_guidance"]
+    assert any("增长对照" in item for item in summary["suggestions"])
 
 
 def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
@@ -1879,6 +1974,8 @@ def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
         "production_cost_cny",
         "local_visual_ratio",
         "monetization_status",
+        "checkpoint_hours",
+        "sync_source",
     }.issubset(columns)
 
 
