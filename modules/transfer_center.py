@@ -41,6 +41,7 @@ from .content_recreation import (
 )
 from .douyin_downloader import DouyinDownloadError, download_douyin_video
 from .media_preflight import build_distribution_plan, prepare_platform_variants
+from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
 from .utils import get_app_subdir
 from .video_intelligence import (
     find_local_cover,
@@ -2009,6 +2010,57 @@ class TransferCenter:
                 previous = text
         return "\n".join(result).strip()
 
+    @classmethod
+    def _timecoded_transcript(cls, video_path: str) -> dict[str, Any]:
+        candidates = [
+            path
+            for path in cls._archive_subtitle_files(video_path)
+            if path.suffix.lower() in {".srt", ".vtt"}
+        ]
+        if not candidates:
+            return {"source": "", "cues": []}
+        candidates.sort(
+            key=lambda path: (
+                0 if path.suffix.lower() == ".srt" else 1,
+                -path.stat().st_size,
+                path.name,
+            )
+        )
+        subtitle = candidates[0]
+        try:
+            raw = subtitle.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"source": "", "cues": []}
+        engine = SrtTransformEngine(SrtTransformConfig(), logger=logger)
+        parsed = engine.parse_srt(raw)
+        if len(parsed) > 160:
+            indexes = [round(index * (len(parsed) - 1) / 159) for index in range(160)]
+            parsed = [parsed[index] for index in indexes]
+        cues: list[dict[str, Any]] = []
+        text_size = 0
+        for cue in parsed:
+            text = re.sub(r"\s+", " ", str(cue.get("text") or "")).strip()[:500]
+            if not text:
+                continue
+            text_size += len(text)
+            if text_size > 20_000:
+                break
+            cues.append(
+                {
+                    "start": round(max(0.0, float(cue.get("start") or 0)), 2),
+                    "end": round(max(0.0, float(cue.get("end") or 0)), 2),
+                    "text": text,
+                }
+            )
+        return {"source": subtitle.name if cues else "", "cues": cues}
+
+    def _recreation_input_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(job)
+        transcript = self._timecoded_transcript(str(job.get("local_video_path") or ""))
+        enriched["source_transcript"] = transcript["cues"]
+        enriched["transcript_source"] = transcript["source"]
+        return enriched
+
     def _ensure_archive_markdown(self, job_id: str) -> str:
         job = self.get_job(job_id)
         video_path = str((job or {}).get("local_video_path") or "")
@@ -2628,7 +2680,7 @@ class TransferCenter:
             targets,
         )
         distribution_plan = build_distribution_plan(media_info, targets)
-        recreation_job = {**job, **prepared_fields}
+        recreation_job = self._recreation_input_job({**job, **prepared_fields})
         plan = generate_recreation_plan(
             recreation_job,
             self._config(),
@@ -2699,7 +2751,7 @@ class TransferCenter:
         if not job.get("local_video_path"):
             raise ValueError("请先完成视频下载和媒体体检")
         plan = generate_recreation_plan(
-            job,
+            self._recreation_input_job(job),
             self._config(),
             mode=str(job.get("recreation_mode") or "commentary"),
         )
@@ -3063,6 +3115,117 @@ class TransferCenter:
         data = payload.get("data")
         return data if isinstance(data, dict) else {}
 
+    def _sync_recreation_plan_to_money_printer(
+        self,
+        session: requests.Session,
+        base_url: str,
+        auth_headers: dict[str, str],
+        project_id: str,
+        plan: dict[str, Any],
+        *,
+        aspect: str,
+    ) -> dict[str, Any]:
+        response = self._money_printer_json(
+            session,
+            base_url,
+            auth_headers,
+            "GET",
+            f"/api/v1/projects/{project_id}/shots?page=1&page_size=500",
+        )
+        shots = response.get("shots") if isinstance(response.get("shots"), list) else []
+        segments = [
+            item
+            for item in (plan.get("segment_plan") or [])
+            if isinstance(item, dict) and "source_start" in item and "duration" in item
+        ]
+        if not shots:
+            raise RuntimeError("超级印钞机未建立可编辑镜头")
+        if not segments:
+            raise RuntimeError("二剪策划未包含可执行时间码")
+
+        broll = [str(item) for item in (plan.get("broll_suggestions") or []) if str(item).strip()]
+        visual_prompts = [
+            str(item) for item in (plan.get("ai_visual_prompts") or []) if str(item).strip()
+        ]
+        platform_notes = []
+        for platform, version in (plan.get("platform_versions") or {}).items():
+            if not isinstance(version, dict):
+                continue
+            platform_notes.append(
+                f"{platform}: {version.get('format') or ''}; {version.get('edit_note') or ''}"
+            )
+        shared_platform_note = " | ".join(platform_notes)[:1200]
+        mapped = min(len(shots), len(segments))
+        excluded = 0
+        warnings: list[str] = []
+        if len(segments) > len(shots):
+            warnings.append(
+                f"时间线有 {len(segments)} 段，现有镜头仅 {len(shots)} 个，已同步前 {mapped} 段"
+            )
+
+        for index, shot in enumerate(shots):
+            shot_id = quote(str(shot.get("shot_id") or ""))
+            if not shot_id:
+                continue
+            if index >= mapped:
+                self._money_printer_json(
+                    session,
+                    base_url,
+                    auth_headers,
+                    "PUT",
+                    f"/api/v1/shots/{shot_id}",
+                    json={"position": index + 1, "included": False},
+                )
+                excluded += 1
+                continue
+            segment = segments[index]
+            try:
+                source_start = max(0.0, float(segment.get("source_start") or 0))
+                duration = min(15.0, max(1.0, float(segment.get("duration") or 1)))
+            except (TypeError, ValueError):
+                source_start, duration = 0.0, 1.0
+            action = str(segment.get("action") or "trim").strip().lower()
+            included = action != "exclude"
+            if not included:
+                excluded += 1
+            visual_prompt = visual_prompts[index % len(visual_prompts)] if visual_prompts else ""
+            asset_hint = broll[index % len(broll)] if broll else ""
+            stage = str(segment.get("stage") or f"镜头 {index + 1}")[:80]
+            update = {
+                "position": index + 1,
+                "title": stage,
+                "caption": str(segment.get("narration") or "")[:800],
+                "voiceover": str(segment.get("narration") or "")[:800],
+                "visual": str(segment.get("visual") or "")[:1000],
+                "prompt": visual_prompt[:1200],
+                "asset_hint": asset_hint[:500],
+                "image_prompt": visual_prompt[:2000],
+                "video_prompt": visual_prompt[:2000],
+                "continuity_notes": shared_platform_note,
+                "duration": round(duration, 2),
+                "source_start": round(source_start, 2),
+                "aspect_ratio": aspect,
+                "included": included,
+            }
+            self._money_printer_json(
+                session,
+                base_url,
+                auth_headers,
+                "PUT",
+                f"/api/v1/shots/{shot_id}",
+                json=update,
+            )
+
+        return {
+            "status": "synced",
+            "available_shots": len(shots),
+            "planned_segments": len(segments),
+            "mapped_shots": mapped,
+            "excluded_shots": excluded,
+            "warnings": warnings,
+            "paid_generation_triggered": False,
+        }
+
     def recreate_with_money_printer_async(self, job_id: str) -> bool:
         if not self.get_job(job_id):
             raise ValueError("搬运任务不存在")
@@ -3097,9 +3260,16 @@ class TransferCenter:
         if not job:
             raise ValueError("搬运任务不存在")
         script = str(job.get("commentary_script") or "").strip()
-        if len(script) < 80:
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        executable_segments = [
+            item
+            for item in (plan.get("segment_plan") or [])
+            if isinstance(item, dict) and "source_start" in item and "duration" in item
+        ]
+        if len(script) < 80 or not executable_segments:
             job = self.generate_recreation_draft(job_id)
             script = str(job.get("commentary_script") or "").strip()
+            plan = deserialize_plan(job.get("recreation_plan_json"))
         if len(script) < 80:
             raise ValueError("原创解说稿过短，请先生成或补充解说稿")
         self._update_job(
@@ -3133,6 +3303,17 @@ class TransferCenter:
                 "aspect": aspect,
             },
         )
+        self._update_job(job_id, mpt_message="正在写入带时间码的二剪镜头")
+        timeline_sync = self._sync_recreation_plan_to_money_printer(
+            session,
+            base_url,
+            auth_headers,
+            project_id,
+            plan,
+            aspect=aspect,
+        )
+        plan["timeline_sync"] = timeline_sync
+        self._update_job(job_id, recreation_plan_json=serialize_plan(plan))
         self._update_job(job_id, mpt_message="正在生成本地配音和字幕")
         audio = self._money_printer_json(
             session, base_url, auth_headers, "POST", "/api/v1/audio",

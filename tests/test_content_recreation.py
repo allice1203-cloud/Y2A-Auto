@@ -24,9 +24,36 @@ def test_fallback_plan_demands_substantive_original_contribution():
     assert len(plan["commentary_outline"]) >= 3
     assert len(plan["hook_options"]) >= 3
     assert len(plan["segment_plan"]) >= 4
+    assert all(segment["duration"] <= 15 for segment in plan["segment_plan"])
+    assert all("source_start" in segment for segment in plan["segment_plan"])
     assert set(plan["platform_versions"]) == {"bilibili", "douyin", "youtube"}
     assert plan["bilibili_title"]
     assert plan["douyin_text"]
+
+
+def test_fallback_plan_uses_real_subtitle_timecodes():
+    plan = generate_recreation_plan(
+        {
+            "title": "字幕时间线测试",
+            "duration": 90,
+            "transcript_source": "video.zh.srt",
+            "source_transcript": [
+                {"start": 5.0, "end": 8.5, "text": "第一个关键观点"},
+                {"start": 9.0, "end": 13.0, "text": "对关键观点进行解释"},
+                {"start": 30.0, "end": 34.0, "text": "第二个案例"},
+                {"start": 60.0, "end": 66.0, "text": "最后的结论"},
+            ],
+        },
+        config={},
+    )
+
+    segments = plan["segment_plan"]
+    assert plan["transcript_source"] == "video.zh.srt"
+    assert plan["transcript_cue_count"] == 4
+    assert segments[0]["source_start"] == 5.0
+    assert segments[-1]["source_end"] == 66.0
+    assert all(1 <= segment["duration"] <= 15 for segment in segments)
+    assert all(segment["action"] in {"keep", "trim", "replace", "exclude"} for segment in segments)
 
 
 def test_unconfirmed_rights_are_a_non_blocking_risk_hint():

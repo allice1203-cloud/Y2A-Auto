@@ -605,12 +605,38 @@
                     {% for item in recreation_plan.commentary_outline %}<li class="mb-2">{{ item }}</li>{% endfor %}
                 </ol>
                 {% endif %}
+                {% if recreation_plan.transcript_source %}
+                <div class="small text-muted mt-3">
+                    已读取字幕 {{ recreation_plan.transcript_source }}，共 {{ recreation_plan.transcript_cue_count }} 条时间码。
+                </div>
+                {% endif %}
+                {% if recreation_plan.timeline_sync %}
+                <div class="alert alert-success py-2 px-3 small mt-3 mb-0">
+                    时间线已同步到超级印钞机：{{ recreation_plan.timeline_sync.mapped_shots }} 个镜头已写入，
+                    {{ recreation_plan.timeline_sync.excluded_shots }} 个镜头已排除；未触发付费生成。
+                    {% if recreation_plan.timeline_sync.warnings %}
+                    <div class="mt-1">{{ recreation_plan.timeline_sync.warnings|join('；') }}</div>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% if recreation_plan.segment_plan %}
                 <details class="border rounded-3 p-3 mt-3">
                     <summary class="small fw-semibold">查看镜头执行表</summary>
                     {% for segment in recreation_plan.segment_plan %}
                     <div class="small border-top pt-2 mt-2">
-                        <strong>{{ segment.stage }}</strong>
+                        <div class="d-flex align-items-center flex-wrap gap-2">
+                            <strong>{{ segment.stage }}</strong>
+                            {% if segment.source_start is defined and segment.source_end is defined %}
+                            <span class="badge bg-light text-dark border">
+                                {{ '%.1f'|format(segment.source_start) }}–{{ '%.1f'|format(segment.source_end) }} 秒
+                            </span>
+                            {% endif %}
+                            {% if segment.action is defined %}
+                            <span class="badge {{ 'bg-danger' if segment.action == 'exclude' else ('bg-warning text-dark' if segment.action == 'replace' else 'bg-primary') }}">
+                                {{ {'keep':'保留','trim':'裁剪','replace':'替换画面','exclude':'排除'}.get(segment.action, '裁剪') }}
+                            </span>
+                            {% endif %}
+                        </div>
                         <div class="text-muted mt-1">原片动作：{{ segment.source_action }}</div>
                         <div class="mt-1">旁白：{{ segment.narration }}</div>
                         <div class="text-muted mt-1">画面：{{ segment.visual }}</div>

@@ -1069,6 +1069,95 @@ def test_recreation_plan_contains_ready_to_voice_commentary(center, tmp_path):
     assert "来源" in result["commentary_script"]
 
 
+def test_recreation_plan_reads_local_subtitle_timecodes(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1timedsubtitle",
+        ["youtube"],
+    )
+    source_path = tmp_path / "source.mp4"
+    source_path.write_bytes(b"video")
+    (tmp_path / "source.zh.srt").write_text(
+        "1\n00:00:04,000 --> 00:00:08,000\n第一个观点\n\n"
+        "2\n00:00:20,000 --> 00:00:26,000\n第二个观点\n",
+        encoding="utf-8",
+    )
+    center._update_job(
+        job_id,
+        title="字幕测试",
+        source_uploader="原账号",
+        local_video_path=str(source_path),
+        original_video_path=str(source_path),
+        duration=30,
+    )
+
+    result = center.generate_recreation_draft(job_id)
+    plan = json.loads(result["recreation_plan_json"])
+
+    assert plan["transcript_source"] == "source.zh.srt"
+    assert plan["transcript_cue_count"] == 2
+    assert plan["segment_plan"][0]["source_start"] == 4.0
+    assert plan["segment_plan"][1]["source_end"] == 26.0
+
+
+def test_sync_recreation_plan_updates_existing_shots_without_paid_generation(
+    center, monkeypatch
+):
+    calls = []
+
+    def fake_api(session, base_url, headers, method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if method == "GET":
+            return {
+                "shots": [
+                    {"shot_id": "shot-1"},
+                    {"shot_id": "shot-2"},
+                    {"shot_id": "shot-3"},
+                ]
+            }
+        return {"shot_id": path.rsplit("/", 1)[-1]}
+
+    monkeypatch.setattr(center, "_money_printer_json", fake_api)
+    plan = {
+        "segment_plan": [
+            {
+                "stage": "开场",
+                "source_start": 5,
+                "duration": 3,
+                "action": "trim",
+                "narration": "原创开场",
+                "visual": "结果画面",
+            },
+            {
+                "stage": "结论",
+                "source_start": 40,
+                "duration": 8,
+                "action": "keep",
+                "narration": "独立结论",
+                "visual": "结论卡",
+            },
+        ],
+        "broll_suggestions": ["产品录屏"],
+        "ai_visual_prompts": ["无文字背景"],
+        "platform_versions": {
+            "douyin": {"format": "9:16", "edit_note": "前三秒给结果"}
+        },
+    }
+
+    summary = center._sync_recreation_plan_to_money_printer(
+        object(), "http://mpt.local", {"x-api-key": "test"}, "project-1", plan, aspect="9:16"
+    )
+
+    put_calls = [call for call in calls if call[0] == "PUT"]
+    assert summary["mapped_shots"] == 2
+    assert summary["excluded_shots"] == 1
+    assert summary["paid_generation_triggered"] is False
+    assert put_calls[0][2]["json"]["source_start"] == 5.0
+    assert put_calls[0][2]["json"]["asset_hint"] == "产品录屏"
+    assert put_calls[0][2]["json"]["image_prompt"] == "无文字背景"
+    assert put_calls[-1][2]["json"]["included"] is False
+    assert not any("/generate" in path for _, path, _ in calls)
+
+
 def test_money_printer_connection_loads_private_credential(center, monkeypatch, tmp_path):
     credential_path = tmp_path / "mpt_internal_credentials.json"
     credential_path.write_text('{"api_key":"internal-test-key"}', encoding="utf-8")
