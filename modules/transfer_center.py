@@ -27,6 +27,7 @@ import subprocess
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -4352,7 +4353,9 @@ class TransferCenter:
                 continue
             file_obj = upload_values.get(key)
             if file_obj is not None and str(getattr(file_obj, "filename", "") or ""):
-                original_name = Path(str(file_obj.filename)).name[:180]
+                original_name = Path(
+                    str(file_obj.filename).replace("\\", "/")
+                ).name[:180]
                 extension = Path(original_name).suffix.lower()
                 if extension not in MATERIAL_BINDING_EXTENSIONS:
                     raise ValueError(
@@ -4405,6 +4408,96 @@ class TransferCenter:
         plan["material_bindings"] = bindings
         self._update_job(job_id, recreation_plan_json=serialize_plan(plan))
         return {"attached": attached, "unbound": unbound}
+
+    def export_material_package(self, job_id: str) -> tuple[str, dict[str, Any]]:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        binding_readiness = self._material_binding_readiness(job, plan)
+        summary = material_readiness_summary(plan, binding_readiness)
+        if not summary["total"]:
+            raise ValueError("当前策划没有可导出的素材清单")
+
+        bindings = (
+            plan.get("material_bindings")
+            if isinstance(plan.get("material_bindings"), dict)
+            else {}
+        )
+        package_items: list[dict[str, Any]] = []
+        packaged_files: list[tuple[Path, str]] = []
+        for item in summary["items"]:
+            label = str(item["label"])
+            binding = bindings.get(label) if isinstance(bindings.get(label), dict) else {}
+            package_item: dict[str, Any] = {
+                "key": item["key"],
+                "label": label,
+                "ready": bool(item["ready"]),
+                "manual_ready": bool(item["manual_ready"]),
+                "binding_ready": bool(item["binding_ready"]),
+                "source_type": "manual" if item["manual_ready"] else "unbound",
+            }
+            if item["binding_ready"] and item["binding_type"] == "file":
+                source_path = Path(str(binding.get("path") or "")).resolve()
+                original_name = Path(
+                    str(binding.get("filename") or source_path.name).replace("\\", "/")
+                ).name
+                archive_name = f"materials/{item['key']}-{original_name}"
+                package_item.update(
+                    {
+                        "source_type": "file",
+                        "filename": original_name,
+                        "packaged_path": archive_name,
+                        "size": source_path.stat().st_size,
+                    }
+                )
+                packaged_files.append((source_path, archive_name))
+            elif item["binding_ready"] and item["binding_type"] == "url":
+                package_item.update(
+                    {
+                        "source_type": "url",
+                        "reference_url": str(binding.get("url") or ""),
+                    }
+                )
+            package_items.append(package_item)
+
+        manifest = {
+            "schema_version": 1,
+            "generated_at": _utc_now(),
+            "job": {
+                "id": job_id,
+                "title": str(job.get("title") or ""),
+                "source_url": str(job.get("source_url") or ""),
+            },
+            "readiness": {
+                "ready": summary["ready"],
+                "total": summary["total"],
+                "all_ready": summary["all_ready"],
+                "blocking": summary["blocking"],
+            },
+            "items": package_items,
+        }
+        package_root = self._material_bindings_dir(job_id).parent
+        package_root.mkdir(parents=True, exist_ok=True)
+        target = package_root / "remix-material-package.zip"
+        temp_path = package_root / f".{target.name}.{uuid.uuid4().hex[:10]}.tmp"
+        try:
+            with zipfile.ZipFile(
+                temp_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+            ) as archive:
+                archive.writestr(
+                    "manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                )
+                for source_path, archive_name in packaged_files:
+                    archive.write(source_path, archive_name)
+            os.chmod(temp_path, 0o600)
+            os.replace(temp_path, target)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
+        return str(target), manifest
 
     def _assert_production_materials_ready(
         self, job: dict[str, Any]

@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import zipfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2159,10 +2160,21 @@ def test_material_bindings_auto_verify_and_unbind_without_deleting_file(
         urls={item_keys["信息卡"]: "https://example.com/reference-card"},
     )
     ready_summary = center.get_material_readiness(job_id)
+    package_path, manifest = center.export_material_package(job_id)
     production_job = center.send_to_money_printer(job_id)
 
     assert second_result == {"attached": 1, "unbound": 0}
     assert ready_summary["all_ready"] is True
+    assert manifest["readiness"]["all_ready"] is True
+    assert [item["source_type"] for item in manifest["items"]] == ["file", "url"]
+    with zipfile.ZipFile(package_path) as archive:
+        names = archive.namelist()
+        stored_manifest = json.loads(archive.read("manifest.json"))
+        assert "manifest.json" in names
+        assert any(name.endswith("-新实拍.mp4") for name in names)
+        assert stored_manifest["items"][1]["reference_url"] == (
+            "https://example.com/reference-card"
+        )
     assert production_job["mpt_project_id"] == "project-bound"
 
     unbind_result = center.bind_material_assets(

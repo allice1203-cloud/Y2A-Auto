@@ -4056,6 +4056,23 @@ def transfer_center_review_media(job_id):
     return send_file(resolved_path, conditional=True)
 
 
+@app.route('/transfer-center/jobs/<job_id>/materials/export')
+@login_required
+def transfer_center_export_materials(job_id):
+    try:
+        package_path, _manifest = _transfer_center().export_material_package(job_id)
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+        return redirect(url_for('transfer_center_review_job', job_id=job_id))
+    return send_file(
+        package_path,
+        as_attachment=True,
+        download_name=f'remix-materials-{job_id[:8]}.zip',
+        mimetype='application/zip',
+        conditional=True,
+    )
+
+
 @app.route('/transfer-center/jobs/<job_id>/x-video')
 @login_required
 def transfer_center_x_video(job_id):

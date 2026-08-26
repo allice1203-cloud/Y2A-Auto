@@ -90,6 +90,10 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert 'name="material_unbind"' in review
     assert "center.get_material_readiness(job_id)" in app_source
     assert "center.bind_material_assets(" in app_source
+    assert "def transfer_center_export_materials(job_id):" in app_source
+    assert "export_material_package(job_id)" in app_source
+    assert "transfer_center_export_materials" in review
+    assert "素材包" in review
     assert "素材准备尚未完成" in (
         ROOT / "modules" / "transfer_center.py"
     ).read_text(encoding="utf-8")
