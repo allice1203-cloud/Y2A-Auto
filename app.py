@@ -3708,6 +3708,24 @@ def transfer_center_refresh_candidates():
     return redirect(url_for('transfer_center_index'))
 
 
+@app.route('/transfer-center/candidates/growth', methods=['POST'])
+@login_required
+def transfer_center_generate_growth_candidates():
+    try:
+        result = _transfer_center().generate_growth_followup_candidates()
+        total = int(result['created']) + int(result['updated'])
+        if total:
+            flash(
+                f"已生成/更新 {total} 条增长续作候选，确认后才会进入制作任务。",
+                'success',
+            )
+        else:
+            flash('暂无达到续作条件的定时样本。', 'warning')
+    except Exception as exc:
+        flash(f'生成增长续作候选失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
 @app.route('/transfer-center/candidates/<candidate_id>/promote', methods=['POST'])
 @login_required
 def transfer_center_promote_candidate(candidate_id):

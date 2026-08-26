@@ -1930,6 +1930,114 @@ def test_growth_analysis_feeds_timed_samples_back_into_topic_strategy(center):
     assert any("增长对照" in item for item in summary["suggestions"])
 
 
+def test_growth_followup_candidate_stays_in_pool_until_human_promotes(center):
+    parent_job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1followup001", ["youtube"]
+    )
+    center._update_job(
+        parent_job_id,
+        title="AI 剪辑工具实测",
+        duration=95,
+        youtube_video_id="youtube-followup-1",
+        status="completed",
+    )
+    for checkpoint_hours, views, likes in (
+        (24, 200, 20),
+        (72, 500, 42),
+    ):
+        center.record_performance(
+            parent_job_id,
+            {
+                "platform": "youtube",
+                "views": views,
+                "likes": likes,
+                "comments": 5,
+                "shares": 2,
+                "checkpoint_hours": checkpoint_hours,
+                "sync_source": "scheduled",
+            },
+        )
+
+    first = center.generate_growth_followup_candidates()
+    second = center.generate_growth_followup_candidates()
+    candidates = center.list_hot_candidates()
+
+    assert first["created"] == 1
+    assert second["updated"] == 1
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate["metrics"]["candidate_type"] == "growth_followup"
+    assert candidate["metrics"]["recommended_target_platform"] == "youtube"
+    assert candidate["metrics"]["suggested_duration"] == "45-60 秒"
+    assert candidate["job_id"] == ""
+
+    job_id = center.promote_hot_candidate(candidate["id"], ["youtube"])
+    job = center.get_job(job_id)
+
+    assert job_id != parent_job_id
+    assert job["status"] == "discovered"
+    assert job["local_video_path"] == ""
+    assert "换一个场景" in job["original_angle"]
+    assert "建议时长：45-60 秒" in job["original_contribution"]
+    assert center.list_hot_candidates() == []
+
+    after_promote = center.generate_growth_followup_candidates()
+    assert after_promote["skipped"] == 1
+    assert center.list_hot_candidates() == []
+
+
+def test_growth_followup_candidate_requires_real_timed_sample(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1manualonly01", ["youtube"]
+    )
+    center._update_job(job_id, youtube_video_id="youtube-manual-only")
+    center.record_performance(
+        job_id,
+        {"platform": "youtube", "views": 1000, "likes": 100},
+    )
+
+    result = center.generate_growth_followup_candidates()
+
+    assert result["available"] == 0
+    assert center.list_hot_candidates() == []
+
+
+def test_24_hour_scheduler_creates_followup_candidate_without_starting_job(center):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1autoidea001", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        title="自动续作测试",
+        youtube_video_id="youtube-auto-idea-1",
+        status="completed",
+    )
+    published_at = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(
+        timespec="seconds"
+    )
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET updated_at=? WHERE id=?",
+            (published_at, job_id),
+        )
+
+    result = center.sync_due_performance_metrics(
+        youtube_fetcher=lambda _ids: {
+            "youtube-auto-idea-1": {"views": 300, "likes": 30, "comments": 6}
+        },
+        bilibili_fetcher=lambda _bvid: {},
+    )
+    candidates = center.list_hot_candidates()
+
+    assert result["completed"] == 1
+    assert result["growth_candidates"] == 1
+    assert len(candidates) == 1
+    assert candidates[0]["metrics"]["candidate_type"] == "growth_followup"
+    assert candidates[0]["metrics"]["growth_24h_72h"] is None
+    assert candidates[0]["job_id"] == ""
+    assert center.get_job(job_id)["status"] == "completed"
+
+
 def test_metric_schema_migration_adds_business_loop_columns(tmp_path):
     database = sqlite3.connect(tmp_path / "legacy.db")
     database.row_factory = sqlite3.Row

@@ -66,3 +66,7 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert "发布后 24 小时、72 小时和 7 天自动同步" in center
     assert "选题动作：{{ performance.strategy.topic_guidance }}" in center
     assert "不补造数据" in center
+    assert "@app.route('/transfer-center/candidates/growth', methods=['POST'])" in app_source
+    assert "url_for('transfer_center_generate_growth_candidates')" in center
+    assert "生成续作候选" in center
+    assert "candidate.metrics.candidate_type == 'growth_followup'" in center

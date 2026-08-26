@@ -2359,6 +2359,15 @@ class TransferCenter:
                             row["checkpoint_hours"],
                         ),
                     )
+            growth_candidates = 0
+            if completed:
+                try:
+                    generated = self.generate_growth_followup_candidates()
+                    growth_candidates = int(generated.get("created") or 0) + int(
+                        generated.get("updated") or 0
+                    )
+                except Exception:
+                    logger.exception("生成增长续作候选失败")
             return {
                 "enabled": True,
                 "due_checkpoints": len(due),
@@ -2367,6 +2376,7 @@ class TransferCenter:
                 "failed": failed,
                 "synced": int(sync_result.get("synced") or 0),
                 "unchanged": int(sync_result.get("unchanged") or 0),
+                "growth_candidates": growth_candidates,
             }
         finally:
             self._performance_sync_lock.release()
@@ -2378,7 +2388,8 @@ class TransferCenter:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT m.*, j.title
+                SELECT m.*, j.title, j.source_platform, j.source_url,
+                       j.source_id, j.duration
                 FROM transfer_metrics AS m
                 JOIN transfer_jobs AS j ON j.id=m.job_id
                 WHERE m.checkpoint_hours IN (24, 72, 168)
@@ -2479,14 +2490,20 @@ class TransferCenter:
                         "title": str(early.get("title") or job_id[:8]),
                         "views_24h": views,
                         "engagement_24h": engagement,
-                        "growth_24h_72h": float(
-                            (transition or {}).get("views_growth_rate") or 0
+                        "growth_24h_72h": (
+                            float(transition["views_growth_rate"])
+                            if transition
+                            else None
                         ),
+                        "source_platform": str(early.get("source_platform") or ""),
+                        "source_url": str(early.get("source_url") or ""),
+                        "source_id": str(early.get("source_id") or ""),
+                        "duration": float(early.get("duration") or 0),
                     }
                 )
         candidates.sort(
             key=lambda item: (
-                item["growth_24h_72h"],
+                item["growth_24h_72h"] or 0,
                 item["engagement_24h"],
                 item["views_24h"],
             ),
@@ -2787,6 +2804,105 @@ class TransferCenter:
         }
 
     # ---- hot candidate pool ------------------------------------------
+    def generate_growth_followup_candidates(self, limit: int = 5) -> dict[str, Any]:
+        growth = self.get_performance_growth(days=30)
+        candidates = growth.get("repeat_candidates") or []
+        created = 0
+        updated = 0
+        skipped = 0
+        errors = []
+        for item in candidates[: max(1, min(20, int(limit)))]:
+            source_platform = str(item.get("source_platform") or "").strip().lower()
+            source_url = str(item.get("source_url") or "").strip()
+            if source_platform not in SOURCE_PLATFORMS or not source_url:
+                skipped += 1
+                continue
+            base_title = str(item.get("title") or "高增长视频").strip()[:160]
+            duration = float(item.get("duration") or 0)
+            suggested_duration = (
+                "45-75 秒"
+                if duration >= 120
+                else "45-60 秒"
+                if duration >= 60
+                else "30-45 秒"
+            )
+            suggested_angle = f"围绕《{base_title}》的同一需求，换一个场景做实测对比和结论清单"
+            suggested_hook = "前 3 秒直接给出实测结果或最大反差，再解释原因"
+            suggested_visual = "结果镜头 → 3 个证据/步骤 → 本地信息卡总结"
+            growth_value = item.get("growth_24h_72h")
+            growth_rate = float(growth_value or 0)
+            engagement = float(item.get("engagement_24h") or 0)
+            candidate_title = f"{base_title}｜同类续作实测"
+            source_id = "growth:" + hashlib.sha256(
+                f"{item.get('job_id')}:{item.get('platform')}:v1".encode()
+            ).hexdigest()[:24]
+            metrics = {
+                "candidate_type": "growth_followup",
+                "parent_job_id": str(item.get("job_id") or ""),
+                "recommended_target_platform": str(item.get("platform") or ""),
+                "views_24h": int(item.get("views_24h") or 0),
+                "engagement_24h": engagement,
+                "growth_24h_72h": growth_rate if growth_value is not None else None,
+                "suggested_angle": suggested_angle,
+                "suggested_hook": suggested_hook,
+                "suggested_duration": suggested_duration,
+                "suggested_visual_structure": suggested_visual,
+            }
+            growth_text = (
+                f"{growth_rate}%" if growth_value is not None else "待观察"
+            )
+            summary = (
+                f"增长依据：24 小时播放 {metrics['views_24h']}，"
+                f"互动率 {engagement}%，24→72 小时增长 {growth_text}。\n"
+                f"选题角度：{suggested_angle}。\n"
+                f"开场：{suggested_hook}。\n"
+                f"建议时长：{suggested_duration}；画面：{suggested_visual}。"
+            )
+            candidate_id = hashlib.sha256(
+                f"{source_platform}:{source_id}".encode()
+            ).hexdigest()[:32]
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT status FROM transfer_candidates WHERE id=?",
+                    (candidate_id,),
+                ).fetchone()
+            try:
+                self._upsert_candidate(
+                    {
+                        "platform": source_platform,
+                        "source_id": source_id,
+                        "source_url": source_url,
+                        "title": candidate_title,
+                        "uploader": "增长复盘自动生成",
+                        "summary": summary,
+                        "heat_score": max(
+                            0,
+                            int(
+                                metrics["views_24h"]
+                                + growth_rate * 100
+                                + engagement * 100
+                            ),
+                        ),
+                        "metrics": metrics,
+                        "source_label": "增长复盘续作候选",
+                    }
+                )
+                if existing is None:
+                    created += 1
+                elif str(existing["status"] or "") == "candidate":
+                    updated += 1
+                else:
+                    skipped += 1
+            except Exception as exc:
+                errors.append(_safe_error(exc))
+        return {
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+            "available": len(candidates),
+        }
+
     def _upsert_candidate(self, item: dict[str, Any]) -> str:
         platform = str(item.get("platform") or "").strip().lower()
         source_id = str(item.get("source_id") or "").strip()
@@ -3001,6 +3117,24 @@ class TransferCenter:
         )
         if not job_id:
             raise RuntimeError("热点候选无法加入任务")
+        try:
+            candidate_metrics = json.loads(candidate.get("metrics_json") or "{}")
+        except (TypeError, ValueError):
+            candidate_metrics = {}
+        if candidate_metrics.get("candidate_type") == "growth_followup":
+            self._update_job(
+                job_id,
+                processing_mode="professional",
+                recreation_mode="commentary",
+                original_angle=str(
+                    candidate_metrics.get("suggested_angle") or ""
+                )[:2000],
+                original_contribution=(
+                    f"开场：{candidate_metrics.get('suggested_hook') or ''}\n"
+                    f"建议时长：{candidate_metrics.get('suggested_duration') or ''}\n"
+                    f"画面结构：{candidate_metrics.get('suggested_visual_structure') or ''}"
+                )[:4000],
+            )
         with self._connect() as conn:
             conn.execute(
                 "UPDATE transfer_candidates SET status='promoted', job_id=?, updated_at=? WHERE id=?",

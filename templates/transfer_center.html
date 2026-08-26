@@ -148,34 +148,40 @@
     <div class="workspace-panel-head">
         <div>
             <h2>热点候选池</h2>
-            <p>当前接入 B站公开热门榜与抖音公开热点页；刷新只保存候选信息。</p>
+            <p>统一收纳增长复盘续作与公开热点；生成或刷新都只保存候选信息。</p>
         </div>
-        <form method="post" action="{{ url_for('transfer_center_refresh_candidates') }}" class="d-flex gap-2">
-            <select class="form-select form-select-sm" name="platform" aria-label="热点平台">
-                <option value="all">B站 + 抖音</option>
-                <option value="bilibili">只看 B站</option>
-                <option value="douyin">只看抖音</option>
-            </select>
-            <input type="hidden" name="limit" value="20">
-            <button class="btn btn-sm btn-primary text-nowrap"><i class="bi bi-arrow-clockwise me-1"></i>刷新候选</button>
-        </form>
+        <div class="d-flex gap-2 flex-wrap">
+            <form method="post" action="{{ url_for('transfer_center_generate_growth_candidates') }}">
+                <button class="btn btn-sm btn-outline-primary text-nowrap">生成续作候选</button>
+            </form>
+            <form method="post" action="{{ url_for('transfer_center_refresh_candidates') }}" class="d-flex gap-2">
+                <select class="form-select form-select-sm" name="platform" aria-label="热点平台">
+                    <option value="all">B站 + 抖音</option>
+                    <option value="bilibili">只看 B站</option>
+                    <option value="douyin">只看抖音</option>
+                </select>
+                <input type="hidden" name="limit" value="20">
+                <button class="btn btn-sm btn-primary text-nowrap"><i class="bi bi-arrow-clockwise me-1"></i>刷新候选</button>
+            </form>
+        </div>
     </div>
     <div class="workspace-panel-body">
         {% if hot_candidates %}
         <div class="table-responsive">
             <table class="table align-middle mb-0">
-                <thead class="table-light"><tr><th>候选内容</th><th>来源</th><th>公开热度</th><th>加入任务</th><th class="text-end">操作</th></tr></thead>
+                <thead class="table-light"><tr><th>候选内容</th><th>来源</th><th>优先级/热度</th><th>加入任务</th><th class="text-end">操作</th></tr></thead>
                 <tbody>
                 {% for candidate in hot_candidates %}
                     <tr>
-                        <td style="min-width:280px"><a href="{{ candidate.source_url }}" target="_blank" rel="noopener" class="fw-semibold text-decoration-none">{{ candidate.title or '未识别标题' }}</a><div class="small text-muted">{{ candidate.uploader or candidate.source_id }}</div></td>
-                        <td><span class="badge {{ 'bg-info text-dark' if candidate.platform == 'bilibili' else 'bg-dark' }}">{{ {'bilibili':'B站','douyin':'抖音'}.get(candidate.platform, candidate.platform) }}</span><div class="small text-muted mt-1">{{ candidate.source_label }}</div></td>
+                        <td style="min-width:280px"><a href="{{ candidate.source_url }}" target="_blank" rel="noopener" class="fw-semibold text-decoration-none">{{ candidate.title or '未识别标题' }}</a><div class="small text-muted">{{ candidate.uploader or candidate.source_id }}</div>{% if candidate.metrics.candidate_type == 'growth_followup' %}<div class="small text-primary mt-1">24h {{ candidate.metrics.views_24h }} 播放 · 互动 {{ candidate.metrics.engagement_24h }}% · 24→72h {% if candidate.metrics.growth_24h_72h is not none %}{{ candidate.metrics.growth_24h_72h }}%{% else %}待观察{% endif %}</div>{% endif %}</td>
+                        <td><span class="badge {{ 'bg-primary' if candidate.metrics.candidate_type == 'growth_followup' else ('bg-info text-dark' if candidate.platform == 'bilibili' else 'bg-dark') }}">{{ '复盘续作' if candidate.metrics.candidate_type == 'growth_followup' else {'bilibili':'B站','douyin':'抖音'}.get(candidate.platform, candidate.platform) }}</span><div class="small text-muted mt-1">{{ candidate.source_label }}</div></td>
                         <td>{{ candidate.heat_score or '—' }}{% if candidate.metrics.likes %}<div class="small text-muted">点赞 {{ candidate.metrics.likes }}</div>{% endif %}</td>
                         <td style="min-width:260px">
+                            {% set recommended_target = candidate.metrics.recommended_target_platform or '' %}
                             <form method="post" action="{{ url_for('transfer_center_promote_candidate', candidate_id=candidate.id) }}" class="d-flex flex-wrap gap-2 align-items-center">
-                                {% if candidate.platform != 'bilibili' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_bilibili" checked> B站</label>{% endif %}
-                                {% if candidate.platform != 'douyin' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_douyin"> 抖音</label>{% endif %}
-                                <label class="small"><input class="form-check-input" type="checkbox" name="target_youtube" checked> YouTube</label>
+                                {% if candidate.platform != 'bilibili' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_bilibili" {% if recommended_target == 'bilibili' or not recommended_target %}checked{% endif %}> B站</label>{% endif %}
+                                {% if candidate.platform != 'douyin' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_douyin" {% if recommended_target == 'douyin' %}checked{% endif %}> 抖音</label>{% endif %}
+                                {% if candidate.platform != 'youtube' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_youtube" {% if recommended_target == 'youtube' or not recommended_target %}checked{% endif %}> YouTube</label>{% endif %}
                                 <label class="small"><input class="form-check-input" type="checkbox" name="target_x"> X</label>
                                 <button class="btn btn-sm btn-outline-primary">加入</button>
                             </form>
