@@ -84,6 +84,12 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert "全部就绪才开放制作入口" in review
     assert "not production_ready" in review
     assert "request.form.getlist('material_ready')" in app_source
+    assert 'enctype="multipart/form-data"' in review
+    assert 'name="material_file_{{ item.key }}"' in review
+    assert 'name="material_url_{{ item.key }}"' in review
+    assert 'name="material_unbind"' in review
+    assert "center.get_material_readiness(job_id)" in app_source
+    assert "center.bind_material_assets(" in app_source
     assert "素材准备尚未完成" in (
         ROOT / "modules" / "transfer_center.py"
     ).read_text(encoding="utf-8")

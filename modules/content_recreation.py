@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -494,6 +495,7 @@ def build_growth_followup_draft(
             "draft_storyboard": storyboard,
             "material_checklist": materials,
             "material_readiness": {item: False for item in materials},
+            "material_bindings": {},
             "material_gate_enabled": True,
             "broll_suggestions": materials,
             "required_edits": [
@@ -549,7 +551,9 @@ def format_material_checklist_text(plan: dict[str, Any]) -> str:
     return "\n".join(f"- [ ] {item}" for item in cleaned if item)
 
 
-def material_readiness_summary(plan: dict[str, Any]) -> dict[str, Any]:
+def material_readiness_summary(
+    plan: dict[str, Any], binding_readiness: dict[str, bool] | None = None
+) -> dict[str, Any]:
     raw_items = plan.get("material_checklist") or []
     materials = [_clean_text(item, 300) for item in raw_items[:20]]
     materials = [item for item in materials if item]
@@ -558,9 +562,38 @@ def material_readiness_summary(plan: dict[str, Any]) -> dict[str, Any]:
         if isinstance(plan.get("material_readiness"), dict)
         else {}
     )
-    items = [
-        {"label": item, "ready": bool(readiness.get(item))} for item in materials
-    ]
+    bindings = (
+        plan.get("material_bindings")
+        if isinstance(plan.get("material_bindings"), dict)
+        else {}
+    )
+    verified_bindings = binding_readiness
+    items = []
+    for item in materials:
+        binding = bindings.get(item) if isinstance(bindings.get(item), dict) else {}
+        binding_type = str(binding.get("type") or "")
+        binding_label = str(
+            binding.get("filename")
+            or binding.get("url")
+            or ""
+        )[:500]
+        bound_ready = bool(
+            verified_bindings.get(item, False)
+            if verified_bindings is not None
+            else binding.get("verified")
+        )
+        items.append(
+            {
+                "key": hashlib.sha256(item.encode("utf-8")).hexdigest()[:16],
+                "label": item,
+                "ready": bool(readiness.get(item)) or bound_ready,
+                "manual_ready": bool(readiness.get(item)),
+                "binding_ready": bound_ready,
+                "binding_type": binding_type,
+                "binding_label": binding_label,
+                "binding_url": str(binding.get("url") or "")[:2000],
+            }
+        )
     ready = sum(1 for item in items if item["ready"])
     total = len(items)
     gate_enabled = bool(plan.get("material_gate_enabled"))

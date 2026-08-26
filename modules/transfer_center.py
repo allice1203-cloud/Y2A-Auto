@@ -87,6 +87,27 @@ YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE)
 PERFORMANCE_CHECKPOINT_HOURS = (24, 72, 168)
+MATERIAL_BINDING_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".m4v",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".srt",
+    ".vtt",
+    ".txt",
+    ".md",
+    ".pdf",
+}
 
 
 def _utc_now() -> str:
@@ -3296,6 +3317,7 @@ class TransferCenter:
             "draft_storyboard",
             "material_checklist",
             "material_readiness",
+            "material_bindings",
             "material_gate_enabled",
             "broll_suggestions",
             "suggested_duration",
@@ -4240,9 +4262,156 @@ class TransferCenter:
         return self.get_job(job_id) or {}
 
     @staticmethod
-    def _assert_production_materials_ready(job: dict[str, Any]) -> dict[str, Any]:
+    def _material_bindings_dir(job_id: str) -> Path:
+        return Path(get_app_subdir("downloads")) / "transfer" / job_id / "materials"
+
+    def _material_binding_readiness(
+        self, job: dict[str, Any], plan: dict[str, Any]
+    ) -> dict[str, bool]:
+        bindings = (
+            plan.get("material_bindings")
+            if isinstance(plan.get("material_bindings"), dict)
+            else {}
+        )
+        root = self._material_bindings_dir(str(job.get("id") or "")).resolve()
+        result: dict[str, bool] = {}
+        for label, raw_binding in bindings.items():
+            if not isinstance(raw_binding, dict):
+                continue
+            binding_type = str(raw_binding.get("type") or "")
+            if binding_type == "file":
+                path_value = str(raw_binding.get("path") or "")
+                try:
+                    path = Path(path_value).resolve()
+                    result[str(label)] = bool(
+                        path.parent == root
+                        and path.suffix.lower() in MATERIAL_BINDING_EXTENSIONS
+                        and path.is_file()
+                        and path.stat().st_size > 0
+                    )
+                except OSError:
+                    result[str(label)] = False
+            elif binding_type == "url":
+                try:
+                    _validate_public_source_url(str(raw_binding.get("url") or ""))
+                    result[str(label)] = True
+                except ValueError:
+                    result[str(label)] = False
+        return result
+
+    def get_material_readiness(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        return material_readiness_summary(
+            plan, self._material_binding_readiness(job, plan)
+        )
+
+    def bind_material_assets(
+        self,
+        job_id: str,
+        *,
+        urls: dict[str, str] | None = None,
+        uploads: dict[str, Any] | None = None,
+        removals: set[str] | None = None,
+    ) -> dict[str, int]:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        plan = deserialize_plan(job.get("recreation_plan_json"))
+        summary = material_readiness_summary(plan)
+        items_by_key = {str(item["key"]): item for item in summary["items"]}
+        bindings = (
+            dict(plan.get("material_bindings"))
+            if isinstance(plan.get("material_bindings"), dict)
+            else {}
+        )
+        url_values = urls or {}
+        upload_values = uploads or {}
+        removal_keys = removals or set()
+        attached = 0
+        unbound = 0
+        root = self._material_bindings_dir(job_id)
+        try:
+            configured_max_mb = int(
+                self._config().get("TRANSFER_MATERIAL_MAX_MB") or 512
+            )
+        except (TypeError, ValueError):
+            configured_max_mb = 512
+        max_bytes = max(
+            1,
+            min(2048, configured_max_mb),
+        ) * 1024 * 1024
+        for key, item in items_by_key.items():
+            label = str(item["label"])
+            if key in removal_keys:
+                if label in bindings:
+                    bindings.pop(label, None)
+                    unbound += 1
+                continue
+            file_obj = upload_values.get(key)
+            if file_obj is not None and str(getattr(file_obj, "filename", "") or ""):
+                original_name = Path(str(file_obj.filename)).name[:180]
+                extension = Path(original_name).suffix.lower()
+                if extension not in MATERIAL_BINDING_EXTENSIONS:
+                    raise ValueError(
+                        f"素材“{label}”文件格式不支持，请上传视频、图片、"
+                        "音频、字幕、文本或 PDF"
+                    )
+                root.mkdir(parents=True, exist_ok=True)
+                target = root / f"{key}-{uuid.uuid4().hex[:10]}{extension}"
+                temp_path = root / f".{target.name}.upload"
+                try:
+                    file_obj.save(str(temp_path))
+                    size = temp_path.stat().st_size
+                    if size <= 0:
+                        raise ValueError(f"素材“{label}”上传文件为空")
+                    if size > max_bytes:
+                        raise ValueError(
+                            f"素材“{label}”超过 {max_bytes // 1024 // 1024} MB 限制"
+                        )
+                    os.chmod(temp_path, 0o600)
+                    os.replace(temp_path, target)
+                except Exception:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                    raise
+                bindings[label] = {
+                    "type": "file",
+                    "path": str(target),
+                    "filename": original_name,
+                    "size": size,
+                    "verified": True,
+                    "updated_at": _utc_now(),
+                }
+                attached += 1
+                continue
+            raw_url = str(url_values.get(key) or "").strip()
+            if raw_url:
+                try:
+                    normalized_url = _validate_public_source_url(raw_url)
+                except ValueError as exc:
+                    raise ValueError(f"素材“{label}”的参考地址无效：{exc}") from exc
+                existing = bindings.get(label)
+                if not isinstance(existing, dict) or existing.get("url") != normalized_url:
+                    attached += 1
+                bindings[label] = {
+                    "type": "url",
+                    "url": normalized_url,
+                    "verified": True,
+                    "updated_at": _utc_now(),
+                }
+        plan["material_bindings"] = bindings
+        self._update_job(job_id, recreation_plan_json=serialize_plan(plan))
+        return {"attached": attached, "unbound": unbound}
+
+    def _assert_production_materials_ready(
+        self, job: dict[str, Any]
+    ) -> dict[str, Any]:
+        plan = deserialize_plan(job.get("recreation_plan_json"))
         summary = material_readiness_summary(
-            deserialize_plan(job.get("recreation_plan_json"))
+            plan, self._material_binding_readiness(job, plan)
         )
         if summary["blocking"]:
             raise ValueError(

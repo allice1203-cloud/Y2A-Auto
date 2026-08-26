@@ -2106,6 +2106,110 @@ def test_material_readiness_blocks_production_until_every_item_is_ready(
     assert result["mpt_asset_id"] == "asset-ready"
 
 
+def test_material_bindings_auto_verify_and_unbind_without_deleting_file(
+    center, tmp_path
+):
+    class Upload:
+        filename = "新实拍.mp4"
+
+        @staticmethod
+        def save(path):
+            with open(path, "wb") as handle:
+                handle.write(b"material-video")
+
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1materialbind", ["youtube"]
+    )
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"video")
+    plan = {
+        "material_checklist": ["新实拍", "信息卡"],
+        "material_readiness": {"新实拍": False, "信息卡": False},
+        "material_bindings": {},
+        "material_gate_enabled": True,
+    }
+    center._update_job(
+        job_id,
+        local_video_path=str(video_path),
+        original_video_path=str(video_path),
+        recreation_plan_json=json.dumps(plan, ensure_ascii=False),
+        mpt_project_id="project-bound",
+        mpt_asset_id="asset-bound",
+    )
+    item_keys = {
+        item["label"]: item["key"]
+        for item in transfer_module.material_readiness_summary(plan)["items"]
+    }
+
+    first_result = center.bind_material_assets(
+        job_id,
+        uploads={item_keys["新实拍"]: Upload()},
+    )
+    first_summary = center.get_material_readiness(job_id)
+    saved_plan = json.loads(center.get_job(job_id)["recreation_plan_json"])
+    uploaded_path = saved_plan["material_bindings"]["新实拍"]["path"]
+
+    assert first_result == {"attached": 1, "unbound": 0}
+    assert first_summary["ready"] == 1
+    assert os.path.isfile(uploaded_path)
+    assert os.stat(uploaded_path).st_mode & 0o777 == 0o600
+
+    second_result = center.bind_material_assets(
+        job_id,
+        urls={item_keys["信息卡"]: "https://example.com/reference-card"},
+    )
+    ready_summary = center.get_material_readiness(job_id)
+    production_job = center.send_to_money_printer(job_id)
+
+    assert second_result == {"attached": 1, "unbound": 0}
+    assert ready_summary["all_ready"] is True
+    assert production_job["mpt_project_id"] == "project-bound"
+
+    unbind_result = center.bind_material_assets(
+        job_id,
+        removals={item_keys["新实拍"]},
+    )
+    after_unbind = center.get_material_readiness(job_id)
+
+    assert unbind_result == {"attached": 0, "unbound": 1}
+    assert after_unbind["blocking"] is True
+    assert os.path.isfile(uploaded_path)
+    with pytest.raises(ValueError, match="素材准备尚未完成（1/2）"):
+        center.send_to_money_printer(job_id)
+
+
+def test_material_binding_rejects_unsupported_file_and_private_url(center):
+    class Upload:
+        filename = "payload.exe"
+
+        @staticmethod
+        def save(path):
+            raise AssertionError("不支持的扩展名不应写入磁盘")
+
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1materialinvalid", ["youtube"]
+    )
+    plan = {
+        "material_checklist": ["新实拍"],
+        "material_readiness": {"新实拍": False},
+        "material_bindings": {},
+        "material_gate_enabled": True,
+    }
+    center._update_job(
+        job_id,
+        recreation_plan_json=json.dumps(plan, ensure_ascii=False),
+    )
+    item_key = transfer_module.material_readiness_summary(plan)["items"][0]["key"]
+
+    with pytest.raises(ValueError, match="文件格式不支持"):
+        center.bind_material_assets(job_id, uploads={item_key: Upload()})
+    with pytest.raises(ValueError, match="不允许下载本机或内网地址"):
+        center.bind_material_assets(
+            job_id,
+            urls={item_key: "http://127.0.0.1/private-material"},
+        )
+
+
 def test_growth_followup_candidate_requires_real_timed_sample(center):
     job_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1manualonly01", ["youtube"]

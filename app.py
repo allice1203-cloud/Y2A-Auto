@@ -60,7 +60,6 @@ from modules.content_recreation import (
     deserialize_plan,
     format_material_checklist_text,
     format_storyboard_text,
-    material_readiness_summary,
 )
 from modules.source_login import create_login_authorization
 from modules.speech_pipeline_settings import (
@@ -4006,12 +4005,13 @@ def transfer_center_publish_job(job_id):
 @app.route('/transfer-center/jobs/<job_id>/review')
 @login_required
 def transfer_center_review_job(job_id):
-    job = _transfer_center().get_job(job_id)
+    center = _transfer_center()
+    job = center.get_job(job_id)
     if not job:
         flash('搬运任务不存在。', 'warning')
         return redirect(url_for('transfer_center_index'))
     recreation_plan = deserialize_plan(job.get('recreation_plan_json'))
-    material_readiness = material_readiness_summary(recreation_plan)
+    material_readiness = center.get_material_readiness(job_id)
     return render_template(
         'transfer_review.html',
         job=job,
@@ -4029,11 +4029,11 @@ def transfer_center_review_job(job_id):
         cover_preflight=deserialize_plan(job.get('cover_preflight_json')),
         bilibili_partition_mapping=_build_bilibili_partition_mapping(),
         watermark_states=WATERMARK_STATES,
-        money_printer_url=_transfer_center().money_printer_url(job),
-        money_printer_quick_url=_transfer_center().money_printer_url(
+        money_printer_url=center.money_printer_url(job),
+        money_printer_quick_url=center.money_printer_url(
             job, workflow='quick'
         ),
-        money_printer_professional_url=_transfer_center().money_printer_url(
+        money_printer_professional_url=center.money_printer_url(
             job, workflow='professional'
         ),
     )
@@ -4279,6 +4279,27 @@ def transfer_center_save_review(job_id):
     publish_after = action == 'approve_publish'
     try:
         center = _transfer_center()
+        material_urls = {
+            name.removeprefix('material_url_'): value
+            for name, value in request.form.items()
+            if name.startswith('material_url_')
+        }
+        material_uploads = {
+            name.removeprefix('material_file_'): file_obj
+            for name, file_obj in request.files.items()
+            if name.startswith('material_file_') and file_obj and file_obj.filename
+        }
+        material_removals = {
+            value
+            for value in request.form.getlist('material_unbind')
+            if value
+        }
+        binding_result = center.bind_material_assets(
+            job_id,
+            urls=material_urls,
+            uploads=material_uploads,
+            removals=material_removals,
+        )
         center.save_recreation_review(
             job_id,
             {
@@ -4317,10 +4338,17 @@ def transfer_center_save_review(job_id):
                 'success',
             )
         else:
+            binding_total = int(binding_result.get('attached') or 0) + int(
+                binding_result.get('unbound') or 0
+            )
             flash(
                 '视频已确认，可以进入发布。'
                 if approve
-                else '确认草稿已保存，尚未允许发布。',
+                else (
+                    f'草稿已保存，已更新 {binding_total} 项素材绑定；尚未允许发布。'
+                    if binding_total
+                    else '确认草稿已保存，尚未允许发布。'
+                ),
                 'success',
             )
     except Exception as e:

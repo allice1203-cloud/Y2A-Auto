@@ -203,7 +203,7 @@
             </div>
         </div>
 
-        <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" class="card review-card">
+        <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" enctype="multipart/form-data" class="card review-card">
             <div class="card-header bg-white py-3">
                 <h2 class="h5 mb-1">发布确认</h2>
                 <div class="small text-muted">先选处理方式，再核对来源与目标平台。</div>
@@ -306,13 +306,32 @@
                                 </div>
                                 <div class="material-ready-list">
                                     {% for item in material_readiness.items %}
-                                    <label class="form-check small py-1 mb-0">
-                                        <input class="form-check-input material-ready-check" type="checkbox" name="material_ready" value="{{ item.label }}" {% if item.ready %}checked{% endif %}>
-                                        <span class="form-check-label">{{ item.label }}</span>
-                                    </label>
+                                    <div class="border-top py-2">
+                                        <label class="form-check small mb-1">
+                                            <input class="form-check-input material-ready-check" type="checkbox" name="material_ready" value="{{ item.label }}" data-binding-ready="{{ 1 if item.binding_ready else 0 }}" {% if item.manual_ready %}checked{% endif %}>
+                                            <span class="form-check-label">{{ item.label }}</span>
+                                        </label>
+                                        {% if item.binding_ready %}
+                                        <div class="small text-success ps-4 mb-1">
+                                            <i class="bi bi-link-45deg"></i>
+                                            {% if item.binding_type == 'url' %}<a href="{{ item.binding_url }}" target="_blank" rel="noopener">参考地址已绑定</a>{% else %}{{ item.binding_label or '文件已绑定' }}{% endif %}
+                                        </div>
+                                        {% endif %}
+                                        <details class="ps-4">
+                                            <summary class="small text-muted">绑定文件或参考地址</summary>
+                                            <input class="form-control form-control-sm mt-2" type="file" name="material_file_{{ item.key }}" accept="video/*,image/*,audio/*,.srt,.vtt,.txt,.md,.pdf">
+                                            <input class="form-control form-control-sm mt-2" type="url" name="material_url_{{ item.key }}" value="{{ item.binding_url if item.binding_type == 'url' else '' }}" placeholder="https://...">
+                                            {% if item.binding_type %}
+                                            <label class="form-check small mt-2 mb-0">
+                                                <input class="form-check-input" type="checkbox" name="material_unbind" value="{{ item.key }}">
+                                                <span class="form-check-label">取消当前绑定（不删除已上传文件）</span>
+                                            </label>
+                                            {% endif %}
+                                        </details>
+                                    </div>
                                     {% endfor %}
                                 </div>
-                                <div class="form-text mt-2">勾选后点页面底部“保存草稿”；全部就绪才开放制作入口。</div>
+                                <div class="form-text mt-2">可手工勾选，也可绑定本地文件或公网地址自动就绪；保存后生效，全部就绪才开放制作入口。</div>
                             </div>
                             {% endif %}
                         </div>
@@ -797,17 +816,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function syncMaterialProgress() {
         if (!materialChecks.length) return;
-        const ready = materialChecks.filter((input) => input.checked).length;
+        const ready = materialChecks.filter((input) => input.checked || input.dataset.bindingReady === '1').length;
+        const manualChecks = materialChecks.filter((input) => input.dataset.bindingReady !== '1');
         if (materialReadyCount) materialReadyCount.textContent = `${ready}/${materialChecks.length}`;
         if (materialReadyBar) materialReadyBar.style.width = `${Math.round(100 * ready / materialChecks.length)}%`;
-        if (toggleMaterialsReady) toggleMaterialsReady.textContent = ready === materialChecks.length ? '全部取消' : '全部就绪';
+        if (toggleMaterialsReady) {
+            toggleMaterialsReady.disabled = manualChecks.length === 0;
+            toggleMaterialsReady.textContent = manualChecks.length === 0
+                ? '均已绑定'
+                : (manualChecks.every((input) => input.checked) ? '取消手工勾选' : '手工全部就绪');
+        }
     }
 
     modeInputs.forEach((input) => input.addEventListener('change', syncMode));
     materialChecks.forEach((input) => input.addEventListener('change', syncMaterialProgress));
     toggleMaterialsReady?.addEventListener('click', () => {
-        const nextState = !materialChecks.every((input) => input.checked);
-        materialChecks.forEach((input) => { input.checked = nextState; });
+        const manualChecks = materialChecks.filter((input) => input.dataset.bindingReady !== '1');
+        const nextState = !manualChecks.every((input) => input.checked);
+        manualChecks.forEach((input) => { input.checked = nextState; });
         syncMaterialProgress();
     });
     reviewForm?.addEventListener('submit', (event) => {

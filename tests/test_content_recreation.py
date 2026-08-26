@@ -94,6 +94,22 @@ def test_growth_followup_draft_is_editable_and_requires_no_model_call():
     assert edited_readiness["ready"] == 1
     assert edited_readiness["all_ready"] is False
 
+    edited["material_bindings"] = {
+        "信息卡": {
+            "type": "url",
+            "url": "https://example.com/reference",
+            "verified": True,
+        }
+    }
+    bound_readiness = material_readiness_summary(edited)
+    assert bound_readiness["ready"] == 2
+    assert bound_readiness["all_ready"] is True
+    assert bound_readiness["items"][1]["binding_ready"] is True
+    assert len(bound_readiness["items"][1]["key"]) == 16
+    live_unverified = material_readiness_summary(edited, {})
+    assert live_unverified["ready"] == 1
+    assert live_unverified["items"][1]["binding_ready"] is False
+
 
 def test_fallback_plan_uses_real_subtitle_timecodes():
     plan = generate_recreation_plan(
