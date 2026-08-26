@@ -126,6 +126,10 @@
         padding-left: .8rem;
         margin-bottom: .9rem;
     }
+    .material-ready-list {
+        max-height: 190px;
+        overflow: auto;
+    }
     @media (max-width: 767.98px) {
         .workflow-rail, .mode-grid { grid-template-columns: 1fr; }
         .workflow-step, .mode-option { min-height: auto; }
@@ -289,8 +293,28 @@
                         </div>
                         <div class="col-lg-5">
                             <label class="form-label">素材清单</label>
-                            <textarea class="form-control" name="material_checklist_text" rows="9" maxlength="6000" placeholder="每行一项需要拍摄、录屏或制作的素材">{{ material_checklist_text }}</textarea>
-                            <div class="form-text">可以直接删改、排序或补充，保存后与任务一起留存。</div>
+                            <textarea class="form-control" name="material_checklist_text" rows="6" maxlength="6000" placeholder="每行一项需要拍摄、录屏或制作的素材">{{ material_checklist_text }}</textarea>
+                            <div class="form-text">修改清单后先保存，新增项会以“未就绪”进入下方进度。</div>
+                            {% if material_readiness.gate_enabled and material_readiness.total %}
+                            <div class="border rounded-3 p-3 mt-3">
+                                <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+                                    <strong class="small">准备进度 <span id="materialReadyCount">{{ material_readiness.ready }}/{{ material_readiness.total }}</span></strong>
+                                    <button class="btn btn-sm btn-outline-secondary py-0" type="button" id="toggleMaterialsReady">全部就绪</button>
+                                </div>
+                                <div class="progress mb-2" style="height:6px" role="progressbar" aria-label="素材准备进度">
+                                    <div class="progress-bar" id="materialReadyBar" style="width:{{ material_readiness.percent }}%"></div>
+                                </div>
+                                <div class="material-ready-list">
+                                    {% for item in material_readiness.items %}
+                                    <label class="form-check small py-1 mb-0">
+                                        <input class="form-check-input material-ready-check" type="checkbox" name="material_ready" value="{{ item.label }}" {% if item.ready %}checked{% endif %}>
+                                        <span class="form-check-label">{{ item.label }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <div class="form-text mt-2">勾选后点页面底部“保存草稿”；全部就绪才开放制作入口。</div>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                     <div class="form-check border rounded-3 p-3 ps-5 mb-4">
@@ -519,7 +543,13 @@
             <div class="card-header py-3"><h2 class="h6 mb-0">二剪制作台</h2></div>
             <div class="card-body">
                 <p class="small mb-3">正常制作可进入编辑台手工调整；AI 混合制作会生成解说、配音、字幕和粗剪，再由你终审。</p>
-                {% if not job.local_video_path %}<div class="small text-warning mb-3">当前只能编辑策划草稿；准备好视频素材后才会开放制作按钮。</div>{% endif %}
+                {% if not job.local_video_path %}
+                <div class="small text-warning mb-3">当前只能编辑策划草稿；准备好视频素材后才会开放制作按钮。</div>
+                {% elif material_readiness.blocking %}
+                <div class="small text-warning mb-3">素材已就绪 {{ material_readiness.ready }}/{{ material_readiness.total }}；请补齐并保存后再开始制作。</div>
+                {% else %}
+                <div class="small text-success mb-3">视频与所需素材已就绪，可以进入制作。</div>
+                {% endif %}
                 <div class="production-state mb-3">
                     <div class="small">联动状态</div>
                     <div class="fw-semibold mt-1">
@@ -536,9 +566,9 @@
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
                     <input type="hidden" name="workflow" value="professional">
                     <input type="hidden" name="operation" value="ai_rebuild">
-                    <button class="btn btn-light w-100" {% if not job.local_video_path %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
+                    <button class="btn btn-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
                 </form>
-                <a class="btn btn-light w-100 mb-2 {% if not job.local_video_path %}disabled{% endif %}" {% if job.local_video_path %}href="{{ money_printer_quick_url }}"{% else %}aria-disabled="true"{% endif %}>
+                <a class="btn btn-light w-100 mb-2 {% if not production_ready %}disabled{% endif %}" {% if production_ready %}href="{{ money_printer_quick_url }}"{% else %}aria-disabled="true"{% endif %}>
                     <i class="bi bi-lightning-charge me-1"></i>打开快速二剪
                 </a>
                 <form method="post" action="{{ url_for('transfer_center_sync_money_printer', job_id=job.id) }}" class="mb-2">
@@ -546,22 +576,22 @@
                         <i class="bi bi-cloud-arrow-down me-1"></i>同步加工成片
                     </button>
                 </form>
-                <a class="btn btn-outline-light w-100 {% if not job.local_video_path %}disabled{% endif %}" {% if job.local_video_path %}href="{{ money_printer_professional_url }}"{% else %}aria-disabled="true"{% endif %}>
+                <a class="btn btn-outline-light w-100 {% if not production_ready %}disabled{% endif %}" {% if production_ready %}href="{{ money_printer_professional_url }}"{% else %}aria-disabled="true"{% endif %}>
                     <i class="bi bi-sliders me-1"></i>打开标准二剪编辑台
                 </a>
                 {% else %}
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
                     <input type="hidden" name="workflow" value="professional">
                     <input type="hidden" name="operation" value="ai_rebuild">
-                    <button class="btn btn-light w-100" {% if not job.local_video_path %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
+                    <button class="btn btn-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
                 </form>
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
                     <input type="hidden" name="workflow" value="professional">
-                    <button class="btn btn-outline-light w-100" {% if not job.local_video_path %}disabled{% endif %}><i class="bi bi-sliders me-1"></i>建立标准二剪项目</button>
+                    <button class="btn btn-outline-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-sliders me-1"></i>建立标准二剪项目</button>
                 </form>
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}">
                     <input type="hidden" name="workflow" value="quick">
-                    <button class="btn btn-outline-light w-100" {% if not job.local_video_path %}disabled{% endif %}><i class="bi bi-lightning me-1"></i>改用快速二剪</button>
+                    <button class="btn btn-outline-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-lightning me-1"></i>改用快速二剪</button>
                 </form>
                 {% endif %}
             </div>
@@ -730,6 +760,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const publishConfirmed = document.getElementById('publishConfirmed');
     const recreationConfirmed = document.getElementById('recreationConfirmed');
     const watermarkStatus = document.getElementById('watermarkStatus');
+    const materialChecks = Array.from(document.querySelectorAll('.material-ready-check'));
+    const materialReadyCount = document.getElementById('materialReadyCount');
+    const materialReadyBar = document.getElementById('materialReadyBar');
+    const toggleMaterialsReady = document.getElementById('toggleMaterialsReady');
     const hasRecreatedMedia = approveButton?.dataset.recreated === '1';
     const reviewForm = approveButton?.closest('form');
 
@@ -761,7 +795,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function syncMaterialProgress() {
+        if (!materialChecks.length) return;
+        const ready = materialChecks.filter((input) => input.checked).length;
+        if (materialReadyCount) materialReadyCount.textContent = `${ready}/${materialChecks.length}`;
+        if (materialReadyBar) materialReadyBar.style.width = `${Math.round(100 * ready / materialChecks.length)}%`;
+        if (toggleMaterialsReady) toggleMaterialsReady.textContent = ready === materialChecks.length ? '全部取消' : '全部就绪';
+    }
+
     modeInputs.forEach((input) => input.addEventListener('change', syncMode));
+    materialChecks.forEach((input) => input.addEventListener('change', syncMaterialProgress));
+    toggleMaterialsReady?.addEventListener('click', () => {
+        const nextState = !materialChecks.every((input) => input.checked);
+        materialChecks.forEach((input) => { input.checked = nextState; });
+        syncMaterialProgress();
+    });
     reviewForm?.addEventListener('submit', (event) => {
         if (event.submitter !== approveButton) return;
         const mode = modeInputs.find((input) => input.checked)?.value || 'professional';
@@ -782,6 +830,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (approveLabel) approveLabel.textContent = '正在提交到后台…';
     });
     syncMode();
+    syncMaterialProgress();
 });
 </script>
 {% endblock %}

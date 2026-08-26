@@ -60,6 +60,7 @@ from modules.content_recreation import (
     deserialize_plan,
     format_material_checklist_text,
     format_storyboard_text,
+    material_readiness_summary,
 )
 from modules.source_login import create_login_authorization
 from modules.speech_pipeline_settings import (
@@ -4010,6 +4011,7 @@ def transfer_center_review_job(job_id):
         flash('搬运任务不存在。', 'warning')
         return redirect(url_for('transfer_center_index'))
     recreation_plan = deserialize_plan(job.get('recreation_plan_json'))
+    material_readiness = material_readiness_summary(recreation_plan)
     return render_template(
         'transfer_review.html',
         job=job,
@@ -4018,6 +4020,8 @@ def transfer_center_review_job(job_id):
         recreation_plan=recreation_plan,
         storyboard_text=format_storyboard_text(recreation_plan),
         material_checklist_text=format_material_checklist_text(recreation_plan),
+        material_readiness=material_readiness,
+        production_ready=bool(job.get('local_video_path')) and not material_readiness['blocking'],
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
@@ -4286,6 +4290,7 @@ def transfer_center_save_review(job_id):
                 'commentary_script': request.form.get('commentary_script'),
                 'storyboard_text': request.form.get('storyboard_text'),
                 'material_checklist_text': request.form.get('material_checklist_text'),
+                'material_ready': request.form.getlist('material_ready'),
                 'watermark_status': request.form.get('watermark_status'),
                 'watermark_note': request.form.get('watermark_note'),
                 'recreation_confirmed': request.form.get('recreation_confirmed'),

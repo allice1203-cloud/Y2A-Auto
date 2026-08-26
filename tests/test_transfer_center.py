@@ -2029,6 +2029,7 @@ def test_growth_followup_draft_can_be_edited_before_downloading(center):
             "commentary_script": "这是人工修改后的口播草稿。",
             "storyboard_text": "开场｜先给结果｜对比画面｜实拍\n结尾｜给出建议｜结论卡｜信息卡",
             "material_checklist_text": "- [ ] 实拍\n- [ ] 信息卡",
+            "material_ready": ["实拍"],
         },
         approve=False,
     )
@@ -2041,6 +2042,7 @@ def test_growth_followup_draft_can_be_edited_before_downloading(center):
     assert result["commentary_script"] == "这是人工修改后的口播草稿。"
     assert len(plan["draft_storyboard"]) == 2
     assert plan["material_checklist"] == ["实拍", "信息卡"]
+    assert plan["material_readiness"] == {"实拍": True, "信息卡": False}
 
     regenerated = center._preserve_growth_concept_draft(
         plan,
@@ -2062,6 +2064,46 @@ def test_growth_followup_draft_can_be_edited_before_downloading(center):
     assert regenerated["segment_plan"][0]["source_start"] == 3
     assert regenerated["draft_stage"] == "source_ready"
     assert regenerated["concept_source"] == "growth_followup"
+    assert regenerated["material_readiness"] == {"实拍": True, "信息卡": False}
+    assert regenerated["material_gate_enabled"] is True
+
+
+def test_material_readiness_blocks_production_until_every_item_is_ready(
+    center, tmp_path
+):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1materialgate", ["youtube"]
+    )
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"video")
+    blocked_plan = {
+        "material_checklist": ["实拍", "信息卡"],
+        "material_readiness": {"实拍": True, "信息卡": False},
+        "material_gate_enabled": True,
+    }
+    center._update_job(
+        job_id,
+        local_video_path=str(video_path),
+        original_video_path=str(video_path),
+        recreation_plan_json=json.dumps(blocked_plan, ensure_ascii=False),
+        mpt_project_id="project-ready",
+        mpt_asset_id="asset-ready",
+    )
+
+    with pytest.raises(ValueError, match="素材准备尚未完成（1/2）"):
+        center.send_to_money_printer(job_id)
+    with pytest.raises(ValueError, match="素材准备尚未完成（1/2）"):
+        center.recreate_with_money_printer_async(job_id)
+
+    blocked_plan["material_readiness"]["信息卡"] = True
+    center._update_job(
+        job_id,
+        recreation_plan_json=json.dumps(blocked_plan, ensure_ascii=False),
+    )
+    result = center.send_to_money_printer(job_id)
+
+    assert result["mpt_project_id"] == "project-ready"
+    assert result["mpt_asset_id"] == "asset-ready"
 
 
 def test_growth_followup_candidate_requires_real_timed_sample(center):

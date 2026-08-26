@@ -6,6 +6,7 @@ from modules.content_recreation import (
     format_material_checklist_text,
     format_storyboard_text,
     generate_recreation_plan,
+    material_readiness_summary,
     merge_editable_draft,
     validate_review_payload,
 )
@@ -61,6 +62,17 @@ def test_growth_followup_draft_is_editable_and_requires_no_model_call():
     assert len(plan["commentary_script"]) >= 100
     assert len(plan["draft_storyboard"]) == 5
     assert len(plan["material_checklist"]) == 5
+    readiness = material_readiness_summary(plan)
+    assert readiness["ready"] == 0
+    assert readiness["total"] == 5
+    assert readiness["gate_enabled"] is True
+    assert readiness["blocking"] is True
+
+    legacy_summary = material_readiness_summary(
+        {"broll_suggestions": ["历史任务的 B-roll 建议"]}
+    )
+    assert legacy_summary["total"] == 0
+    assert legacy_summary["blocking"] is False
     assert "换一个场景" in plan["original_angle"]
     assert "前 3 秒" in format_storyboard_text(plan)
     assert "- [ ]" in format_material_checklist_text(plan)
@@ -69,6 +81,7 @@ def test_growth_followup_draft_is_editable_and_requires_no_model_call():
         plan,
         "开场｜新旁白｜新画面｜新实拍\n结尾｜新结论｜结论卡｜信息卡",
         "- [ ] 新实拍\n- [x] 信息卡",
+        ["新实拍"],
     )
 
     assert [item["stage"] for item in edited["draft_storyboard"]] == [
@@ -77,6 +90,9 @@ def test_growth_followup_draft_is_editable_and_requires_no_model_call():
     ]
     assert edited["material_checklist"] == ["新实拍", "信息卡"]
     assert edited["broll_suggestions"] == ["新实拍", "信息卡"]
+    edited_readiness = material_readiness_summary(edited)
+    assert edited_readiness["ready"] == 1
+    assert edited_readiness["all_ready"] is False
 
 
 def test_fallback_plan_uses_real_subtitle_timecodes():

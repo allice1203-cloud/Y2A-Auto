@@ -493,6 +493,8 @@ def build_growth_followup_draft(
             ],
             "draft_storyboard": storyboard,
             "material_checklist": materials,
+            "material_readiness": {item: False for item in materials},
+            "material_gate_enabled": True,
             "broll_suggestions": materials,
             "required_edits": [
                 "按实际实测结果修改口播中的占位判断",
@@ -547,36 +549,102 @@ def format_material_checklist_text(plan: dict[str, Any]) -> str:
     return "\n".join(f"- [ ] {item}" for item in cleaned if item)
 
 
+def material_readiness_summary(plan: dict[str, Any]) -> dict[str, Any]:
+    raw_items = plan.get("material_checklist") or []
+    materials = [_clean_text(item, 300) for item in raw_items[:20]]
+    materials = [item for item in materials if item]
+    readiness = (
+        plan.get("material_readiness")
+        if isinstance(plan.get("material_readiness"), dict)
+        else {}
+    )
+    items = [
+        {"label": item, "ready": bool(readiness.get(item))} for item in materials
+    ]
+    ready = sum(1 for item in items if item["ready"])
+    total = len(items)
+    gate_enabled = bool(plan.get("material_gate_enabled"))
+    return {
+        "items": items,
+        "ready": ready,
+        "total": total,
+        "percent": round(100 * ready / total) if total else 100,
+        "all_ready": ready == total,
+        "gate_enabled": gate_enabled,
+        "blocking": bool(gate_enabled and total and ready < total),
+    }
+
+
 def merge_editable_draft(
-    plan: dict[str, Any], storyboard_text: Any, material_text: Any
+    plan: dict[str, Any],
+    storyboard_text: Any,
+    material_text: Any,
+    ready_materials: Any = None,
 ) -> dict[str, Any]:
     merged = dict(plan or {})
-    if storyboard_text is None and material_text is None:
+    if storyboard_text is None and material_text is None and ready_materials is None:
         return merged
-    storyboard = []
-    for index, raw_line in enumerate(str(storyboard_text or "").splitlines()[:12], start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in re.split(r"\s*[｜|]\s*", line, maxsplit=3)]
-        parts += [""] * (4 - len(parts))
-        storyboard.append(
-            {
-                "stage": _clean_text(parts[0] or f"镜头 {index}", 80),
-                "narration": _clean_multiline(parts[1], 800),
-                "visual": _clean_multiline(parts[2], 500),
-                "material": _clean_multiline(parts[3], 300),
-            }
-        )
-    materials = []
-    for raw_line in str(material_text or "").splitlines()[:20]:
-        item = re.sub(r"^\s*[-*]?\s*(?:\[[ xX]\])?\s*", "", raw_line).strip()
-        cleaned = _clean_text(item, 300)
-        if cleaned and cleaned not in materials:
-            materials.append(cleaned)
+    if storyboard_text is None:
+        storyboard = list(plan.get("draft_storyboard") or [])[:12]
+    else:
+        storyboard = []
+        for index, raw_line in enumerate(
+            str(storyboard_text or "").splitlines()[:12], start=1
+        ):
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = [
+                part.strip()
+                for part in re.split(r"\s*[｜|]\s*", line, maxsplit=3)
+            ]
+            parts += [""] * (4 - len(parts))
+            storyboard.append(
+                {
+                    "stage": _clean_text(parts[0] or f"镜头 {index}", 80),
+                    "narration": _clean_multiline(parts[1], 800),
+                    "visual": _clean_multiline(parts[2], 500),
+                    "material": _clean_multiline(parts[3], 300),
+                }
+            )
+    if material_text is None:
+        materials = [
+            _clean_text(item, 300)
+            for item in (
+                plan.get("material_checklist") or plan.get("broll_suggestions") or []
+            )[:20]
+            if _clean_text(item, 300)
+        ]
+    else:
+        materials = []
+        for raw_line in str(material_text or "").splitlines()[:20]:
+            item = re.sub(
+                r"^\s*[-*]?\s*(?:\[[ xX]\])?\s*", "", raw_line
+            ).strip()
+            cleaned = _clean_text(item, 300)
+            if cleaned and cleaned not in materials:
+                materials.append(cleaned)
     merged["draft_storyboard"] = storyboard
     merged["material_checklist"] = materials
     merged["broll_suggestions"] = materials
+    if ready_materials is None:
+        existing_readiness = (
+            plan.get("material_readiness")
+            if isinstance(plan.get("material_readiness"), dict)
+            else {}
+        )
+        merged["material_readiness"] = {
+            item: bool(existing_readiness.get(item)) for item in materials
+        }
+    else:
+        selected = {
+            _clean_text(item, 300)
+            for item in (ready_materials if isinstance(ready_materials, (list, tuple, set)) else [])
+            if _clean_text(item, 300)
+        }
+        merged["material_readiness"] = {
+            item: item in selected for item in materials
+        }
     return merged
 
 

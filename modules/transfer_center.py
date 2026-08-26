@@ -38,6 +38,7 @@ from .content_recreation import (
     build_growth_followup_draft,
     deserialize_plan,
     generate_recreation_plan,
+    material_readiness_summary,
     merge_editable_draft,
     serialize_plan,
     validate_review_payload,
@@ -3294,6 +3295,8 @@ class TransferCenter:
             "hook_options",
             "draft_storyboard",
             "material_checklist",
+            "material_readiness",
+            "material_gate_enabled",
             "broll_suggestions",
             "suggested_duration",
             "source_candidate_metrics",
@@ -4126,6 +4129,7 @@ class TransferCenter:
             plan,
             payload.get("storyboard_text"),
             payload.get("material_checklist_text"),
+            payload.get("material_ready"),
         )
         plan.update(
             {
@@ -4235,6 +4239,18 @@ class TransferCenter:
         )
         return self.get_job(job_id) or {}
 
+    @staticmethod
+    def _assert_production_materials_ready(job: dict[str, Any]) -> dict[str, Any]:
+        summary = material_readiness_summary(
+            deserialize_plan(job.get("recreation_plan_json"))
+        )
+        if summary["blocking"]:
+            raise ValueError(
+                f"素材准备尚未完成（{summary['ready']}/{summary['total']}），"
+                "请先在策划草稿中勾选已就绪素材并保存"
+            )
+        return summary
+
     def send_to_money_printer(
         self,
         job_id: str,
@@ -4244,6 +4260,7 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
+        self._assert_production_materials_ready(job)
         video_path = str(job.get("original_video_path") or job.get("local_video_path") or "")
         if not video_path or not os.path.isfile(video_path):
             raise ValueError("原视频尚未下载完成")
@@ -4689,8 +4706,10 @@ class TransferCenter:
         }
 
     def recreate_with_money_printer_async(self, job_id: str) -> bool:
-        if not self.get_job(job_id):
+        job = self.get_job(job_id)
+        if not job:
             raise ValueError("搬运任务不存在")
+        self._assert_production_materials_ready(job)
         if not self._claim_active_job(job_id):
             return False
 

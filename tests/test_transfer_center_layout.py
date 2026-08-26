@@ -80,3 +80,10 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert "job.recreation_plan_json != '{}'" in tasks
     assert "format_storyboard_text(recreation_plan)" in app_source
     assert "request.form.get('storyboard_text')" in app_source
+    assert 'name="material_ready"' in review
+    assert "全部就绪才开放制作入口" in review
+    assert "not production_ready" in review
+    assert "request.form.getlist('material_ready')" in app_source
+    assert "素材准备尚未完成" in (
+        ROOT / "modules" / "transfer_center.py"
+    ).read_text(encoding="utf-8")
