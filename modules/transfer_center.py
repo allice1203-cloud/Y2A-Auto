@@ -35,8 +35,10 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 import requests
 
 from .content_recreation import (
+    build_growth_followup_draft,
     deserialize_plan,
     generate_recreation_plan,
+    merge_editable_draft,
     serialize_plan,
     validate_review_payload,
 )
@@ -3122,18 +3124,31 @@ class TransferCenter:
         except (TypeError, ValueError):
             candidate_metrics = {}
         if candidate_metrics.get("candidate_type") == "growth_followup":
+            draft_job = self.get_job(job_id) or {}
+            plan = build_growth_followup_draft(draft_job, candidate_metrics)
             self._update_job(
                 job_id,
                 processing_mode="professional",
                 recreation_mode="commentary",
-                original_angle=str(
-                    candidate_metrics.get("suggested_angle") or ""
-                )[:2000],
-                original_contribution=(
-                    f"开场：{candidate_metrics.get('suggested_hook') or ''}\n"
-                    f"建议时长：{candidate_metrics.get('suggested_duration') or ''}\n"
-                    f"画面结构：{candidate_metrics.get('suggested_visual_structure') or ''}"
+                recreation_status="draft",
+                recreation_plan_json=serialize_plan(plan),
+                original_angle=str(plan.get("original_angle") or "")[:2000],
+                original_contribution=str(
+                    plan.get("original_contribution") or ""
                 )[:4000],
+                commentary_script=str(plan.get("commentary_script") or "")[:8000],
+                source_attribution=(
+                    f"参考来源\n{candidate.get('source_url') or ''}"
+                )[:2000],
+                x_text=str(plan.get("x_text") or "")[:260],
+                youtube_title=str(plan.get("youtube_title") or "")[:100],
+                youtube_description=str(plan.get("youtube_description") or "")[:5000],
+                bilibili_title=str(plan.get("bilibili_title") or "")[:80],
+                bilibili_description=str(plan.get("bilibili_description") or "")[:2000],
+                douyin_text=str(plan.get("douyin_text") or "")[:2000],
+                tiktok_text=str(plan.get("tiktok_text") or "")[:2000],
+                progress_percent=12,
+                progress_message="续作脚本、分镜和素材清单已生成，等待人工确认",
             )
         with self._connect() as conn:
             conn.execute(
@@ -3260,6 +3275,47 @@ class TransferCenter:
             "strategy", {}
         )
         return enriched
+
+    @staticmethod
+    def _preserve_growth_concept_draft(
+        existing_plan: dict[str, Any], generated_plan: dict[str, Any]
+    ) -> dict[str, Any]:
+        if (
+            existing_plan.get("generated_by") != "growth_followup_local_draft"
+            and not existing_plan.get("concept_source")
+        ):
+            return generated_plan
+        merged = dict(generated_plan)
+        for field in (
+            "original_angle",
+            "original_contribution",
+            "commentary_outline",
+            "commentary_script",
+            "hook_options",
+            "draft_storyboard",
+            "material_checklist",
+            "broll_suggestions",
+            "suggested_duration",
+            "source_candidate_metrics",
+            "x_text",
+            "youtube_title",
+            "youtube_description",
+            "bilibili_title",
+            "bilibili_description",
+            "douyin_text",
+            "tiktok_text",
+        ):
+            value = existing_plan.get(field)
+            if value not in (None, "", [], {}):
+                merged[field] = value
+        merged["concept_source"] = "growth_followup"
+        merged["concept_generated_by"] = str(
+            existing_plan.get("concept_generated_by")
+            or existing_plan.get("generated_by")
+            or ""
+        )
+        merged["draft_stage"] = "source_ready"
+        return merged
 
     def _ensure_archive_markdown(self, job_id: str) -> str:
         job = self.get_job(job_id)
@@ -3886,6 +3942,9 @@ class TransferCenter:
             self._config(),
             mode=str(job.get("recreation_mode") or "commentary"),
         )
+        plan = self._preserve_growth_concept_draft(
+            deserialize_plan(job.get("recreation_plan_json")), plan
+        )
         generated_fields = {
             "x_text": str(plan.get("x_text") or ""),
             "youtube_title": str(plan.get("youtube_title") or ""),
@@ -3954,6 +4013,9 @@ class TransferCenter:
             self._recreation_input_job(job),
             self._config(),
             mode=str(job.get("recreation_mode") or "commentary"),
+        )
+        plan = self._preserve_growth_concept_draft(
+            deserialize_plan(job.get("recreation_plan_json")), plan
         )
         self._update_job(
             job_id,
@@ -4036,7 +4098,9 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
-        normalized = validate_review_payload(payload)
+        normalized = validate_review_payload(
+            payload, require_confirmation=approve
+        )
         targets = _json_list(job.get("target_platforms"))
         content_preflight = run_content_preflight(
             {
@@ -4058,6 +4122,11 @@ class TransferCenter:
             targets,
         )
         plan = deserialize_plan(job.get("recreation_plan_json"))
+        plan = merge_editable_draft(
+            plan,
+            payload.get("storyboard_text"),
+            payload.get("material_checklist_text"),
+        )
         plan.update(
             {
                 "original_angle": normalized["original_angle"],
@@ -4073,7 +4142,11 @@ class TransferCenter:
                 "douyin_text": normalized["douyin_text"],
             }
         )
-        status = JOB_STATUSES["REVIEW"]
+        status = (
+            str(job.get("status") or JOB_STATUSES["DISCOVERED"])
+            if not approve and not job.get("local_video_path")
+            else JOB_STATUSES["REVIEW"]
+        )
         recreation_status = "draft"
         reviewed_at = None
         if approve:

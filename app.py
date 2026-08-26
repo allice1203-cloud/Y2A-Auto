@@ -58,6 +58,8 @@ from modules.content_recreation import (
     RECREATION_MODES,
     WATERMARK_STATES,
     deserialize_plan,
+    format_material_checklist_text,
+    format_storyboard_text,
 )
 from modules.source_login import create_login_authorization
 from modules.speech_pipeline_settings import (
@@ -3734,7 +3736,11 @@ def transfer_center_promote_candidate(candidate_id):
             candidate_id,
             _transfer_target_list(request.form),
         )
-        flash('热点候选已加入任务；请确认授权和处理方式后再下载发布。', 'success')
+        job = _transfer_center().get_job(job_id) or {}
+        if str(job.get('recreation_status') or '') == 'draft':
+            flash('续作候选已转为可编辑脚本、分镜和素材清单；尚未下载或发布。', 'success')
+            return redirect(url_for('transfer_center_review_job', job_id=job_id))
+        flash('热点候选已加入任务；请确认处理方式后再下载发布。', 'success')
         return redirect(url_for('tasks'))
     except Exception as exc:
         flash(f'候选加入任务失败：{exc}', 'danger')
@@ -4003,12 +4009,15 @@ def transfer_center_review_job(job_id):
     if not job:
         flash('搬运任务不存在。', 'warning')
         return redirect(url_for('transfer_center_index'))
+    recreation_plan = deserialize_plan(job.get('recreation_plan_json'))
     return render_template(
         'transfer_review.html',
         job=job,
         recreation_modes=RECREATION_MODES,
         processing_modes=PROCESSING_MODES,
-        recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
+        recreation_plan=recreation_plan,
+        storyboard_text=format_storyboard_text(recreation_plan),
+        material_checklist_text=format_material_checklist_text(recreation_plan),
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
@@ -4275,6 +4284,8 @@ def transfer_center_save_review(job_id):
                 'original_angle': request.form.get('original_angle'),
                 'original_contribution': request.form.get('original_contribution'),
                 'commentary_script': request.form.get('commentary_script'),
+                'storyboard_text': request.form.get('storyboard_text'),
+                'material_checklist_text': request.form.get('material_checklist_text'),
                 'watermark_status': request.form.get('watermark_status'),
                 'watermark_note': request.form.get('watermark_note'),
                 'recreation_confirmed': request.form.get('recreation_confirmed'),

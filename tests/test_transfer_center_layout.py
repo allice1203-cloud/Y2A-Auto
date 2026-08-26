@@ -70,3 +70,13 @@ def test_performance_panel_exposes_one_click_sync_route():
     assert "url_for('transfer_center_generate_growth_candidates')" in center
     assert "生成续作候选" in center
     assert "candidate.metrics.candidate_type == 'growth_followup'" in center
+    review = (ROOT / "templates" / "transfer_review.html").read_text(
+        encoding="utf-8"
+    )
+    tasks = (ROOT / "templates" / "tasks.html").read_text(encoding="utf-8")
+    assert 'name="storyboard_text"' in review
+    assert 'name="material_checklist_text"' in review
+    assert "保存草稿不会下载、制作或发布" in review
+    assert "job.recreation_plan_json != '{}'" in tasks
+    assert "format_storyboard_text(recreation_plan)" in app_source
+    assert "request.form.get('storyboard_text')" in app_source

@@ -406,6 +406,180 @@ def _fallback_plan(job: dict[str, Any], mode: str) -> dict[str, Any]:
     }
 
 
+def build_growth_followup_draft(
+    job: dict[str, Any], metrics: dict[str, Any]
+) -> dict[str, Any]:
+    """Build a zero-cost, editable concept draft after a human promotes a candidate."""
+
+    plan = _fallback_plan(job, "commentary")
+    title = _clean_text(job.get("title") or "增长续作", 180)
+    angle = _clean_multiline(
+        metrics.get("suggested_angle") or plan["original_angle"], 1200
+    )
+    hook = _clean_multiline(
+        metrics.get("suggested_hook") or plan["hook_options"][0], 300
+    )
+    duration = _clean_text(metrics.get("suggested_duration") or "45-60 秒", 80)
+    visual_structure = _clean_multiline(
+        metrics.get("suggested_visual_structure")
+        or "结果镜头 → 3 个证据/步骤 → 本地信息卡总结",
+        500,
+    )
+    script = (
+        f"{hook}。这次不复述原视频，我们换一个真实场景，验证《{title}》背后的核心判断。"
+        "先给出实测结果，再展示三个关键证据：使用前提、实际过程和对比结果。"
+        "如果结果与预期不一致，会把限制条件和失败样本一起说清楚。"
+        f"最后回到这次的新角度：{angle}。"
+        "结论以实际拍摄、录屏和可核对数据为准，发布前再人工确认。"
+    )
+    materials = [
+        "开场结果实拍或产品录屏（1 组）",
+        "实测过程的关键步骤镜头（3 组）",
+        "前后对比或成功/失败样本（2 组）",
+        "关键数据、条件和结论信息卡（3 张）",
+        "片尾结论与互动问题卡（1 张）",
+    ]
+    storyboard = [
+        {
+            "stage": "0-3 秒·结果开场",
+            "narration": hook,
+            "visual": "先展示最大反差或最终结果，不铺垫",
+            "material": materials[0],
+        },
+        {
+            "stage": "场景与问题",
+            "narration": "交代这次实测的真实场景、目标和判断标准。",
+            "visual": "环境实拍、产品界面或流程起点",
+            "material": materials[1],
+        },
+        {
+            "stage": "三步实测",
+            "narration": "按前提、过程、结果依次给出可核对证据。",
+            "visual": visual_structure,
+            "material": materials[1],
+        },
+        {
+            "stage": "反例与限制",
+            "narration": "展示一个失败样本或不适用条件，避免只给单一结论。",
+            "visual": "成功/失败分屏对比，标出差异条件",
+            "material": materials[2],
+        },
+        {
+            "stage": "结论与行动",
+            "narration": f"给出独立结论：{angle}",
+            "visual": "三点结论卡，结尾留一个可回答的问题",
+            "material": materials[3],
+        },
+    ]
+    contribution = (
+        f"建议时长：{duration}；制作独立续作，重写口播，新增真实实测、"
+        "成功/失败对比、信息卡和独立结论，不把原视频简单换标题重发。"
+    )
+    plan.update(
+        {
+            "original_angle": angle,
+            "original_contribution": contribution,
+            "commentary_outline": [
+                "前 3 秒先给实测结果或最大反差",
+                "交代场景与判断标准，展示三个可核对证据",
+                "加入失败样本或限制条件",
+                "用独立结论和互动问题收尾",
+            ],
+            "commentary_script": script,
+            "hook_options": [
+                hook,
+                f"我把《{title}》换到真实场景里重做了一遍，结果有一个关键变化。",
+                f"如果你准备照搬《{title}》的方法，先看完这个失败样本。",
+            ],
+            "draft_storyboard": storyboard,
+            "material_checklist": materials,
+            "broll_suggestions": materials,
+            "required_edits": [
+                "按实际实测结果修改口播中的占位判断",
+                "拍摄或录制素材清单中的必要镜头",
+                "下载参考素材后，再按真实字幕生成精确时间线",
+                "导出成片后人工确认才能发布",
+            ],
+            "generated_by": "growth_followup_local_draft",
+            "draft_stage": "concept",
+            "suggested_duration": duration,
+            "source_candidate_metrics": {
+                "parent_job_id": _clean_text(metrics.get("parent_job_id"), 80),
+                "recommended_target_platform": _clean_text(
+                    metrics.get("recommended_target_platform"), 30
+                ),
+                "views_24h": int(_clean_number(metrics.get("views_24h"))),
+                "engagement_24h": _clean_number(metrics.get("engagement_24h")),
+                "growth_24h_72h": (
+                    _clean_number(metrics.get("growth_24h_72h"))
+                    if metrics.get("growth_24h_72h") is not None
+                    else None
+                ),
+            },
+            "youtube_title": _clean_text(f"{title}：换个场景实测后的新结论", 100),
+            "bilibili_title": _clean_text(f"{title}｜这次换个场景重新实测", 80),
+            "douyin_text": _clean_multiline(f"{hook} #{title[:20]} #实测", 2000),
+            "tiktok_text": _clean_multiline(f"{hook} #实测 #内容创作", 2000),
+        }
+    )
+    return plan
+
+
+def format_storyboard_text(plan: dict[str, Any]) -> str:
+    items = plan.get("draft_storyboard") or plan.get("segment_plan") or []
+    lines = []
+    for index, item in enumerate(items[:12], start=1):
+        if not isinstance(item, dict):
+            continue
+        parts = [
+            _clean_text(item.get("stage") or f"镜头 {index}", 80),
+            _clean_multiline(item.get("narration"), 800),
+            _clean_multiline(item.get("visual"), 500),
+            _clean_multiline(item.get("material"), 300),
+        ]
+        lines.append("｜".join(part.replace("｜", "/") for part in parts))
+    return "\n".join(lines)
+
+
+def format_material_checklist_text(plan: dict[str, Any]) -> str:
+    items = plan.get("material_checklist") or plan.get("broll_suggestions") or []
+    cleaned = [_clean_text(item, 300) for item in items[:20]]
+    return "\n".join(f"- [ ] {item}" for item in cleaned if item)
+
+
+def merge_editable_draft(
+    plan: dict[str, Any], storyboard_text: Any, material_text: Any
+) -> dict[str, Any]:
+    merged = dict(plan or {})
+    if storyboard_text is None and material_text is None:
+        return merged
+    storyboard = []
+    for index, raw_line in enumerate(str(storyboard_text or "").splitlines()[:12], start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in re.split(r"\s*[｜|]\s*", line, maxsplit=3)]
+        parts += [""] * (4 - len(parts))
+        storyboard.append(
+            {
+                "stage": _clean_text(parts[0] or f"镜头 {index}", 80),
+                "narration": _clean_multiline(parts[1], 800),
+                "visual": _clean_multiline(parts[2], 500),
+                "material": _clean_multiline(parts[3], 300),
+            }
+        )
+    materials = []
+    for raw_line in str(material_text or "").splitlines()[:20]:
+        item = re.sub(r"^\s*[-*]?\s*(?:\[[ xX]\])?\s*", "", raw_line).strip()
+        cleaned = _clean_text(item, 300)
+        if cleaned and cleaned not in materials:
+            materials.append(cleaned)
+    merged["draft_storyboard"] = storyboard
+    merged["material_checklist"] = materials
+    merged["broll_suggestions"] = materials
+    return merged
+
+
 def _normalize_plan(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     plan = {
@@ -544,7 +718,9 @@ def generate_recreation_plan(
     return fallback
 
 
-def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def validate_review_payload(
+    payload: dict[str, Any], *, require_confirmation: bool = True
+) -> dict[str, Any]:
     source_attribution = _clean_multiline(payload.get("source_attribution"), 2000)
     if len(source_attribution) < 2:
         raise ValueError("请保留原作者、原账号或原视频链接等来源标识")
@@ -555,21 +731,35 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if processing_mode not in PROCESSING_MODES:
         processing_mode = "professional"
     original_contribution = _clean_multiline(payload.get("original_contribution"), 3000)
-    if processing_mode == "quick" and len(original_contribution) < 4:
+    if (
+        require_confirmation
+        and processing_mode == "quick"
+        and len(original_contribution) < 4
+    ):
         raise ValueError("请简单说明本次加工内容，例如画幅、片头片尾、字幕或品牌包装")
-    if processing_mode == "professional" and len(original_contribution) < 30:
+    if (
+        require_confirmation
+        and processing_mode == "professional"
+        and len(original_contribution) < 30
+    ):
         raise ValueError("请具体说明成片增加了哪些原创观点、口播、核验或叙事改造")
     watermark_status = str(payload.get("watermark_status") or "").strip().lower()
-    if watermark_status not in WATERMARK_REVIEWED_VALUES:
+    if not require_confirmation and watermark_status not in WATERMARK_REVIEWED_VALUES:
+        watermark_status = "unreviewed"
+    elif watermark_status not in WATERMARK_REVIEWED_VALUES:
         raise ValueError("必须核对成片中的作者名、来源标识和平台浮层")
     watermark_note = _clean_multiline(payload.get("watermark_note"), 1500)
-    if watermark_status != "none" and len(watermark_note) < 4:
+    if (
+        require_confirmation
+        and watermark_status != "none"
+        and len(watermark_note) < 4
+    ):
         raise ValueError("请说明来源标识保留位置或平台浮层处理结果")
     confirmation_field = (
         "publish_confirmed" if processing_mode == "direct" else "recreation_confirmed"
     )
     confirmed = str(payload.get(confirmation_field) or "").strip().lower()
-    if confirmed not in {"1", "true", "yes", "on"}:
+    if require_confirmation and confirmed not in {"1", "true", "yes", "on"}:
         if processing_mode == "direct":
             raise ValueError("请确认当前预览原片、来源标识和发布平台均无误")
         raise ValueError("请确认当前预览的是已完成加工的新成片")
@@ -582,8 +772,8 @@ def validate_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "commentary_script": _clean_multiline(payload.get("commentary_script"), 8000),
         "watermark_status": watermark_status,
         "watermark_note": watermark_note,
-        "publish_confirmed": processing_mode == "direct",
-        "recreation_confirmed": processing_mode != "direct",
+        "publish_confirmed": require_confirmation and processing_mode == "direct",
+        "recreation_confirmed": require_confirmation and processing_mode != "direct",
         "x_text": _clean_multiline(payload.get("x_text"), 260),
         "youtube_title": _clean_text(payload.get("youtube_title"), 100),
         "youtube_description": _clean_multiline(payload.get("youtube_description"), 5000),

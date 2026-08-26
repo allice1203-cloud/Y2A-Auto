@@ -1977,6 +1977,13 @@ def test_growth_followup_candidate_stays_in_pool_until_human_promotes(center):
     assert job_id != parent_job_id
     assert job["status"] == "discovered"
     assert job["local_video_path"] == ""
+    assert job["recreation_status"] == "draft"
+    assert job["progress_percent"] == 12
+    plan = json.loads(job["recreation_plan_json"])
+    assert plan["generated_by"] == "growth_followup_local_draft"
+    assert len(plan["draft_storyboard"]) == 5
+    assert len(plan["material_checklist"]) == 5
+    assert len(job["commentary_script"]) >= 100
     assert "换一个场景" in job["original_angle"]
     assert "建议时长：45-60 秒" in job["original_contribution"]
     assert center.list_hot_candidates() == []
@@ -1984,6 +1991,77 @@ def test_growth_followup_candidate_stays_in_pool_until_human_promotes(center):
     after_promote = center.generate_growth_followup_candidates()
     assert after_promote["skipped"] == 1
     assert center.list_hot_candidates() == []
+
+
+def test_growth_followup_draft_can_be_edited_before_downloading(center):
+    parent_job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1draftedit01", ["youtube"]
+    )
+    center._update_job(
+        parent_job_id,
+        title="续作草稿测试",
+        youtube_video_id="youtube-draft-edit-1",
+        status="completed",
+    )
+    center.record_performance(
+        parent_job_id,
+        {
+            "platform": "youtube",
+            "views": 200,
+            "likes": 20,
+            "comments": 4,
+            "checkpoint_hours": 24,
+            "sync_source": "scheduled",
+        },
+    )
+    center.generate_growth_followup_candidates()
+    candidate = center.list_hot_candidates()[0]
+    job_id = center.promote_hot_candidate(candidate["id"], ["youtube"])
+
+    result = center.save_recreation_review(
+        job_id,
+        {
+            "source_attribution": "参考来源\nhttps://www.bilibili.com/video/BV1draftedit01",
+            "processing_mode": "professional",
+            "recreation_mode": "commentary",
+            "original_angle": "改成本地场景对比",
+            "original_contribution": "尚未完成",
+            "commentary_script": "这是人工修改后的口播草稿。",
+            "storyboard_text": "开场｜先给结果｜对比画面｜实拍\n结尾｜给出建议｜结论卡｜信息卡",
+            "material_checklist_text": "- [ ] 实拍\n- [ ] 信息卡",
+        },
+        approve=False,
+    )
+    plan = json.loads(result["recreation_plan_json"])
+
+    assert result["status"] == "discovered"
+    assert result["local_video_path"] == ""
+    assert result["recreation_status"] == "draft"
+    assert result["watermark_status"] == "unreviewed"
+    assert result["commentary_script"] == "这是人工修改后的口播草稿。"
+    assert len(plan["draft_storyboard"]) == 2
+    assert plan["material_checklist"] == ["实拍", "信息卡"]
+
+    regenerated = center._preserve_growth_concept_draft(
+        plan,
+        {
+            "generated_by": "safe_fallback",
+            "commentary_script": "下载后重新生成的文本",
+            "segment_plan": [
+                {
+                    "stage": "精确时间线",
+                    "source_start": 3,
+                    "source_end": 8,
+                    "duration": 5,
+                }
+            ],
+        },
+    )
+
+    assert regenerated["commentary_script"] == "这是人工修改后的口播草稿。"
+    assert regenerated["segment_plan"][0]["source_start"] == 3
+    assert regenerated["draft_stage"] == "source_ready"
+    assert regenerated["concept_source"] == "growth_followup"
 
 
 def test_growth_followup_candidate_requires_real_timed_sample(center):

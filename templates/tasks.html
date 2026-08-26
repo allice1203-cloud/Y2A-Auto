@@ -188,11 +188,11 @@
                             <td class="text-end text-nowrap">
                                 {% if job.status in ('discovered', 'failed') %}
                                 <form method="post" action="{{ url_for('transfer_center_prepare_job', job_id=job.id) }}" class="d-inline">
-                                    <button class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-repeat"></i> 重试</button>
+                                    <button class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-repeat"></i> {{ '准备素材' if job.status == 'discovered' else '重试' }}</button>
                                 </form>
                                 {% endif %}
-                                {% if job.local_video_path %}
-                                <a class="btn btn-sm btn-outline-warning" href="{{ url_for('transfer_center_review_job', job_id=job.id) }}">审核</a>
+                                {% if job.local_video_path or (job.recreation_plan_json and job.recreation_plan_json != '{}') %}
+                                <a class="btn btn-sm btn-outline-warning" href="{{ url_for('transfer_center_review_job', job_id=job.id) }}">{{ '审核' if job.local_video_path else '策划' }}</a>
                                 {% endif %}
                                 {% if job.status == 'ready' %}
                                     {% if job.youtube_publish_status == 'waiting_auth' %}

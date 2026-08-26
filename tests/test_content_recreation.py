@@ -1,8 +1,12 @@
 import pytest
 
 from modules.content_recreation import (
+    build_growth_followup_draft,
     build_rights_risk,
+    format_material_checklist_text,
+    format_storyboard_text,
     generate_recreation_plan,
+    merge_editable_draft,
     validate_review_payload,
 )
 
@@ -30,6 +34,49 @@ def test_fallback_plan_demands_substantive_original_contribution():
     assert set(plan["platform_versions"]) == {"bilibili", "douyin", "youtube"}
     assert plan["bilibili_title"]
     assert plan["douyin_text"]
+
+
+def test_growth_followup_draft_is_editable_and_requires_no_model_call():
+    plan = build_growth_followup_draft(
+        {
+            "title": "AI 剪辑工具实测｜同类续作实测",
+            "source_url": "https://www.bilibili.com/video/BV1draft",
+        },
+        {
+            "candidate_type": "growth_followup",
+            "parent_job_id": "parent-1",
+            "recommended_target_platform": "youtube",
+            "views_24h": 300,
+            "engagement_24h": 12,
+            "growth_24h_72h": None,
+            "suggested_angle": "换一个场景做实测对比",
+            "suggested_hook": "前 3 秒先给最大反差",
+            "suggested_duration": "45-60 秒",
+            "suggested_visual_structure": "结果 → 证据 → 结论",
+        },
+    )
+
+    assert plan["generated_by"] == "growth_followup_local_draft"
+    assert plan["draft_stage"] == "concept"
+    assert len(plan["commentary_script"]) >= 100
+    assert len(plan["draft_storyboard"]) == 5
+    assert len(plan["material_checklist"]) == 5
+    assert "换一个场景" in plan["original_angle"]
+    assert "前 3 秒" in format_storyboard_text(plan)
+    assert "- [ ]" in format_material_checklist_text(plan)
+
+    edited = merge_editable_draft(
+        plan,
+        "开场｜新旁白｜新画面｜新实拍\n结尾｜新结论｜结论卡｜信息卡",
+        "- [ ] 新实拍\n- [x] 信息卡",
+    )
+
+    assert [item["stage"] for item in edited["draft_storyboard"]] == [
+        "开场",
+        "结尾",
+    ]
+    assert edited["material_checklist"] == ["新实拍", "信息卡"]
+    assert edited["broll_suggestions"] == ["新实拍", "信息卡"]
 
 
 def test_fallback_plan_uses_real_subtitle_timecodes():
@@ -109,6 +156,21 @@ def test_review_payload_requires_source_attribution():
                 "recreation_confirmed": "on",
             }
         )
+
+
+def test_incomplete_concept_can_be_saved_without_publish_confirmation():
+    result = validate_review_payload(
+        {
+            "source_attribution": "参考来源：https://example.com/source",
+            "processing_mode": "professional",
+            "original_contribution": "待补充",
+            "commentary_script": "口播草稿",
+        },
+        require_confirmation=False,
+    )
+
+    assert result["watermark_status"] == "unreviewed"
+    assert result["recreation_confirmed"] is False
 
 
 def test_review_payload_enforces_real_contribution_detail():
