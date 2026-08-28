@@ -14,8 +14,8 @@ def test_release_runner_uses_complete_isolated_source_copy():
     assert '--volume "$TEST_ROOT:/workspace"' in script
     assert "pytest==8.3.5" in script
     assert "cache_dir=/tmp/pytest_cache" in script
-    assert '--env TEST_HOST_UID="$HOST_UID"' in script
-    assert 'chown -R "$TEST_HOST_UID:$TEST_HOST_GID" /workspace' in script
+    assert "--user root" not in script
+    assert "python -m pip install --user" in script
 
 
 def test_release_runner_excludes_runtime_credentials_and_data():

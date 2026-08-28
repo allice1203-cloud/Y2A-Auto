@@ -18,9 +18,6 @@ if [[ -z "$TEST_IMAGE" ]]; then
     exit 1
 fi
 
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/video-transfer-release-tests.XXXXXX")"
 cleanup() {
     if [[ -n "${TEST_ROOT:-}" && -d "$TEST_ROOT" ]]; then
@@ -48,13 +45,9 @@ rsync -a \
 mkdir -p "$TEST_ROOT/config" "$TEST_ROOT/db" "$TEST_ROOT/logs" "$TEST_ROOT/temp"
 
 docker run --rm \
-    --user root \
     --entrypoint sh \
     --volume "$TEST_ROOT:/workspace" \
     --workdir /workspace \
     --env PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    --env PIP_ROOT_USER_ACTION=ignore \
-    --env TEST_HOST_UID="$HOST_UID" \
-    --env TEST_HOST_GID="$HOST_GID" \
     "$TEST_IMAGE" \
-    -c 'status=0; pip install --no-cache-dir --quiet pytest==8.3.5 || status=$?; if [ "$status" -eq 0 ]; then python -m pytest -q -o cache_dir=/tmp/pytest_cache tests || status=$?; fi; chown -R "$TEST_HOST_UID:$TEST_HOST_GID" /workspace; exit "$status"'
+    -c 'python -m pip install --user --no-cache-dir --quiet pytest==8.3.5 && python -m pytest -q -o cache_dir=/tmp/pytest_cache tests'
