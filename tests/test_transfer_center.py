@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import zipfile
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1315,6 +1316,67 @@ def test_money_printer_connection_loads_private_credential(center, monkeypatch, 
 
     assert base_url == "http://172.17.0.1:8080"
     assert headers == {"x-api-key": "internal-test-key"}
+
+
+def test_runtime_capacity_blocks_large_writes_below_configured_floor(center, monkeypatch):
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        transfer_module.shutil,
+        "disk_usage",
+        lambda _path: usage(100 * 1024**3, 95 * 1024**3, 5 * 1024**3),
+    )
+    center._config_provider = lambda: {"TRANSFER_MIN_FREE_DISK_GB": 8}
+
+    status = center.runtime_capacity()
+
+    assert status["ready"] is False
+    assert status["free_gb"] == 5.0
+    assert status["minimum_free_gb"] == 8.0
+    with pytest.raises(RuntimeError, match="至少需要保留 8.0 GB"):
+        center._assert_runtime_capacity("下载原片")
+
+
+def test_runtime_health_reports_authenticated_money_printer(center, monkeypatch):
+    center._config_provider = lambda: {
+        "TRANSFER_MPT_INTERNAL_URL": "http://moneyprinter-video-worker:8080",
+        "TRANSFER_MPT_API_KEY": "test-key",
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"status": 200, "message": "success", "data": {"items": []}}
+
+    class FakeSession:
+        trust_env = True
+
+        def get(self, url, **kwargs):
+            assert url == "http://moneyprinter-video-worker:8080/api/v1/projects"
+            assert kwargs["headers"] == {"x-api-key": "test-key"}
+            assert kwargs["params"] == {"limit": 1}
+            assert self.trust_env is False
+            return FakeResponse()
+
+    monkeypatch.setattr(transfer_module.requests, "Session", FakeSession)
+
+    status = center.money_printer_health()
+
+    assert status == {
+        "configured": True,
+        "reachable": True,
+        "ready": True,
+        "message": "超级印钞机制作端可用",
+    }
+
+
+def test_runtime_health_explains_material_package_fallback_without_credentials(center):
+    status = center.money_printer_health()
+
+    assert status["configured"] is False
+    assert status["ready"] is False
+    assert "二剪素材包" in status["message"]
 
 
 def test_transfer_notification_messages_include_review_link():

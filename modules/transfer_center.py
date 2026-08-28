@@ -1685,6 +1685,89 @@ class TransferCenter:
             "completed": counts.get("completed", 0),
         }
 
+    def runtime_capacity(self) -> dict[str, Any]:
+        """Return the writable media capacity without exposing host paths."""
+        config = self._config()
+        try:
+            minimum_free_gb = float(config.get("TRANSFER_MIN_FREE_DISK_GB") or 8)
+        except (TypeError, ValueError):
+            minimum_free_gb = 8.0
+        minimum_free_gb = max(2.0, min(100.0, minimum_free_gb))
+        media_root = Path(get_app_subdir("downloads"))
+        media_root.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(media_root)
+        free_gb = usage.free / 1024**3
+        return {
+            "ready": free_gb >= minimum_free_gb,
+            "free_gb": round(free_gb, 2),
+            "minimum_free_gb": round(minimum_free_gb, 2),
+            "used_percent": round((usage.used / usage.total) * 100, 1) if usage.total else 0.0,
+        }
+
+    def _assert_runtime_capacity(self, operation: str) -> None:
+        status = self.runtime_capacity()
+        if status["ready"]:
+            return
+        raise RuntimeError(
+            f"服务器可用磁盘仅 {status['free_gb']:.1f} GB，"
+            f"{operation}前至少需要保留 {status['minimum_free_gb']:.1f} GB；"
+            "系统已停止本次大文件写入，请先清理已完成任务或旧镜像"
+        )
+
+    def money_printer_health(self) -> dict[str, Any]:
+        """Probe the authenticated, internal-only production endpoint."""
+        base_url, auth_headers = self._money_printer_connection()
+        if not auth_headers:
+            return {
+                "configured": False,
+                "reachable": False,
+                "ready": False,
+                "message": "制作端凭证未配置；仍可导出二剪素材包后手工剪辑",
+            }
+        try:
+            timeout = max(
+                1,
+                min(
+                    15,
+                    int(self._config().get("TRANSFER_MPT_HEALTH_TIMEOUT_SECONDS") or 5),
+                ),
+            )
+        except (TypeError, ValueError):
+            timeout = 5
+        session = requests.Session()
+        session.trust_env = False
+        try:
+            response = session.get(
+                f"{base_url}/api/v1/projects",
+                headers=auth_headers,
+                params={"limit": 1},
+                timeout=(3, timeout),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or int(payload.get("status") or 500) != 200:
+                raise ValueError("制作端返回了无效状态")
+            return {
+                "configured": True,
+                "reachable": True,
+                "ready": True,
+                "message": "超级印钞机制作端可用",
+            }
+        except Exception as exc:
+            logger.warning("超级印钞机制作端健康检查失败: %s", _safe_error(exc, limit=180))
+            return {
+                "configured": True,
+                "reachable": False,
+                "ready": False,
+                "message": "制作端暂不可用；任务保留为策划草稿，可先导出二剪素材包",
+            }
+
+    def runtime_health(self) -> dict[str, Any]:
+        return {
+            "capacity": self.runtime_capacity(),
+            "money_printer": self.money_printer_health(),
+        }
+
     def run_maintenance(self) -> dict[str, Any]:
         """备份任务数据库，并只清理超期的已完成任务媒体。"""
         config = self._config()
@@ -3807,6 +3890,7 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
+        self._assert_runtime_capacity("下载原片")
         with self._connect() as conn:
             conn.execute(
                 """
@@ -4535,6 +4619,8 @@ class TransferCenter:
             )
             return self.get_job(job_id) or {}
 
+        self._assert_runtime_capacity("送入制作端")
+
         base_url, auth_headers = self._money_printer_connection()
         session = requests.Session()
         session.trust_env = False
@@ -5002,6 +5088,7 @@ class TransferCenter:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("搬运任务不存在")
+        self._assert_runtime_capacity("生成二剪成片")
         script = str(job.get("commentary_script") or "").strip()
         plan = deserialize_plan(job.get("recreation_plan_json"))
         executable_segments = [

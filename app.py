@@ -2567,12 +2567,22 @@ def system_health():
         'bilibili_cookies': {'status': 'unknown', 'message': ''},
         'stuck_tasks': {'count': 0, 'tasks': []},
         'recent_errors': [],
-        'docker_volumes': {}
+        'docker_volumes': {},
+        'transfer_center': {}
     }
     
     # Docker环境特殊检查
     if is_docker:
         health_status['docker_volumes'] = check_docker_volumes()
+
+    try:
+        health_status['transfer_center'] = _transfer_center().runtime_health()
+    except Exception:
+        logger.exception("搬运中心运行状态检查失败")
+        health_status['transfer_center'] = {
+            'status': 'error',
+            'message': _public_health_check_error_message('搬运中心'),
+        }
     
     # 检查数据库
     try:
