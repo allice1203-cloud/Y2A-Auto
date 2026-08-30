@@ -1,6 +1,8 @@
 from pathlib import Path
+import os
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +36,34 @@ class WsgiServerTests(unittest.TestCase):
                 "expose_tracebacks": False,
             },
         )
+
+    def test_host_can_be_limited_to_loopback_by_environment(self):
+        calls = []
+
+        def fake_serve(app, **kwargs):
+            calls.append(kwargs)
+
+        with patch.dict(os.environ, {"HOST": "127.0.0.1"}):
+            serve_app(object(), "15188", serve_impl=fake_serve)
+
+        self.assertEqual(calls[0]["host"], "127.0.0.1")
+        self.assertEqual(calls[0]["port"], 15188)
+
+    def test_explicit_host_takes_priority_over_environment(self):
+        calls = []
+
+        def fake_serve(app, **kwargs):
+            calls.append(kwargs)
+
+        with patch.dict(os.environ, {"HOST": "0.0.0.0"}):
+            serve_app(
+                object(),
+                "15188",
+                host="127.0.0.1",
+                serve_impl=fake_serve,
+            )
+
+        self.assertEqual(calls[0]["host"], "127.0.0.1")
 
     def test_task_event_stream_leaves_hop_by_hop_headers_to_waitress(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
