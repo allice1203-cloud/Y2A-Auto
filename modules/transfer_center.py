@@ -4032,16 +4032,15 @@ class TransferCenter:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, local_video_path FROM transfer_jobs
+                SELECT id, local_video_path, backup_next_retry_at FROM transfer_jobs
                 WHERE recreation_status='approved'
                   AND local_video_path<>''
                   AND backup_status IN ('pending', 'failed')
-                  AND (backup_next_retry_at IS NULL OR backup_next_retry_at<=?)
                 ORDER BY reviewed_at ASC, updated_at ASC
-                LIMIT 3
-                """,
-                (now,),
+                LIMIT 100
+                """
             ).fetchall()
+        started = 0
         for row in rows:
             job_id = str(row["id"])
             local_video_path = str(row["local_video_path"] or "")
@@ -4053,7 +4052,13 @@ class TransferCenter:
                     backup_next_retry_at=None,
                 )
                 continue
-            self.backup_job_async(job_id)
+            retry_at = str(row["backup_next_retry_at"] or "")
+            if retry_at and retry_at > now:
+                continue
+            if started >= 3:
+                continue
+            if self.backup_job_async(job_id):
+                started += 1
 
     def _emit_backup_notification(
         self, event_name: str, job_id: str, error_message: str = ""

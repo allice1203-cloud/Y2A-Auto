@@ -173,6 +173,7 @@ def test_due_backup_marks_cleaned_legacy_media_unavailable(tmp_path, monkeypatch
         recreation_status="approved",
         local_video_path=str(tmp_path / "already-cleaned.mp4"),
         backup_status="pending",
+        backup_next_retry_at="2099-01-01T00:00:00+00:00",
     )
 
     center.retry_due_backups()
