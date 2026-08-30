@@ -163,6 +163,40 @@ def test_manual_job_detects_tiktok_and_routes_cross_platform(center):
     assert job["tiktok_publish_status"] == "skipped"
 
 
+def test_manual_job_detects_x_post_and_routes_cross_platform(center):
+    url = "https://x.com/lengxiaohua/status/2093551021578699090?s=20"
+    job_id = center.add_manual_job(url, ["youtube", "bilibili", "douyin"])
+
+    job = center.get_job(job_id)
+    assert job["source_platform"] == "x"
+    assert json.loads(job["target_platforms"]) == ["youtube", "bilibili", "douyin"]
+    assert job["x_publish_status"] == "skipped"
+
+
+def test_manual_job_detects_legacy_twitter_post(center):
+    job_id = center.add_manual_job(
+        "https://twitter.com/lengxiaohua/status/2093551021578699090",
+        ["youtube"],
+    )
+
+    assert center.get_job(job_id)["source_platform"] == "x"
+
+
+def test_x_source_cannot_republish_to_x(center):
+    with pytest.raises(ValueError, match="X来源不能再次发布到同一平台"):
+        center.add_manual_job(
+            "https://x.com/lengxiaohua/status/2093551021578699090",
+            ["x"],
+        )
+
+
+def test_ytdlp_command_uses_active_python_runtime():
+    command = transfer_module._yt_dlp_command()
+
+    assert command[0] == transfer_module.sys.executable
+    assert command[1:] == ["-m", "yt_dlp"]
+
+
 def test_tiktok_account_scan_uses_ytdlp_candidates(center, monkeypatch):
     rule_id = center.save_rule(
         {
@@ -328,6 +362,26 @@ def test_existing_job_with_missing_protocol_is_migrated(center):
     migrated = transfer_module.TransferCenter(config_provider=lambda: {})
 
     assert migrated.get_job(job_id)["source_url"] == "https://bilibili.com/video/BV1legacy"
+
+
+def test_existing_generic_x_job_is_migrated_to_x_source(center):
+    job_id = center.add_manual_job(
+        "https://example.com/public-video",
+        ["bilibili"],
+    )
+    with center._connect() as connection:
+        connection.execute(
+            "UPDATE transfer_jobs SET source_platform=?, source_url=? WHERE id=?",
+            (
+                "web",
+                "https://x.com/lengxiaohua/status/2093551021578699090",
+                job_id,
+            ),
+        )
+
+    migrated = transfer_module.TransferCenter(config_provider=lambda: {})
+
+    assert migrated.get_job(job_id)["source_platform"] == "x"
 
 
 def test_chinese_source_download_bypasses_proxy(monkeypatch):

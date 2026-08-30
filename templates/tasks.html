@@ -51,6 +51,7 @@
                 <option value="douyin">抖音</option>
                 <option value="tiktok">TikTok</option>
                 <option value="youtube">YouTube</option>
+                <option value="x">X</option>
                 <option value="web">其他网站</option>
             </select>
             <select class="form-select" data-transfer-task-status>
@@ -107,7 +108,7 @@
                                 <div class="relay-path">
                                     <span class="source source-{{ job.source_platform }}">{{ {
                                         'bilibili':'B站', 'douyin':'抖音',
-                                        'youtube':'YouTube', 'tiktok':'TikTok', 'web':'yt-dlp'
+                                        'youtube':'YouTube', 'tiktok':'TikTok', 'x':'X', 'web':'yt-dlp'
                                     }.get(job.source_platform, job.source_platform) }}</span>
                                     <i class="bi bi-arrow-right"></i>
                                     {% if '"x"' in job.target_platforms %}<span class="target target-x">X</span>{% endif %}
@@ -549,9 +550,9 @@
                         <div class="unified-source-input">
                             <i class="bi bi-link-45deg"></i>
                             <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
-                                   placeholder="粘贴 YouTube 或 yt-dlp 支持的视频链接">
+                                   placeholder="粘贴 X、YouTube 或其他视频链接">
                         </div>
-                        <div class="form-text">支持 B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在当前服务器下载单条视频，再按目标平台确认发布。</div>
+                        <div class="form-text">支持 X 帖子、B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在当前 MacBook 下载单条视频，再按目标平台确认发布。</div>
                     </div>
 
                     <div class="source-detection-card" id="sourceDetectionCard">
@@ -601,7 +602,7 @@
 
                     <div class="route-note mt-4">
                         <i class="bi bi-signpost-split"></i>
-                        <div><strong>搬运路径说明</strong><span>支持 B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到当前服务器，再按平台状态发布。</span></div>
+                        <div><strong>搬运路径说明</strong><span>支持 X、B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到当前 MacBook，再按平台状态发布。</span></div>
                     </div>
 
                     <label class="creation-mode-card mt-4">
@@ -923,6 +924,8 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         if (url.includes('bilibili.com') || url.includes('b23.tv')) return 'bilibili';
         if (url.includes('douyin.com')) return 'douyin';
         if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
+        if (url.includes('x.com') || url.includes('twitter.com')) return 'x';
+        if (url.includes('tiktok.com')) return 'tiktok';
         if (/^https?:\/\/[^/]+/i.test(url)) return 'web';
         return '';
     }
@@ -941,6 +944,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             douyin: '已识别：抖音',
             youtube: '已识别：YouTube · yt-dlp',
             tiktok: '已识别：TikTok · yt-dlp',
+            x: '已识别：X 帖子视频 · yt-dlp',
             web: '已识别：yt-dlp 通用链接'
         };
         label.textContent = names[source] || (input.value.trim() ? '暂未识别，请检查链接' : '等待粘贴视频链接');

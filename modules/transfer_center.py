@@ -24,6 +24,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -62,7 +63,7 @@ PLATFORM_CATALOG = {
     "douyin": {"label": "国内抖音", "source": True, "target": True, "discovery": True, "publish_mode": "oauth_optional"},
     "tiktok": {"label": "TikTok", "source": True, "target": True, "discovery": True, "publish_mode": "manual"},
     "youtube": {"label": "YouTube", "source": True, "target": True, "discovery": False, "publish_mode": "oauth"},
-    "x": {"label": "X", "source": False, "target": True, "discovery": False, "publish_mode": "manual"},
+    "x": {"label": "X", "source": True, "target": True, "discovery": False, "publish_mode": "manual"},
     "web": {"label": "其他网站", "source": True, "target": False, "discovery": False, "publish_mode": "download_only"},
 }
 DISCOVERY_PLATFORMS = {key for key, value in PLATFORM_CATALOG.items() if value["discovery"]}
@@ -225,7 +226,16 @@ def _detect_platform(url: str) -> str:
         or hostname.endswith(".youtube.com")
     ):
         return "youtube"
+    if hostname in {"x.com", "twitter.com"} or hostname.endswith(
+        (".x.com", ".twitter.com")
+    ):
+        return "x"
     return "web" if parsed.scheme in {"http", "https"} and parsed.hostname else ""
+
+
+def _yt_dlp_command() -> list[str]:
+    """Run yt-dlp from the active application environment, including launchd."""
+    return [sys.executable, "-m", "yt_dlp"]
 
 
 def _source_direct_env(platform: str) -> dict[str, str]:
@@ -805,6 +815,22 @@ class TransferCenter:
                       lower(source_url) LIKE '%bilibili.com%'
                       OR lower(source_url) LIKE '%b23.tv%'
                       OR lower(source_url) LIKE '%douyin.com%'
+                      OR lower(source_url) LIKE '%x.com/%'
+                      OR lower(source_url) LIKE '%twitter.com/%'
+                  )
+                """,
+                (_utc_now(),),
+            )
+            conn.execute(
+                """
+                UPDATE transfer_jobs
+                SET source_platform = 'x', updated_at = ?
+                WHERE source_platform = 'web'
+                  AND (
+                      lower(source_url) LIKE 'https://x.com/%'
+                      OR lower(source_url) LIKE 'https://%.x.com/%'
+                      OR lower(source_url) LIKE 'https://twitter.com/%'
+                      OR lower(source_url) LIKE 'https://%.twitter.com/%'
                   )
                 """,
                 (_utc_now(),),
@@ -1218,7 +1244,7 @@ class TransferCenter:
 
     def _yt_dlp_json(self, source: str, platform: str, max_items: int, flat: bool = True) -> dict:
         cmd = [
-            "yt-dlp",
+            *_yt_dlp_command(),
             "--dump-single-json",
             "--no-warnings",
             "--playlist-end",
@@ -3909,7 +3935,7 @@ class TransferCenter:
         output_template = str(output_dir / "video.%(ext)s")
         metadata_path = output_dir / "metadata.json"
         cmd = [
-            "yt-dlp",
+            *_yt_dlp_command(),
             "--ignore-config",
             "--no-playlist",
             "--newline",

@@ -3076,6 +3076,7 @@ body.login-fullscreen {
 }
 
 .relay-path .source-douyin,
+.relay-path .source-x,
 .relay-path .target-x {
     color: #fff;
     border-color: #171a25;
