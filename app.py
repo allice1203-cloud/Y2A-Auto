@@ -1812,6 +1812,8 @@ def transfer_task_state():
                 'youtube_publish_status': job.get('youtube_publish_status') or '',
                 'bilibili_publish_status': job.get('bilibili_publish_status') or '',
                 'douyin_publish_status': job.get('douyin_publish_status') or '',
+                'backup_status': job.get('backup_status') or 'pending',
+                'backup_error': job.get('backup_error') or '',
                 'error_message': job.get('error_message') or '',
                 'updated_at': job.get('updated_at') or '',
             }
@@ -3998,6 +4000,18 @@ def transfer_center_prepare_job(job_id):
     else:
         started = _transfer_center().prepare_job_async(job_id)
         flash('已重新开始下载和准备。' if started else '该任务正在处理中，请稍候。', 'success')
+    return redirect(url_for('tasks'))
+
+
+@app.route('/transfer-center/jobs/<job_id>/backup/retry', methods=['POST'])
+@login_required
+def transfer_center_retry_backup(job_id):
+    center = _transfer_center()
+    try:
+        started = center.retry_backup(job_id)
+        flash('115 备份已重新加入后台队列' if started else '115 备份任务已在运行', 'success')
+    except Exception as exc:
+        flash(str(exc), 'danger')
     return redirect(url_for('tasks'))
 
 

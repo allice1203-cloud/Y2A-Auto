@@ -47,6 +47,13 @@ from .content_recreation import (
 )
 from .douyin_downloader import DouyinDownloadError, download_douyin_video
 from .media_preflight import build_distribution_plan, prepare_platform_variants
+from .openlist_backup import (
+    DEFAULT_OPENLIST_URL,
+    DEFAULT_REMOTE_ROOT,
+    OpenListBackupClient,
+    default_openlist_db_path,
+    safe_remote_name,
+)
 from .srt_transform_engine import SrtTransformConfig, SrtTransformEngine
 from .utils import get_app_subdir
 from .video_intelligence import (
@@ -85,6 +92,7 @@ JOB_STATUSES = {
     "SKIPPED": "skipped",
 }
 RETRY_DELAYS_SECONDS = (60, 300, 1800)
+BACKUP_RETRY_DELAYS_SECONDS = (300, 1800, 7200, 21600)
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE)
@@ -559,6 +567,8 @@ class TransferCenter:
         self._performance_sync_lock = threading.Lock()
         self._active_jobs_lock = threading.Lock()
         self._active_jobs: set[str] = set()
+        self._active_backups_lock = threading.Lock()
+        self._active_backups: set[str] = set()
         self._scheduler = None
         self.db_path = os.path.join(get_app_subdir("db"), "transfer_center.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -687,6 +697,15 @@ class TransferCenter:
                     bilibili_post_id TEXT DEFAULT '',
                     douyin_post_id TEXT DEFAULT '',
                     tiktok_post_id TEXT DEFAULT '',
+                    backup_status TEXT DEFAULT 'pending',
+                    backup_attempts INTEGER NOT NULL DEFAULT 0,
+                    backup_remote_path TEXT DEFAULT '',
+                    backup_files_json TEXT DEFAULT '[]',
+                    backup_sha256 TEXT DEFAULT '',
+                    backup_bytes INTEGER NOT NULL DEFAULT 0,
+                    backup_error TEXT DEFAULT '',
+                    backup_verified_at TEXT,
+                    backup_next_retry_at TEXT,
                     error_message TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -780,6 +799,10 @@ class TransferCenter:
                 "ON transfer_jobs(next_retry_at, status)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transfer_jobs_backup_retry "
+                "ON transfer_jobs(backup_status, backup_next_retry_at)"
+            )
+            conn.execute(
                 "UPDATE transfer_rules SET auto_publish = 0, require_review = 1 "
                 "WHERE auto_publish <> 0 OR require_review <> 1"
             )
@@ -801,6 +824,16 @@ class TransferCenter:
                     END,
                     updated_at = ?
                 WHERE status IN ('downloading', 'publishing')
+                """,
+                (_utc_now(), _utc_now()),
+            )
+            conn.execute(
+                """
+                UPDATE transfer_jobs
+                SET backup_status='failed',
+                    backup_error='服务重启后备份任务已恢复，等待自动重试',
+                    backup_next_retry_at=?, updated_at=?
+                WHERE backup_status='uploading'
                 """,
                 (_utc_now(), _utc_now()),
             )
@@ -901,6 +934,15 @@ class TransferCenter:
             "bilibili_post_id": "TEXT DEFAULT ''",
             "douyin_post_id": "TEXT DEFAULT ''",
             "tiktok_post_id": "TEXT DEFAULT ''",
+            "backup_status": "TEXT DEFAULT 'pending'",
+            "backup_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "backup_remote_path": "TEXT DEFAULT ''",
+            "backup_files_json": "TEXT DEFAULT '[]'",
+            "backup_sha256": "TEXT DEFAULT ''",
+            "backup_bytes": "INTEGER NOT NULL DEFAULT 0",
+            "backup_error": "TEXT DEFAULT ''",
+            "backup_verified_at": "TEXT",
+            "backup_next_retry_at": "TEXT",
         }
         metric_columns = {
             "impressions": "INTEGER NOT NULL DEFAULT 0",
@@ -1792,6 +1834,7 @@ class TransferCenter:
         return {
             "capacity": self.runtime_capacity(),
             "money_printer": self.money_printer_health(),
+            "backup_115": self.backup_health(),
         }
 
     def run_maintenance(self) -> dict[str, Any]:
@@ -1812,6 +1855,7 @@ class TransferCenter:
                 SELECT id FROM transfer_jobs
                 WHERE status='completed' AND updated_at < ?
                   AND (media_cleaned_at IS NULL OR media_cleaned_at='')
+                  AND (backup_status='completed' OR backup_status='disabled')
                 ORDER BY updated_at ASC LIMIT 100
                 """,
                 (cutoff,),
@@ -3725,6 +3769,15 @@ class TransferCenter:
             "bilibili_post_id",
             "douyin_post_id",
             "tiktok_post_id",
+            "backup_status",
+            "backup_attempts",
+            "backup_remote_path",
+            "backup_files_json",
+            "backup_sha256",
+            "backup_bytes",
+            "backup_error",
+            "backup_verified_at",
+            "backup_next_retry_at",
             "error_message",
             "progress_percent",
             "progress_message",
@@ -3760,6 +3813,269 @@ class TransferCenter:
     def _release_active_job(self, job_id: str) -> None:
         with self._active_jobs_lock:
             self._active_jobs.discard(job_id)
+
+    def _backup_client(self) -> OpenListBackupClient:
+        config = self._config()
+        return OpenListBackupClient(
+            base_url=str(config.get("TRANSFER_OPENLIST_URL") or DEFAULT_OPENLIST_URL),
+            database_path=str(
+                config.get("TRANSFER_OPENLIST_DATA_DB") or default_openlist_db_path()
+            ),
+            remote_root=str(config.get("TRANSFER_115_BACKUP_ROOT") or DEFAULT_REMOTE_ROOT),
+        )
+
+    def backup_health(self) -> dict[str, Any]:
+        if not _as_bool(self._config().get("TRANSFER_115_BACKUP_ENABLED", False)):
+            return {
+                "configured": False,
+                "reachable": False,
+                "ready": False,
+                "remote_root": "",
+                "message": "115 成片备份未启用",
+            }
+        return self._backup_client().health()
+
+    @staticmethod
+    def _file_sha256(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _backup_assets(self, job: dict[str, Any]) -> list[tuple[str, str]]:
+        video_path = str(job.get("local_video_path") or "")
+        if not video_path or not os.path.isfile(video_path):
+            raise ValueError("最终成片文件不存在，暂时不能备份")
+        assets = [(video_path, f"成片{Path(video_path).suffix.lower() or '.mp4'}")]
+        cover_path = str(find_local_cover(video_path) or "")
+        if cover_path and os.path.isfile(cover_path):
+            assets.append(
+                (cover_path, f"封面{Path(cover_path).suffix.lower() or '.jpg'}")
+            )
+        for index, subtitle in enumerate(self._archive_subtitle_files(video_path), start=1):
+            if subtitle.is_file() and subtitle.suffix.lower() in {".srt", ".vtt", ".ass"}:
+                assets.append((str(subtitle), f"字幕-{index}{subtitle.suffix.lower()}"))
+        return assets
+
+    def _claim_active_backup(self, job_id: str) -> bool:
+        with self._active_backups_lock:
+            if job_id in self._active_backups:
+                return False
+            self._active_backups.add(job_id)
+            return True
+
+    def _release_active_backup(self, job_id: str) -> None:
+        with self._active_backups_lock:
+            self._active_backups.discard(job_id)
+
+    def backup_job_async(self, job_id: str) -> bool:
+        if not _as_bool(self._config().get("TRANSFER_115_BACKUP_ENABLED", False)):
+            self._update_job(
+                job_id,
+                backup_status="disabled",
+                backup_next_retry_at=None,
+                backup_error="",
+            )
+            return False
+        if not self._claim_active_backup(job_id):
+            return False
+        thread = threading.Thread(
+            target=self._backup_job_guarded,
+            args=(job_id,),
+            name=f"transfer-backup-{job_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return True
+
+    def retry_backup(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        if str(job.get("recreation_status") or "") != "approved":
+            raise ValueError("成片尚未审核通过，不能备份")
+        self._update_job(
+            job_id,
+            backup_status="pending",
+            backup_attempts=0,
+            backup_error="",
+            backup_next_retry_at=None,
+        )
+        return self.backup_job_async(job_id)
+
+    def _backup_job_guarded(self, job_id: str) -> None:
+        try:
+            self.backup_job(job_id)
+        except Exception as exc:
+            job = self.get_job(job_id) or {}
+            self._schedule_backup_retry(
+                job_id,
+                int(job.get("backup_attempts") or 1),
+                exc,
+            )
+            logger.exception("115 成片备份失败 %s", job_id)
+        finally:
+            self._release_active_backup(job_id)
+
+    def backup_job(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError("搬运任务不存在")
+        if str(job.get("recreation_status") or "") != "approved":
+            raise ValueError("成片尚未审核通过，暂时不能备份")
+        assets = self._backup_assets(job)
+        self._update_job(
+            job_id,
+            backup_status="uploading",
+            backup_attempts=int(job.get("backup_attempts") or 0) + 1,
+            backup_error="",
+            backup_next_retry_at=None,
+        )
+        job = self.get_job(job_id) or job
+        client = self._backup_client()
+        now = datetime.now()
+        title = safe_remote_name(job.get("title"), fallback="未命名视频")
+        remote_dir = (
+            f"{client.remote_root}/{now:%Y}/{now:%m}/"
+            f"{job_id[:8]}-{title}"
+        )
+        current = ""
+        for segment in remote_dir.strip("/").split("/"):
+            current += f"/{segment}"
+            client.mkdir(current)
+
+        uploaded_files: list[dict[str, Any]] = []
+        total_bytes = 0
+        video_sha256 = ""
+        for local_path, remote_name in assets:
+            remote_path = f"{remote_dir}/{safe_remote_name(remote_name, remote_name)}"
+            size = client.upload_file(local_path, remote_path)
+            checksum = self._file_sha256(local_path)
+            if local_path == assets[0][0]:
+                video_sha256 = checksum
+            total_bytes += size
+            uploaded_files.append(
+                {
+                    "name": Path(remote_path).name,
+                    "size": size,
+                    "sha256": checksum,
+                }
+            )
+        metadata = {
+            "schema": "sg99.video-transfer-backup.v1",
+            "job_id": job_id,
+            "title": job.get("title") or "",
+            "source_platform": job.get("source_platform") or "",
+            "source_url": job.get("source_url") or "",
+            "source_attribution": job.get("source_attribution") or "",
+            "targets": _json_list(job.get("target_platforms")),
+            "reviewed_at": job.get("reviewed_at") or "",
+            "backed_up_at": _utc_now(),
+            "files": uploaded_files,
+        }
+        metadata_name = "备份信息.json"
+        metadata_size = client.upload_json(metadata, f"{remote_dir}/{metadata_name}")
+        total_bytes += metadata_size
+        uploaded_files.append({"name": metadata_name, "size": metadata_size})
+        self._update_job(
+            job_id,
+            backup_status="completed",
+            backup_remote_path=remote_dir,
+            backup_files_json=json.dumps(uploaded_files, ensure_ascii=False),
+            backup_sha256=video_sha256,
+            backup_bytes=total_bytes,
+            backup_error="",
+            backup_verified_at=_utc_now(),
+            backup_next_retry_at=None,
+        )
+        self._emit_backup_notification("completed", job_id)
+        return self.get_job(job_id) or {}
+
+    def _schedule_backup_retry(self, job_id: str, attempts: int, error: Any) -> None:
+        config = self._config()
+        try:
+            max_attempts = int(
+                config.get("TRANSFER_115_BACKUP_MAX_ATTEMPTS")
+                or (len(BACKUP_RETRY_DELAYS_SECONDS) + 1)
+            )
+        except (TypeError, ValueError):
+            max_attempts = len(BACKUP_RETRY_DELAYS_SECONDS) + 1
+        max_attempts = max(
+            1,
+            min(len(BACKUP_RETRY_DELAYS_SECONDS) + 1, max_attempts),
+        )
+        retry_at = None
+        if attempts < max_attempts:
+            retry_at = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=BACKUP_RETRY_DELAYS_SECONDS[attempts - 1])
+            ).isoformat(timespec="seconds")
+        message = _safe_error(error, limit=500)
+        self._update_job(
+            job_id,
+            backup_status="failed",
+            backup_error=(
+                f"{message}；系统将在后台自动重试"
+                if retry_at
+                else f"{message}；自动重试已用完，请人工重试"
+            ),
+            backup_next_retry_at=retry_at,
+        )
+        if not retry_at:
+            self._emit_backup_notification("failed", job_id, message)
+
+    def retry_due_backups(self) -> None:
+        if not _as_bool(self._config().get("TRANSFER_115_BACKUP_ENABLED", False)):
+            return
+        now = _utc_now()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM transfer_jobs
+                WHERE recreation_status='approved'
+                  AND local_video_path<>''
+                  AND backup_status IN ('pending', 'failed')
+                  AND (backup_next_retry_at IS NULL OR backup_next_retry_at<=?)
+                ORDER BY reviewed_at ASC, updated_at ASC
+                LIMIT 3
+                """,
+                (now,),
+            ).fetchall()
+        for row in rows:
+            self.backup_job_async(str(row["id"]))
+
+    def _emit_backup_notification(
+        self, event_name: str, job_id: str, error_message: str = ""
+    ) -> None:
+        try:
+            from .notifications import (
+                EVENT_TRANSFER_BACKUP_COMPLETED,
+                EVENT_TRANSFER_BACKUP_FAILED,
+                NotificationEvent,
+                emit_notification_event,
+            )
+
+            job = self.get_job(job_id) or {}
+            event_type = (
+                EVENT_TRANSFER_BACKUP_COMPLETED
+                if event_name == "completed"
+                else EVENT_TRANSFER_BACKUP_FAILED
+            )
+            emit_notification_event(
+                NotificationEvent(
+                    event_type=event_type,
+                    payload={
+                        "task_id": job_id,
+                        "title": job.get("title") or "视频搬运任务",
+                        "backup_path": job.get("backup_remote_path") or "",
+                        "backup_bytes": int(job.get("backup_bytes") or 0),
+                        "error_message": error_message or job.get("backup_error") or "",
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("115 备份通知未启用或不可用", exc_info=True)
 
     def prepare_job_async(self, job_id: str, publish_after: bool = False) -> bool:
         if not self._claim_active_job(job_id):
@@ -4218,6 +4534,15 @@ class TransferCenter:
             youtube_publish_status="pending" if "youtube" in targets else "skipped",
             bilibili_publish_status="pending" if "bilibili" in targets else "skipped",
             douyin_publish_status="pending" if "douyin" in targets else "skipped",
+            backup_status="pending",
+            backup_attempts=0,
+            backup_remote_path="",
+            backup_files_json="[]",
+            backup_sha256="",
+            backup_bytes=0,
+            backup_error="",
+            backup_verified_at=None,
+            backup_next_retry_at=None,
             next_retry_at=None,
             last_retry_stage="",
             error_message="",
@@ -4370,6 +4695,8 @@ class TransferCenter:
             reviewed_at=reviewed_at,
             error_message="",
         )
+        if approve:
+            self.backup_job_async(job_id)
         return self.get_job(job_id) or {}
 
     @staticmethod
@@ -6305,6 +6632,16 @@ class TransferCenter:
             "interval",
             seconds=60,
             id="transfer-center-retry",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=30,
+        )
+        self._scheduler.add_job(
+            self.retry_due_backups,
+            "interval",
+            seconds=60,
+            id="transfer-center-115-backup",
             replace_existing=True,
             max_instances=1,
             coalesce=True,

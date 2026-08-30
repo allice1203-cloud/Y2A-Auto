@@ -39,7 +39,7 @@
         <div class="workspace-panel-head">
             <div>
                 <h2>搬运任务</h2>
-                <p>yt-dlp 下载到当前服务器，确认后再发布到目标平台。</p>
+                <p>素材下载和加工均在当前 MacBook 完成；审核通过后自动备份到 115，再发布到目标平台。</p>
             </div>
             <span class="workspace-count">{{ transfer_jobs|length }} 条任务</span>
         </div>
@@ -91,7 +91,7 @@
                             'skipped': 100
                         } %}
                         {% set progress = status_progress.get(job.status, 0)|int %}
-                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-x-status="{{ job.x_publish_status }}" data-youtube-status="{{ job.youtube_publish_status }}" data-tiktok-status="{{ job.tiktok_publish_status }}" data-error="{{ job.error_message|e }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
+                        <tr data-transfer-task-row data-transfer-task-id="{{ job.id }}" data-source="{{ job.source_platform }}" data-status="{{ job.status }}" data-x-status="{{ job.x_publish_status }}" data-youtube-status="{{ job.youtube_publish_status }}" data-tiktok-status="{{ job.tiktok_publish_status }}" data-backup-status="{{ job.backup_status or 'pending' }}" data-error="{{ job.error_message|e }}" data-search="{{ ((job.title or '') ~ ' ' ~ job.id)|lower }}">
                             <td>
                                 <div class="task-video-cell">
                                     <span class="task-video-thumb">
@@ -183,6 +183,14 @@
                                         'completed':'已发布','failed':'失败','blocked':'媒体未就绪','skipped':'未选择'
                                     }.get(job.tiktok_publish_status, job.tiktok_publish_status) }}</span></span>
                                     {% endif %}
+                                    <span title="{{ job.backup_error|e if job.backup_error else (job.backup_remote_path|e if job.backup_remote_path else '') }}">
+                                        <i class="platform-mini"><i class="bi bi-cloud-check"></i></i>
+                                        <span data-backup-status>{{ {
+                                            'pending':'115待成片', 'uploading':'115备份中',
+                                            'completed':'115已备份', 'failed':'115备份失败',
+                                            'disabled':'115未启用'
+                                        }.get(job.backup_status or 'pending', job.backup_status or 'pending') }}</span>
+                                    </span>
                                 </div>
                             </td>
                             <td><span class="task-updated">{{ job.updated_at[:16]|replace('T', ' ') }}</span></td>
@@ -190,6 +198,11 @@
                                 {% if job.status in ('discovered', 'failed') %}
                                 <form method="post" action="{{ url_for('transfer_center_prepare_job', job_id=job.id) }}" class="d-inline">
                                     <button class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-repeat"></i> {{ '准备素材' if job.status == 'discovered' else '重试' }}</button>
+                                </form>
+                                {% endif %}
+                                {% if job.backup_status == 'failed' %}
+                                <form method="post" action="{{ url_for('transfer_center_retry_backup', job_id=job.id) }}" class="d-inline">
+                                    <button class="btn btn-sm btn-outline-primary"><i class="bi bi-cloud-arrow-up"></i> 重试备份</button>
                                 </form>
                                 {% endif %}
                                 {% if job.local_video_path or (job.recreation_plan_json and job.recreation_plan_json != '{}') %}
@@ -1142,7 +1155,11 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
                         needsReload = true;
                         return;
                     }
-                    if (row.dataset.status !== job.status || (row.dataset.error || '') !== (job.error_message || '')) {
+                    if (
+                        row.dataset.status !== job.status
+                        || row.dataset.backupStatus !== (job.backup_status || 'pending')
+                        || (row.dataset.error || '') !== (job.error_message || '')
+                    ) {
                         needsReload = true;
                         return;
                     }

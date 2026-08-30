@@ -11,6 +11,8 @@ import modules.config_manager as config_module
 import modules.media_preflight as preflight_module
 import modules.transfer_center as transfer_module
 from modules.notifications import (
+    EVENT_TRANSFER_BACKUP_COMPLETED,
+    EVENT_TRANSFER_BACKUP_FAILED,
     EVENT_TRANSFER_FAILED,
     EVENT_TRANSFER_PUBLISHED,
     EVENT_TRANSFER_REVIEW_READY,
@@ -1459,6 +1461,28 @@ def test_transfer_notification_messages_include_review_link():
     assert "渲染失败" in failed.markdown
 
 
+def test_transfer_backup_notification_reports_verified_path_and_failure():
+    payload = {
+        "task_id": "job-backup",
+        "title": "成片备份",
+        "backup_path": "/115-视频备份/视频搬运/2026/08/job-backup",
+        "backup_bytes": 10 * 1024 * 1024,
+        "error_message": "OpenList unavailable",
+    }
+
+    completed = build_notification_message(
+        NotificationEvent(EVENT_TRANSFER_BACKUP_COMPLETED, payload)
+    )
+    failed = build_notification_message(
+        NotificationEvent(EVENT_TRANSFER_BACKUP_FAILED, payload)
+    )
+
+    assert "115备份完成" in completed.title
+    assert payload["backup_path"] in completed.markdown
+    assert "10.0 MB" in completed.markdown
+    assert "OpenList unavailable" in failed.markdown
+
+
 def test_maintenance_backs_up_db_and_only_cleans_old_completed_jobs(center, tmp_path):
     completed_id = center.add_manual_job(
         "https://www.bilibili.com/video/BV1oldcompleted", ["youtube"]
@@ -1475,7 +1499,7 @@ def test_maintenance_backs_up_db_and_only_cleans_old_completed_jobs(center, tmp_
     old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(timespec="seconds")
     with center._connect() as conn:
         conn.execute(
-            "UPDATE transfer_jobs SET status='completed', updated_at=?, local_video_path=? WHERE id=?",
+            "UPDATE transfer_jobs SET status='completed', backup_status='completed', updated_at=?, local_video_path=? WHERE id=?",
             (old, str(completed_dir / "video.mp4"), completed_id),
         )
         conn.execute(

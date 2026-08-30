@@ -12,6 +12,8 @@ from .models import (
     EVENT_TASK_COMPLETED,
     EVENT_TASK_FAILED,
     EVENT_TRANSFER_FAILED,
+    EVENT_TRANSFER_BACKUP_COMPLETED,
+    EVENT_TRANSFER_BACKUP_FAILED,
     EVENT_TRANSFER_PUBLISHED,
     EVENT_TRANSFER_REVIEW_READY,
     NotificationEvent,
@@ -83,6 +85,35 @@ def _section_block(*kv_lines: str) -> str:
 def build_notification_message(event: NotificationEvent) -> NotificationMessage:
     payload = event.as_payload()
     event_type = event.event_type
+
+    if event_type in {EVENT_TRANSFER_BACKUP_COMPLETED, EVENT_TRANSFER_BACKUP_FAILED}:
+        title_text = _task_title(payload)
+        failed = event_type == EVENT_TRANSFER_BACKUP_FAILED
+        if failed:
+            title = "视频搬运 ⚠️ 115备份需要处理"
+            summary = f"{title_text} | {_pretty_error_text(payload.get('error_message'))}"
+            heading = "**⚠️ 最终成片备份到 115 网盘失败**"
+        else:
+            title = "视频搬运 ☁️ 115备份完成"
+            summary = f"{title_text} | 已校验"
+            heading = "**☁️ 最终成片已备份并通过大小校验**"
+        size_bytes = int(payload.get("backup_bytes") or 0)
+        size_text = f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes else ""
+        body = _section_block(
+            _kv("视频", _truncate(title_text, 120)),
+            _kv("任务 ID", f"`{_as_text(payload.get('task_id'))}`"),
+            _kv("115目录", _as_text(payload.get("backup_path"))),
+            _kv("备份大小", size_text),
+            _kv("时间", _as_text(payload.get("occurred_at"))),
+        )
+        markdown = _markdown_lines(heading, "", body)
+        if failed:
+            markdown = _markdown_lines(
+                markdown,
+                "",
+                f"> **错误：**{_pretty_error_text(payload.get('error_message'))}",
+            )
+        return NotificationMessage(title=title, summary=summary, markdown=markdown)
 
     if event_type in {EVENT_TRANSFER_REVIEW_READY, EVENT_TRANSFER_PUBLISHED, EVENT_TRANSFER_FAILED}:
         title_text = _task_title(payload)

@@ -89,6 +89,13 @@ DEFAULT_CONFIG = {
     "TRANSFER_PUBLIC_BASE_URL": "",
     "TRANSFER_YOUTUBE_CATEGORY_ID": "22",
     "TRANSFER_YOUTUBE_PRIVACY": "public",
+    # 审核通过的最终成片自动备份到本机 OpenList 挂载的 115 网盘。
+    # 115 OAuth 凭证仍只保存在 OpenList 数据库，不复制进视频系统配置。
+    "TRANSFER_115_BACKUP_ENABLED": True,
+    "TRANSFER_OPENLIST_URL": "http://127.0.0.1:5245",
+    "TRANSFER_OPENLIST_DATA_DB": "",
+    "TRANSFER_115_BACKUP_ROOT": "/115-视频备份/视频搬运",
+    "TRANSFER_115_BACKUP_MAX_ATTEMPTS": 5,
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
     "COOKIECLOUD_ENABLED": False,
     "COOKIECLOUD_SERVER_URL": "",
