@@ -4032,7 +4032,7 @@ class TransferCenter:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id FROM transfer_jobs
+                SELECT id, local_video_path FROM transfer_jobs
                 WHERE recreation_status='approved'
                   AND local_video_path<>''
                   AND backup_status IN ('pending', 'failed')
@@ -4043,7 +4043,17 @@ class TransferCenter:
                 (now,),
             ).fetchall()
         for row in rows:
-            self.backup_job_async(str(row["id"]))
+            job_id = str(row["id"])
+            local_video_path = str(row["local_video_path"] or "")
+            if not os.path.isfile(local_video_path):
+                self._update_job(
+                    job_id,
+                    backup_status="unavailable",
+                    backup_error="本地成片已清理，无法补做 115 备份",
+                    backup_next_retry_at=None,
+                )
+                continue
+            self.backup_job_async(job_id)
 
     def _emit_backup_notification(
         self, event_name: str, job_id: str, error_message: str = ""

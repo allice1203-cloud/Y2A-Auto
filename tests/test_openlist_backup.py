@@ -153,3 +153,31 @@ def test_backup_failure_does_not_change_publish_status(tmp_path, monkeypatch):
     assert job["backup_status"] == "failed"
     assert job["backup_next_retry_at"]
     assert "temporary failure" in job["backup_error"]
+
+
+def test_due_backup_marks_cleaned_legacy_media_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        transfer_module,
+        "get_app_subdir",
+        lambda name: str(tmp_path / name) if name else str(tmp_path),
+    )
+    center = transfer_module.TransferCenter(
+        config_provider=lambda: {"TRANSFER_115_BACKUP_ENABLED": True}
+    )
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1legacycleaned", ["youtube"]
+    )
+    center._update_job(
+        job_id,
+        status="completed",
+        recreation_status="approved",
+        local_video_path=str(tmp_path / "already-cleaned.mp4"),
+        backup_status="pending",
+    )
+
+    center.retry_due_backups()
+
+    job = center.get_job(job_id)
+    assert job["backup_status"] == "unavailable"
+    assert job["backup_next_retry_at"] is None
+    assert "本地成片已清理" in job["backup_error"]
