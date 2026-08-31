@@ -281,7 +281,7 @@
                                                 </div>
                                             </div>
                                             <div class="settings-card-body">
-                                                <div class="alert alert-light border small">转码用于把源视频和烧录字幕转换成投稿平台可接受的视频文件，不需要登录任何外部账号。当前香港 VPS 未挂载可用 GPU，使用 CPU（libx264），自定义参数保持关闭。</div>
+                                                <div class="alert alert-light border small">转码用于把源视频和烧录字幕转换成投稿平台可接受的视频文件，不需要登录任何外部账号。当前 M1 Max MacBook 使用本地转码配置，系统会根据预设控制并发与速度，自定义参数默认关闭。</div>
                                                 <div class="row g-3">
                                                     <div class="col-md-6">
                                                         <div class="form-group">
@@ -1703,6 +1703,30 @@
                                                         </label>
                                                     </div>
                                                 </section>
+                                                <section class="notification-event-group">
+                                                    <div class="notification-event-group-head">
+                                                        <span>搬运与运维</span>
+                                                        <small>4 项</small>
+                                                    </div>
+                                                    <div class="notification-event-options">
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="NOTIFY_EVENT_TRANSFER_REVIEW_READY" {% if config.get('NOTIFY_EVENT_TRANSFER_REVIEW_READY', True) %}checked{% endif %}>
+                                                            成片待审核
+                                                        </label>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="NOTIFY_EVENT_TRANSFER_PUBLISHED" {% if config.get('NOTIFY_EVENT_TRANSFER_PUBLISHED', True) %}checked{% endif %}>
+                                                            发布完成
+                                                        </label>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="NOTIFY_EVENT_TRANSFER_FAILED" {% if config.get('NOTIFY_EVENT_TRANSFER_FAILED', True) %}checked{% endif %}>
+                                                            搬运失败
+                                                        </label>
+                                                        <label class="checkbox-label">
+                                                            <input type="checkbox" name="NOTIFY_EVENT_SYSTEM_WATCHDOG" {% if config.get('NOTIFY_EVENT_SYSTEM_WATCHDOG', True) %}checked{% endif %}>
+                                                            制作端自检修复
+                                                        </label>
+                                                    </div>
+                                                </section>
                                             </div>
                                         </div>
                                     </article>
@@ -1725,7 +1749,11 @@
                                                         <input type="checkbox" name="NOTIFY_TELEGRAM_ENABLED" {% if config.get('NOTIFY_TELEGRAM_ENABLED', False) %}checked{% endif %}>
                                                         启用 Telegram 通知
                                                     </label>
-                                                    <p>主要用于任务提醒与登录安全通知。BotFather 密钥与系统内部的任务接入 Token 相互独立。</p>
+                                                    <label class="checkbox-label mt-2">
+                                                        <input type="checkbox" name="TRANSFER_TELEGRAM_INTAKE_ENABLED" {% if config.get('TRANSFER_TELEGRAM_INTAKE_ENABLED', True) %}checked{% endif %}>
+                                                        允许向 Bot 发送视频链接创建任务
+                                                    </label>
+                                                    <p>只接受当前 Chat ID；默认创建并准备，不会绕过审核自动发布。</p>
                                                 </div>
                                             </div>
                                             <div class="notification-primary-config">

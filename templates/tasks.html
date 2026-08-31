@@ -562,10 +562,10 @@
                         <label for="source_url" class="form-label">视频链接</label>
                         <div class="unified-source-input">
                             <i class="bi bi-link-45deg"></i>
-                            <input type="text" inputmode="url" class="form-control" id="source_url" name="source_url" required
-                                   placeholder="粘贴 X、YouTube 或其他视频链接">
+                            <textarea class="form-control" id="source_url" name="source_urls" rows="4" required
+                                      placeholder="粘贴 X、B站、抖音、TikTok、YouTube 或其他公开视频链接；一行一条，最多 20 条"></textarea>
                         </div>
-                        <div class="form-text">支持 X 帖子、B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；会在当前 MacBook 下载单条视频，再按目标平台确认发布。</div>
+                        <div class="form-text">支持 X 帖子、B站、抖音、TikTok、YouTube 以及 yt-dlp 能识别的公开视频；系统会去重并逐条创建，失败链接不会影响其他任务。</div>
                     </div>
 
                     <div class="source-detection-card" id="sourceDetectionCard">
@@ -595,7 +595,7 @@
                             <label class="route-target">
                                 <input type="checkbox" name="target_bilibili" data-target-platform="bilibili">
                                 <span class="route-target-icon bilibili"><i class="bi bi-play-btn-fill"></i></span>
-                                <span><strong>B站</strong><small>登录后服务器上传</small></span>
+                                <span><strong>B站</strong><small>登录后由当前 MacBook 上传</small></span>
                                 <i class="bi bi-check-circle-fill"></i>
                             </label>
                             <label class="route-target">
@@ -618,10 +618,24 @@
                         <div><strong>搬运路径说明</strong><span>支持 X、B站、抖音、TikTok、YouTube 和 yt-dlp 公开链接之间的跨平台分发；同平台重复搬运会被拦截，全部先下载到当前 MacBook，再按平台状态发布。</span></div>
                     </div>
 
-                    <label class="creation-mode-card mt-4">
-                        <input type="radio" checked disabled>
-                        <span><strong>默认进入标准二剪</strong><small>下载后自动生成脚本、钩子和镜头方案；也可切换快速二剪或原片分发。</small></span>
-                    </label>
+                    {% set last_processing = session.get('last_processing_preset', 'professional') %}
+                    <div class="mt-4">
+                        <div class="route-panel-head mb-2"><div><small>加工方式</small><strong>选择这批任务的处理配方</strong></div><span>系统会记住上次选择</span></div>
+                        <div class="quick-processing-grid">
+                            <label class="creation-mode-card">
+                                <input type="radio" name="processing_mode" value="quick" {% if last_processing == 'quick' %}checked{% endif %}>
+                                <span><strong>快速二剪</strong><small>更快进入制作端，适合热点与短视频。</small></span>
+                            </label>
+                            <label class="creation-mode-card">
+                                <input type="radio" name="processing_mode" value="professional" {% if last_processing == 'professional' %}checked{% endif %}>
+                                <span><strong>质量优先</strong><small>完整脚本、字幕、镜头方案与人工审核。</small></span>
+                            </label>
+                            <label class="creation-mode-card">
+                                <input type="radio" name="processing_mode" value="direct" {% if last_processing == 'direct' %}checked{% endif %}>
+                                <span><strong>仅下载 / 原片分发</strong><small>跳过制作端加工，但仍保留发布前确认。</small></span>
+                            </label>
+                        </div>
+                    </div>
                     <div class="form-text mt-2">
                         创建任务不会直接公开发布。
                     </div>
@@ -951,7 +965,8 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
         const targetPanelTitle = document.getElementById('targetPanelTitle');
         if (!input || !label || !badge || !relayTargets) return;
 
-        const source = detectRelaySource(input.value);
+        const sourceLines = input.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+        const source = detectRelaySource(sourceLines[0] || '');
         const names = {
             bilibili: '已识别：B站',
             douyin: '已识别：抖音',
@@ -961,6 +976,7 @@ tr.status-awaiting_manual_review td { background-color: rgba(255,193,7,0.05); }
             web: '已识别：yt-dlp 通用链接'
         };
         label.textContent = names[source] || (input.value.trim() ? '暂未识别，请检查链接' : '等待粘贴视频链接');
+        if (source && sourceLines.length > 1) label.textContent += ` · 共 ${sourceLines.length} 条`;
         badge.textContent = source ? '已识别' : '未识别';
         badge.classList.toggle('is-success', Boolean(source));
         badge.classList.toggle('is-neutral', !source);

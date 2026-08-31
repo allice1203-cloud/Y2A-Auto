@@ -9,6 +9,7 @@ import pytest
 
 import modules.config_manager as config_module
 import modules.media_preflight as preflight_module
+import modules.notifications as notifications_module
 import modules.transfer_center as transfer_module
 from modules.notifications import (
     EVENT_TRANSFER_BACKUP_COMPLETED,
@@ -163,6 +164,17 @@ def test_manual_job_detects_tiktok_and_routes_cross_platform(center):
     assert job["source_platform"] == "tiktok"
     assert json.loads(job["target_platforms"]) == ["youtube", "douyin", "bilibili"]
     assert job["tiktok_publish_status"] == "skipped"
+
+
+@pytest.mark.parametrize("processing_mode", ["direct", "quick", "professional"])
+def test_manual_job_keeps_selected_processing_mode(center, processing_mode):
+    job_id = center.add_manual_job(
+        f"https://example.com/video-{processing_mode}",
+        ["bilibili"],
+        processing_mode=processing_mode,
+    )
+
+    assert center.get_job(job_id)["processing_mode"] == processing_mode
 
 
 def test_manual_job_detects_x_post_and_routes_cross_platform(center):
@@ -1041,7 +1053,7 @@ def test_money_printer_url_opens_imported_project(center):
 
     url = center.money_printer_url(center.get_job(job_id))
 
-    assert url.startswith("https://video.sg99.online/app/?")
+    assert url.startswith("http://127.0.0.1:8080/app/?")
     assert "project_id=project-123" in url
     assert "studio=intelligence" in url
     assert "workflow=professional" in url
@@ -1435,13 +1447,13 @@ def test_runtime_health_explains_material_package_fallback_without_credentials(c
     assert "二剪素材包" in status["message"]
 
 
-def test_transfer_notification_messages_include_review_link():
+def test_transfer_notification_messages_include_configured_review_link():
     payload = {
         "task_id": "job-123",
         "title": "待审核视频",
         "targets": "bilibili、douyin",
         "status": "review",
-        "review_url": "https://transfer.sg99.online/transfer-center/jobs/job-123/review",
+        "review_url": "http://127.0.0.1:15188/transfer-center/jobs/job-123/review",
         "error_message": "渲染失败",
     }
 
@@ -1459,6 +1471,30 @@ def test_transfer_notification_messages_include_review_link():
     assert payload["review_url"] in review.markdown
     assert "发布完成" in published.title
     assert "渲染失败" in failed.markdown
+
+
+def test_local_transfer_notification_uses_macbook_instruction_without_retired_link(
+    center, monkeypatch
+):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1localnotify", ["youtube"]
+    )
+    center._update_job(job_id, title="本地待审核", status="review")
+    captured = []
+    monkeypatch.setattr(
+        notifications_module,
+        "emit_notification_event",
+        captured.append,
+    )
+
+    center._emit_transfer_notification("review_ready", job_id)
+
+    assert len(captured) == 1
+    payload = captured[0].as_payload()
+    message = build_notification_message(captured[0])
+    assert payload["review_url"] == ""
+    assert "MacBook" in message.markdown
+    assert "transfer.sg99.online" not in message.markdown
 
 
 def test_transfer_backup_notification_reports_verified_path_and_failure():
@@ -1515,6 +1551,78 @@ def test_maintenance_backs_up_db_and_only_cleans_old_completed_jobs(center, tmp_
     assert review_dir.exists()
     assert center.get_job(completed_id)["media_cleaned_at"]
     assert center.get_job(review_id)["local_video_path"].endswith("video.mp4")
+
+
+def test_maintenance_requires_completed_status_and_verified_or_disabled_backup(
+    center, tmp_path
+):
+    completed_disabled_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1backupdisabled", ["youtube"]
+    )
+    completed_pending_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1backuppending", ["youtube"]
+    )
+    failed_backed_up_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1failedbackup", ["youtube"]
+    )
+    job_dirs = {}
+    for job_id in (
+        completed_disabled_id,
+        completed_pending_id,
+        failed_backed_up_id,
+    ):
+        job_dir = tmp_path / "downloads" / "transfer" / job_id
+        job_dir.mkdir(parents=True)
+        video_path = job_dir / "video.mp4"
+        video_path.write_bytes(job_id.encode())
+        job_dirs[job_id] = (job_dir, video_path)
+
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(timespec="seconds")
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET status='completed', backup_status='disabled', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(job_dirs[completed_disabled_id][1]), completed_disabled_id),
+        )
+        conn.execute(
+            "UPDATE transfer_jobs SET status='completed', backup_status='pending', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(job_dirs[completed_pending_id][1]), completed_pending_id),
+        )
+        conn.execute(
+            "UPDATE transfer_jobs SET status='failed', backup_status='completed', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(job_dirs[failed_backed_up_id][1]), failed_backed_up_id),
+        )
+
+    result = center.run_maintenance()
+
+    assert result["cleaned_jobs"] == 1
+    assert not job_dirs[completed_disabled_id][0].exists()
+    assert job_dirs[completed_pending_id][0].exists()
+    assert job_dirs[failed_backed_up_id][0].exists()
+
+
+def test_maintenance_honors_one_day_retention_after_verified_backup(center, tmp_path):
+    center._config_provider = lambda: {
+        "TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS": 1,
+        "TRANSFER_DB_BACKUP_RETENTION_DAYS": 14,
+    }
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1onedayretention", ["youtube"]
+    )
+    job_dir = tmp_path / "downloads" / "transfer" / job_id
+    job_dir.mkdir(parents=True)
+    video_path = job_dir / "video.mp4"
+    video_path.write_bytes(b"verified-backup")
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+    with center._connect() as conn:
+        conn.execute(
+            "UPDATE transfer_jobs SET status='completed', backup_status='completed', updated_at=?, local_video_path=? WHERE id=?",
+            (old, str(video_path), job_id),
+        )
+
+    result = center.run_maintenance()
+
+    assert result["cleaned_jobs"] == 1
+    assert not job_dir.exists()
 
 
 def test_performance_summary_uses_latest_platform_snapshot(center):

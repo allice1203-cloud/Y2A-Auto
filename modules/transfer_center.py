@@ -1560,6 +1560,9 @@ class TransferCenter:
         source_id = str(item.get("id") or hashlib.sha256(item["url"].encode()).hexdigest()[:24])
         job_id = str(uuid.uuid4())
         targets = _json_list(rule["target_platforms"])
+        processing_mode = str(rule.get("processing_mode") or "professional").strip()
+        if processing_mode not in {"direct", "quick", "professional"}:
+            processing_mode = "professional"
         with self._connect() as conn:
             try:
                 conn.execute(
@@ -1588,7 +1591,7 @@ class TransferCenter:
                         rule["target_platforms"],
                         JOB_STATUSES["DISCOVERED"],
                         str(rule.get("recreation_mode") or "commentary"),
-                        "professional",
+                        processing_mode,
                         "pending" if "x" in targets else "skipped",
                         "pending" if "youtube" in targets else "skipped",
                         "pending" if "bilibili" in targets else "skipped",
@@ -1777,7 +1780,7 @@ class TransferCenter:
         if status["ready"]:
             return
         raise RuntimeError(
-            f"服务器可用磁盘仅 {status['free_gb']:.1f} GB，"
+            f"当前 MacBook 可用磁盘仅 {status['free_gb']:.1f} GB，"
             f"{operation}前至少需要保留 {status['minimum_free_gb']:.1f} GB；"
             "系统已停止本次大文件写入，请先清理已完成任务或旧镜像"
         )
@@ -1844,7 +1847,7 @@ class TransferCenter:
             return {"enabled": False, "backup": "", "cleaned_jobs": 0, "bytes_freed": 0}
         backup_path = self.backup_database()
         retention_days = max(
-            7, min(3650, int(config.get("TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS") or 30))
+            1, min(3650, int(config.get("TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS") or 30))
         )
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(
             timespec="seconds"
@@ -3680,7 +3683,13 @@ class TransferCenter:
             ),
         }
 
-    def add_manual_job(self, source_url: str, targets: list[str]) -> str:
+    def add_manual_job(
+        self,
+        source_url: str,
+        targets: list[str],
+        *,
+        processing_mode: str = "professional",
+    ) -> str:
         source_url = _validate_public_source_url(source_url)
         platform = _detect_platform(source_url)
         if platform not in SOURCE_PLATFORMS:
@@ -3695,6 +3704,7 @@ class TransferCenter:
             "id": None,
             "platform": platform,
             "target_platforms": json.dumps(valid_targets, ensure_ascii=False),
+            "processing_mode": processing_mode,
         }
         source_id = hashlib.sha256(source_url.encode()).hexdigest()[:24]
         job_id, created = self._insert_discovered_job(
@@ -4203,9 +4213,8 @@ class TransferCenter:
                 return
             job = self.get_job(job_id) or {}
             base_url = str(
-                self._config().get("TRANSFER_PUBLIC_BASE_URL")
-                or "https://transfer.sg99.online"
-            ).rstrip("/")
+                self._config().get("TRANSFER_PUBLIC_BASE_URL") or ""
+            ).strip().rstrip("/")
             emit_notification_event(
                 NotificationEvent(
                     event_type=event_type,
@@ -4214,7 +4223,11 @@ class TransferCenter:
                         "title": job.get("title") or "视频搬运任务",
                         "status": job.get("status") or "",
                         "targets": "、".join(_json_list(job.get("target_platforms"))),
-                        "review_url": f"{base_url}/transfer-center/jobs/{job_id}/review",
+                        "review_url": (
+                            f"{base_url}/transfer-center/jobs/{job_id}/review"
+                            if base_url
+                            else ""
+                        ),
                         "error_message": error_message or job.get("error_message") or "",
                     },
                 )
@@ -4445,11 +4458,19 @@ class TransferCenter:
         cover_preflight = run_cover_preflight(
             find_local_cover(str(videos[0])), media_info, targets
         )
+        selected_processing_mode = str(job.get("processing_mode") or "professional")
+        if selected_processing_mode not in {"direct", "quick", "professional"}:
+            selected_processing_mode = "professional"
+        processing_messages = {
+            "direct": "素材已就绪，等待原片分发审核",
+            "quick": "素材已就绪，等待快速二剪",
+            "professional": "素材已就绪，默认进入标准二剪",
+        }
         self._update_job(
             job_id,
             status=JOB_STATUSES["REVIEW"],
             progress_percent=72,
-            progress_message="素材已就绪，默认进入标准二剪",
+            progress_message=processing_messages[selected_processing_mode],
             **prepared_fields,
             media_probe_json=json.dumps(media_info, ensure_ascii=False),
             platform_variants_json=json.dumps(variants, ensure_ascii=False),
@@ -4458,7 +4479,7 @@ class TransferCenter:
             cover_preflight_json=json.dumps(cover_preflight, ensure_ascii=False),
             recreation_status="draft",
             recreation_completed=0,
-            processing_mode="professional",
+            processing_mode=selected_processing_mode,
             recreation_plan_json=serialize_plan(plan),
             original_angle=str(plan.get("original_angle") or ""),
             original_contribution=str(plan.get("original_contribution") or ""),
@@ -5607,7 +5628,7 @@ class TransferCenter:
             selected_workflow = "professional"
         public_url = str(
             self._config().get("TRANSFER_MPT_PUBLIC_URL")
-            or "https://video.sg99.online/app/"
+            or "http://127.0.0.1:8080/app/"
         ).strip()
         separator = "&" if "?" in public_url else "?"
         return (

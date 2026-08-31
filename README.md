@@ -1,14 +1,14 @@
 <div align="center">
 
-# Y2A-Auto
+# 视频搬运通道
 
 <img src="static/img/favicon.png" width="96" alt="Y2A-Auto Logo" />
 
-将 YouTube 视频自动搬运到 AcFun / bilibili 的一体化工具。
+在当前 M1 Max MacBook 上完成多来源下载、二剪、人工审核、多平台发布与 115 成片备份。
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
-[![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
+[![Runtime](https://img.shields.io/badge/runtime-MacBook%20local-blue.svg)](docs/public-access.md)
 
 从下载、ASR、字幕翻译、字幕质检、内容审核到上传，全流程自动化；内置 Web 管理后台、YouTube 监控和维护能力。
 
@@ -17,17 +17,6 @@
 ---
 
 </div>
-
-<p align="center">
-  <a href="https://t.me/Y2AAuto_bot" target="_blank">
-    <img src="https://img.shields.io/badge/Telegram%20Bot-%40Y2AAuto__bot-2CA5E0?logo=telegram&logoColor=white" alt="Telegram Bot" />
-  </a>
-  <br/>
-  <strong>Telegram 转发机器人（试用）：</strong>
-  <a href="https://t.me/Y2AAuto_bot">@Y2AAuto_bot</a>
-  <br/>
-  <sub>自部署版本：<a href="https://github.com/fqscfqj/Y2A-Auto-tgbot">Y2A-Auto-tgbot</a></sub>
-</p>
 
 ## 项目展示
 
@@ -50,11 +39,12 @@
 | --- | --- |
 | 全流程自动化 | 从下载、ASR、字幕、元信息到上传一条龙处理 |
 | 审核可控 | 支持人工审核、强制上传、内容安全检测和登录保护 |
-| 灵活部署 | Docker / 本地双模式，支持 CPU 与多种 GPU 编码 |
+| 本地优先 | 当前仅在 M1 Max MacBook 上通过 LaunchAgent 运行，不向 VPS 同步凭据或素材 |
 | 监控拉取 | 支持 YouTube 频道 / 关键词定时抓取与历史记录 |
 | 标准二剪 | 默认生成中文脚本、开场钩子、镜头计划、B-roll 建议和分平台版本 |
 | AI 混合制作 | 联动超级印钞机完成配音、字幕、AI 素材和粗剪，保留人工终审 |
 | 消息推送 | Telegram、企业微信、Server酱、message-pusher 多渠道异步通知 |
+| 快速收件 | 直接向授权 Telegram Bot 发视频链接，仅创建并准备任务 |
 | CookieCloud | 从 CookieCloud 服务自动同步 YouTube Cookies |
 | 安全防护 | 密码保护、暴力破解锁定、会话超时、路径遍历防护 |
 | 维护完善 | 支持日志清理、下载清理、并发控制和 FFmpeg 自动补齐 |
@@ -131,70 +121,38 @@ Y2A-Auto/
 
 ## 快速开始
 
-推荐使用 Docker（无需手动安装 Python、FFmpeg、yt-dlp）。
+1. 打开 `http://127.0.0.1:15188` 并登录。
+2. 进入“快速配置”，选择个人稳妥、热点快速或多平台增长。
+3. 点击“一键体检”，只处理页面列出的必需账号或本地组件。
+4. 在任务中心粘贴一条或多条视频链接，并选择处理配方和目标平台。
+5. 成片经人工确认后发布；发布成功后自动备份到 115。
 
-1. 准备 Cookie（必须）
-- `cookies/yt_cookies.txt`：YouTube 登录 Cookie
-- `cookies/ac_cookies.json`：AcFun 登录 Cookie
-- `cookies/bili_cookies.json`：bilibili 登录 Cookie
-- 可使用浏览器扩展导出 `cookies.txt`，请勿提交到仓库
+也可以把单条或多条公开链接直接发给已授权的 Telegram Bot。单条消息可加
+`#direct` / `#quick` / `#professional` 覆盖处理模式，加 `#x` / `#youtube` /
+`#bilibili` / `#douyin` / `#tiktok` 覆盖目标平台。Bot 入口永远不会自动发布。
 
-2. 启动服务
-
-```bash
-# 默认从 Docker Hub 拉取镜像 fqscfqj/y2a-auto:latest
-# 如需使用 GitHub 容器注册表，可切换为 ghcr.io/fqscfqj/y2a-auto:latest
-docker compose up -d
-```
-
-3. 打开 Web
-- 访问 `http://localhost:5000`
-- 首次进入建议先配置登录保护、平台账号和 YouTube Cookie
-
-默认会持久化目录：`config/`、`db/`、`downloads/`、`logs/`、`temp/`、`cookies/`。
-
-说明：`fonts/` 中的字体属于项目内置依赖，用于字幕烧录；许可证见 `fonts/LICENSE.txt`。
+账号、Cookie、OAuth 和 OpenList 数据只保存在本机应用私有目录，不应提交到仓库或粘贴到聊天。
 
 ## 部署与运行
 
-香港 VPS 通过 Cloudflare Tunnel 提供私有源站、公网 HTTPS 入口，见
-[公网访问运维说明](docs/public-access.md)。公网部署前必须启用系统登录保护。
-界面品牌、布局、组件和响应式约束见 [v0.5 设计系统](docs/design-system.md)。
+当前生产运行方式只有 MacBook 本地 LaunchAgent：
 
-### 方案 A：Docker（推荐）
+- `com.sg99.video-transfer-channel.local`：`127.0.0.1:15188`
+- `com.sg99.moneyprinter-video-worker.local`：`127.0.0.1:8080`
+- OpenList：`127.0.0.1:5245`
 
-- 启动：`docker compose up -d`
-- 停止：`docker compose down`
-- 重启：`docker compose restart`
-- 日志：`docker compose logs -f`
+启动时会读取 macOS 当前的回环代理设置，不再依赖写死的 Shadowrocket 端口。
 
-如需本地构建镜像，可使用：
+常用维护入口：
 
 ```bash
-docker compose -f docker-compose-build.yml up -d --build
+make status
+make test
+make restart
+make moneyprinter-status
 ```
 
-### 方案 B：本地运行
-
-前置要求：
-- Python 3.11+
-- FFmpeg
-- yt-dlp
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python app.py
-```
-
-访问 `http://127.0.0.1:5000`。
-
-### 方案 C：Windows 便携包
-
-- `build-tools/` 提供 Windows 可执行文件构建工具
-- 官方 Windows Release 包通常已内置 FFmpeg / FFprobe
-- 如果手工打包，保持 `ffmpeg/` 目录完整即可
+旧 Docker、VPS 和 Cloudflare 文件不属于当前运行链路；历史容器发布文件仅保留作上游兼容与人工回滚参考。完整边界见[当前本地运行方式](docs/public-access.md)，界面约束见[设计系统](docs/design-system.md)。
 
 ## 配置说明
 
@@ -268,10 +226,15 @@ python app.py
 - `MAX_CONCURRENT_UPLOADS`：最大并发上传数，默认 `1`
 - `LOG_CLEANUP_ENABLED` / `LOG_CLEANUP_HOURS` / `LOG_CLEANUP_INTERVAL`
 - `DOWNLOAD_CLEANUP_ENABLED` / `DOWNLOAD_CLEANUP_HOURS` / `DOWNLOAD_CLEANUP_INTERVAL`
+- `TRANSFER_MPT_WATCHDOG_ENABLED`：连续 3 次真实检查失败后才执行一次本地安全修复，两次修复至少间隔 30 分钟
+- `TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS`：只清理已完成且 115 备份校验成功（或明确关闭备份）的成片
 
 ### 通知推送
 
 - `NOTIFY_ENABLED`：启用消息推送，默认 `false`
+- `NOTIFY_TELEGRAM_BOT_TOKEN` / `NOTIFY_TELEGRAM_CHAT_ID`：Telegram 通知和快速收件入口共用的专用 Bot
+- `TRANSFER_TELEGRAM_INTAKE_ENABLED`：允许当前 Chat ID 发公开链接创建任务，默认开启
+- `TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE` / `TRANSFER_TELEGRAM_INTAKE_DEFAULT_TARGETS`：每套快速预设会自动配置
 - `NOTIFY_CHANNELS`：启用的渠道列表，支持 `wecom`、`serverchan`、`message_pusher`
 - `NOTIFY_EVENTS`：订阅的事件列表，可选 `task_added`、`task_completed`、`task_failed`、`login_success`、`login_locked`、`qr_login_success`、`qr_login_failed`
 - 企业微信：`NOTIFY_WECOM_WEBHOOK_URL`

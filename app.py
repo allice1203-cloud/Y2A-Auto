@@ -14,7 +14,7 @@ import uuid
 import threading
 
 from datetime import datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
@@ -31,6 +31,7 @@ from modules.bilibili_auth import (
     BilibiliQrLoginSession,
     load_credential_from_file,
     save_credential_to_file,
+    validate_credential_remote,
 )
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
@@ -72,6 +73,28 @@ from modules.cookiecloud import (
     sync_cookiecloud_to_youtube_file,
     test_cookiecloud_youtube_sync,
 )
+from modules.config_snapshots import (
+    create_config_snapshot,
+    list_config_snapshots,
+    load_config_snapshot,
+)
+from modules.local_control import launchd_service_state, repair_money_printer
+from modules.local_proxy import configure_local_system_proxy
+from modules.health_watchdog import HealthWatchdog
+from modules.quick_setup import (
+    build_quick_setup_context,
+    get_preset,
+    preset_changes,
+    preview_changes,
+)
+from modules.task_intake import normalize_processing_preset, parse_source_url_batch
+from modules.telegram_intake import (
+    FileUpdateCheckpoint,
+    TARGET_PLATFORMS,
+    TelegramIntakeConfig,
+    TelegramIntakeService,
+    TelegramTaskRequest,
+)
 from modules.notifications import (
     CHANNEL_LABELS,
     CHANNEL_MESSAGE_PUSHER,
@@ -82,6 +105,7 @@ from modules.notifications import (
     EVENT_LOGIN_SUCCESS,
     EVENT_QR_LOGIN_FAILED,
     EVENT_QR_LOGIN_SUCCESS,
+    EVENT_SYSTEM_WATCHDOG,
     NotificationEvent,
     detect_latest_telegram_chat,
     emit_notification_event,
@@ -93,6 +117,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+_MONEY_PRINTER_WATCHDOG = None
+_TELEGRAM_INTAKE_SERVICE = None
+_TELEGRAM_INTAKE_THREAD = None
+_LOCAL_BACKGROUND_SERVICES_MANAGED = False
+_LOCAL_BACKGROUND_SERVICES_LOCK = threading.RLock()
+_LOCAL_PROXY_STATUS = {}
 
 
 @app.context_processor
@@ -821,6 +852,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
 
     try:
         report('saving_config', '正在保存配置', '正在校验并写入设置。')
+        config_before_save = load_config()
         form_data.pop('save_operation_id', None)
 
         new_password = form_data.get('new_password')
@@ -860,11 +892,13 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'NOTIFY_EVENT_TRANSFER_REVIEW_READY',
             'NOTIFY_EVENT_TRANSFER_PUBLISHED',
             'NOTIFY_EVENT_TRANSFER_FAILED',
+            'NOTIFY_EVENT_SYSTEM_WATCHDOG',
             'NOTIFY_EVENT_LOGIN_SUCCESS',
             'NOTIFY_EVENT_LOGIN_LOCKED',
             'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
             'NOTIFY_EVENT_QR_LOGIN_FAILED',
             'NOTIFY_TELEGRAM_ENABLED',
+            'TRANSFER_TELEGRAM_INTAKE_ENABLED',
             'NOTIFY_WECOM_ENABLED',
             'NOTIFY_SERVERCHAN_ENABLED',
             'NOTIFY_MESSAGE_PUSHER_ENABLED',
@@ -970,6 +1004,15 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
 
         _persist_settings_uploads(form_data, uploads)
+        try:
+            create_config_snapshot(config_before_save, reason='settings_save')
+        except Exception:
+            logger.exception('创建脱敏设置快照失败')
+            _append_settings_message(
+                messages,
+                'warning',
+                '设置将继续保存，但本次无法创建撤销快照。',
+            )
         updated_config = update_config(form_data)
 
         try:
@@ -981,6 +1024,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             logger.warning(f"同步任务处理器配置失败: {e}")
 
         _sync_notification_service(updated_config)
+        _refresh_local_background_services(updated_config)
         _append_notification_config_warnings(messages, updated_config)
 
         try:
@@ -2216,23 +2260,48 @@ def add_task_via_extension():
 @login_required
 def add_task_route():
     """统一使用 yt-dlp 下载，再进入审核与多平台发布链路。"""
-    source_url = str(
-        request.form.get('source_url')
+    source_value = str(
+        request.form.get('source_urls')
+        or request.form.get('source_url')
         or request.form.get('youtube_url')
         or ''
     ).strip()
-    if not source_url:
+    if not source_value:
         flash('视频链接不能为空', 'danger')
         return redirect(url_for('tasks'))
 
     try:
         targets = _transfer_target_list(request.form)
-        job_id = _transfer_center().add_manual_job(source_url, targets)
-        _transfer_center().prepare_job_async(job_id, publish_after=False)
-        flash(
-            'yt-dlp 下载任务已创建；素材会保存在服务器，完成后进入确认与发布。',
-            'success',
+        processing_mode = normalize_processing_preset(
+            request.form.get('processing_mode') or session.get('last_processing_preset') or ''
         )
+        source_urls = parse_source_url_batch(source_value, limit=20)
+        if not targets:
+            raise ValueError('至少选择一个发布平台')
+        center = _transfer_center()
+        created = []
+        failures = []
+        for source_url in source_urls:
+            try:
+                job_id = center.add_manual_job(
+                    source_url,
+                    targets,
+                    processing_mode=processing_mode,
+                )
+                center.prepare_job_async(job_id, publish_after=False)
+                created.append(job_id)
+            except Exception as exc:
+                failures.append(f'{source_url[:60]}：{exc}')
+        session['last_transfer_targets'] = targets
+        session['last_processing_preset'] = processing_mode
+        if not created:
+            raise ValueError(failures[0] if failures else '没有创建任何任务')
+        message = (
+            f'已创建 {len(created)} 条任务；素材会保存在当前 MacBook，完成后进入确认与发布。'
+        )
+        if failures:
+            message += f' 另有 {len(failures)} 条未创建，请检查来源与目标是否重复。'
+        flash(message, 'warning' if failures else 'success')
     except Exception as exc:
         flash(f'创建搬运任务失败：{exc}', 'danger')
     return redirect(url_for('tasks'))
@@ -2570,7 +2639,10 @@ def system_health():
         'stuck_tasks': {'count': 0, 'tasks': []},
         'recent_errors': [],
         'docker_volumes': {},
-        'transfer_center': {}
+        'transfer_center': {},
+        'money_printer_watchdog': {},
+        'telegram_intake': {},
+        'local_proxy': {},
     }
     
     # Docker环境特殊检查
@@ -2585,6 +2657,13 @@ def system_health():
             'status': 'error',
             'message': _public_health_check_error_message('搬运中心'),
         }
+    health_status['money_printer_watchdog'] = (
+        _MONEY_PRINTER_WATCHDOG.status()
+        if _MONEY_PRINTER_WATCHDOG
+        else {'running': False, 'last_event': 'disabled'}
+    )
+    health_status['telegram_intake'] = _telegram_intake_status()
+    health_status['local_proxy'] = dict(_LOCAL_PROXY_STATUS)
     
     # 检查数据库
     try:
@@ -3391,6 +3470,10 @@ def cleanup_downloads(hours: int):
         bytes_freed = 0
 
         for entry in os.listdir(downloads_dir):
+            # 搬运任务有独立的终态、115 备份校验和保留期管理，
+            # 不得由通用下载清理按目录时间直接删除。
+            if entry == 'transfer':
+                continue
             path = os.path.join(downloads_dir, entry)
             try:
                 if os.path.isdir(path):
@@ -3528,6 +3611,188 @@ def _transfer_center():
     return get_transfer_center(config_provider=load_config)
 
 
+def _watchdog_notification(message):
+    """Send a fixed, credential-free watchdog event through configured channels."""
+
+    logger.warning("%s", str(message or "本地制作端健康状态变更"))
+    try:
+        recovered = "已执行" in str(message or "")
+        emit_notification_event(
+            NotificationEvent(
+                event_type=EVENT_SYSTEM_WATCHDOG,
+                payload={"status": "recovered" if recovered else "needs_attention"},
+            )
+        )
+    except Exception:
+        logger.debug("本地制作端 watchdog 通知未启用或不可用", exc_info=True)
+
+
+def _telegram_default_targets(config):
+    raw_targets = str(
+        config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_TARGETS") or "bilibili"
+    )
+    requested = {
+        item.strip().lower() for item in raw_targets.split(",") if item.strip()
+    }
+    targets = tuple(target for target in TARGET_PLATFORMS if target in requested)
+    return targets or ("bilibili",)
+
+
+def _create_and_prepare_telegram_task(task_request: TelegramTaskRequest):
+    center = _transfer_center()
+    job_id = center.add_manual_job(
+        task_request.source_url,
+        list(task_request.target_platforms),
+        processing_mode=task_request.processing_mode,
+    )
+    if not center.prepare_job_async(job_id, publish_after=False):
+        raise RuntimeError("任务已创建，但暂时无法进入准备队列")
+    return job_id
+
+
+def _telegram_intake_status(config=None):
+    config = config if isinstance(config, dict) else load_config()
+    enabled = _coerce_checkbox_value(
+        config.get("TRANSFER_TELEGRAM_INTAKE_ENABLED", True)
+    )
+    credentials_ready = bool(
+        str(config.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+        and str(config.get("NOTIFY_TELEGRAM_CHAT_ID") or "").strip()
+    )
+    service = _TELEGRAM_INTAKE_SERVICE
+    return {
+        "enabled": enabled,
+        "credentials_ready": credentials_ready,
+        "running": bool(service and service.running),
+        "last_error_code": str(getattr(service, "last_error_code", "") or ""),
+        "default_processing_mode": str(
+            config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE") or "professional"
+        ),
+        "default_target_platforms": list(_telegram_default_targets(config)),
+    }
+
+
+def _stop_local_background_services():
+    global _MONEY_PRINTER_WATCHDOG
+    global _TELEGRAM_INTAKE_SERVICE
+    global _TELEGRAM_INTAKE_THREAD
+
+    with _LOCAL_BACKGROUND_SERVICES_LOCK:
+        service = _TELEGRAM_INTAKE_SERVICE
+        thread = _TELEGRAM_INTAKE_THREAD
+        watchdog = _MONEY_PRINTER_WATCHDOG
+        _TELEGRAM_INTAKE_SERVICE = None
+        _TELEGRAM_INTAKE_THREAD = None
+        _MONEY_PRINTER_WATCHDOG = None
+    if service:
+        service.stop()
+    if thread and thread is not threading.current_thread():
+        thread.join(timeout=16)
+    if watchdog:
+        watchdog.stop(timeout=5)
+
+
+def _refresh_local_background_services(config=None):
+    """Apply local watchdog and Telegram intake settings without opening ports."""
+
+    global _MONEY_PRINTER_WATCHDOG
+    global _TELEGRAM_INTAKE_SERVICE
+    global _TELEGRAM_INTAKE_THREAD
+
+    if not _LOCAL_BACKGROUND_SERVICES_MANAGED:
+        return {
+            "watchdog_running": False,
+            "telegram_intake_running": False,
+            "skipped": True,
+        }
+
+    config = config if isinstance(config, dict) else load_config()
+    _stop_local_background_services()
+    center = _transfer_center()
+
+    watchdog = None
+    if _coerce_checkbox_value(config.get("TRANSFER_MPT_WATCHDOG_ENABLED", True)):
+        try:
+            watchdog = HealthWatchdog(
+                center.money_printer_health,
+                lambda: repair_money_printer(center.money_printer_health),
+                notification_callback=_watchdog_notification,
+                check_interval_seconds=max(
+                    10,
+                    int(config.get("TRANSFER_MPT_WATCHDOG_INTERVAL_SECONDS") or 60),
+                ),
+            )
+            watchdog.start()
+        except Exception:
+            watchdog = None
+            logger.exception("本地制作端 watchdog 启动失败")
+
+    telegram_service = None
+    telegram_thread = None
+    intake_enabled = _coerce_checkbox_value(
+        config.get("TRANSFER_TELEGRAM_INTAKE_ENABLED", True)
+    )
+    bot_token = str(config.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = str(config.get("NOTIFY_TELEGRAM_CHAT_ID") or "").strip()
+    if intake_enabled and bot_token and chat_id:
+        try:
+            checkpoint = FileUpdateCheckpoint(
+                os.path.join(get_app_subdir("db"), "telegram_intake_checkpoint.json")
+            )
+            telegram_service = TelegramIntakeService(
+                TelegramIntakeConfig(
+                    bot_token=bot_token,
+                    allowed_chat_id=chat_id,
+                    default_processing_mode=str(
+                        config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE")
+                        or "professional"
+                    ),
+                    default_target_platforms=_telegram_default_targets(config),
+                    connect_timeout_seconds=5,
+                    poll_timeout_seconds=max(
+                        1,
+                        min(
+                            50,
+                            int(
+                                config.get(
+                                    "TRANSFER_TELEGRAM_INTAKE_POLL_TIMEOUT_SECONDS"
+                                )
+                                or 25
+                            ),
+                        ),
+                    ),
+                ),
+                _create_and_prepare_telegram_task,
+                checkpoint=checkpoint,
+                error_reporter=lambda code: logger.warning(
+                    "Telegram 快速入口状态：%s", code
+                ),
+            )
+            if checkpoint.get() is None:
+                discarded = telegram_service.discard_pending_updates()
+                if discarded:
+                    logger.info("Telegram 快速入口已跳过启用前的历史消息")
+            telegram_thread = threading.Thread(
+                target=telegram_service.run_forever,
+                name="telegram-transfer-intake",
+                daemon=True,
+            )
+            telegram_thread.start()
+        except Exception:
+            telegram_service = None
+            telegram_thread = None
+            logger.exception("Telegram 快速入口启动失败")
+
+    with _LOCAL_BACKGROUND_SERVICES_LOCK:
+        _MONEY_PRINTER_WATCHDOG = watchdog
+        _TELEGRAM_INTAKE_SERVICE = telegram_service
+        _TELEGRAM_INTAKE_THREAD = telegram_thread
+    return {
+        "watchdog_running": bool(watchdog and watchdog.status().get("running")),
+        "telegram_intake_running": bool(telegram_service and telegram_service.running),
+    }
+
+
 def _source_cookie_path(platform):
     filenames = {
         'bilibili': 'bilibili_unified_cookies.txt',
@@ -3561,6 +3826,270 @@ def _transfer_target_list(form):
         for target in ('x', 'youtube', 'bilibili', 'douyin', 'tiktok')
         if str(form.get(f'target_{target}', '')).lower() in ('1', 'true', 'on', 'yes')
     ]
+
+
+def _quick_ai_health(config):
+    import requests
+
+    api_key = str(config.get('OPENAI_API_KEY') or '').strip()
+    base_url = str(config.get('OPENAI_BASE_URL') or '').strip().rstrip('/')
+    model_name = str(config.get('OPENAI_MODEL_NAME') or '').strip()
+    if not api_key or not base_url or not model_name:
+        return {
+            'ready': False,
+            'message': 'AI 接口、密钥或模型名尚未配置完整',
+        }
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        return {'ready': False, 'message': 'AI 接口地址格式无效'}
+
+    session_obj = requests.Session()
+    if parsed.hostname in {'127.0.0.1', 'localhost', '::1'}:
+        session_obj.trust_env = False
+    try:
+        response = session_obj.get(
+            f'{base_url}/models',
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=(3, 8),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        models = payload.get('data') if isinstance(payload, dict) else None
+        available_ids = {
+            str(item.get('id') or '').strip()
+            for item in (models or [])
+            if isinstance(item, dict)
+        }
+        if available_ids and model_name not in available_ids:
+            return {
+                'ready': False,
+                'message': '模型服务可连接，但当前模型名不在可用列表中',
+            }
+        return {
+            'ready': True,
+            'message': 'AI 模型服务已通过只读连通检查',
+            'model': model_name,
+        }
+    except Exception:
+        return {
+            'ready': False,
+            'message': 'AI 模型服务暂不可用，请检查本地模型或接口设置',
+        }
+
+
+def _quick_telegram_health(config):
+    enabled = bool(config.get('NOTIFY_TELEGRAM_ENABLED'))
+    token_ready = bool(str(config.get('NOTIFY_TELEGRAM_BOT_TOKEN') or '').strip())
+    chat_ready = bool(str(config.get('NOTIFY_TELEGRAM_CHAT_ID') or '').strip())
+    intake = _telegram_intake_status(config)
+    intake_required = bool(intake.get('enabled'))
+    ready = enabled and token_ready and chat_ready and (
+        not intake_required or bool(intake.get('running'))
+    )
+    return {
+        'ready': ready,
+        'message': (
+            'Telegram Bot 已连接，可直接发链接创建搬运任务'
+            if ready
+            else 'Telegram 通知或快速任务入口尚未完整启用'
+        ),
+        'intake_running': bool(intake.get('running')),
+        'default_processing_mode': intake.get('default_processing_mode'),
+        'default_target_platforms': intake.get('default_target_platforms'),
+    }
+
+
+def _quick_setup_health_results(config=None):
+    config = config if isinstance(config, dict) else load_config()
+    center = _transfer_center()
+    bilibili_state = _bilibili_account_state(config)
+    bilibili_remote_ready = False
+    bilibili_message = 'B站凭据文件尚未准备'
+    if bilibili_state.get('publish_ready'):
+        try:
+            credential = load_credential_from_file(_bilibili_cookie_paths(config)[0])
+            bilibili_remote_ready, bilibili_message = validate_credential_remote(credential)
+        except Exception:
+            bilibili_message = 'B站登录态校验失败，请重新扫码登录'
+
+    money_printer = center.money_printer_health()
+    try:
+        launchd_state = launchd_service_state('money_printer')
+        money_printer['service_running'] = bool(launchd_state.get('running'))
+    except Exception:
+        money_printer['service_running'] = False
+    money_printer['watchdog'] = (
+        _MONEY_PRINTER_WATCHDOG.status()
+        if _MONEY_PRINTER_WATCHDOG
+        else {'running': False, 'last_event': 'disabled'}
+    )
+
+    douyin_state = douyin_connection_state()
+    youtube_state = youtube_connection_state()
+    return {
+        'bilibili_source': {
+            'ready': bool(bilibili_remote_ready and bilibili_state.get('source_ready')),
+            'message': bilibili_message,
+        },
+        'bilibili_publish': {
+            'ready': bool(bilibili_remote_ready and bilibili_state.get('publish_ready')),
+            'message': bilibili_message,
+        },
+        'douyin_source': {
+            'ready': _source_cookie_ready('douyin'),
+            'message': (
+                '抖音来源 Cookie 已准备，将在实际下载时再次校验'
+                if _source_cookie_ready('douyin')
+                else '抖音来源账号尚未登录'
+            ),
+        },
+        'douyin_publish': {
+            'connected': bool(douyin_state.get('connected')),
+            'message': str(douyin_state.get('message') or '抖音发布账号待检查'),
+        },
+        'youtube_publish': {
+            'connected': bool(youtube_state.get('connected')),
+            'message': (
+                f"已记录频道：{youtube_state.get('channel_title') or '未命名频道'}；发布时会再次验证"
+                if youtube_state.get('connected')
+                else str(youtube_state.get('message') or 'YouTube 发布频道尚未连接')
+            ),
+        },
+        'ai': _quick_ai_health(config),
+        'money_printer': money_printer,
+        'backup_115': center.backup_health(),
+        'telegram': _quick_telegram_health(config),
+    }
+
+
+def _quick_setup_request_payload():
+    return (request.get_json(silent=True) or {}) if request.is_json else request.form
+
+
+@app.route('/quick-setup')
+@login_required
+def quick_setup():
+    config = load_config()
+    preset_id = str(
+        request.args.get('preset')
+        or session.get('quick_setup_preset')
+        or 'personal_stable'
+    ).strip()
+    if not get_preset(preset_id):
+        preset_id = 'personal_stable'
+    cached_health = session.get('quick_setup_health')
+    if not isinstance(cached_health, dict):
+        cached_health = {}
+    context = build_quick_setup_context(
+        config,
+        preset_id,
+        cached_health,
+        {
+            'select_preset': url_for('quick_setup_select'),
+            'health': url_for('quick_setup_health'),
+            'apply': url_for('quick_setup_apply'),
+        },
+    )
+    context['config_snapshots'] = list_config_snapshots()
+    context['quick_setup_component_actions'] = {
+        'bilibili_source': {'url': url_for('settings') + '#vtab-accounts', 'label': '去登录'},
+        'bilibili_publish': {'url': url_for('settings') + '#vtab-accounts', 'label': '去登录'},
+        'douyin_source': {'url': url_for('transfer_center_index') + '#connections', 'label': '去连接'},
+        'douyin_publish': {'url': url_for('transfer_center_index') + '#connections', 'label': '去授权'},
+        'youtube_publish': {'url': url_for('transfer_center_index') + '#connections', 'label': '去连接'},
+        'ai': {'url': url_for('settings') + '#vtab-ai', 'label': '检查设置'},
+        'money_printer': {'url': url_for('quick_setup_repair_money_printer'), 'label': '安全修复', 'method': 'post'},
+        'backup_115': {'url': url_for('transfer_center_index') + '#connections', 'label': '检查备份'},
+        'telegram': {'url': url_for('settings') + '#vtab-notifications', 'label': '设置通知'},
+    }
+    return render_template('quick_setup.html', **context)
+
+
+@app.route('/quick-setup/select', methods=['POST'])
+@login_required
+def quick_setup_select():
+    payload = _quick_setup_request_payload()
+    preset_id = str(payload.get('preset_id') or '').strip()
+    if not get_preset(preset_id):
+        flash('请选择有效的快速配置预设', 'danger')
+        return redirect(url_for('quick_setup'))
+    session['quick_setup_preset'] = preset_id
+    session.pop('quick_setup_health', None)
+    return redirect(url_for('quick_setup'))
+
+
+@app.route('/quick-setup/health', methods=['POST'])
+@login_required
+def quick_setup_health():
+    results = _quick_setup_health_results()
+    session['quick_setup_health'] = results
+    if request.is_json:
+        return jsonify({'success': True, 'results': results})
+    flash('一键体检已完成，页面只显示状态，不显示任何凭据。', 'success')
+    return redirect(url_for('quick_setup') + '#quick-verify')
+
+
+@app.route('/quick-setup/apply', methods=['POST'])
+@login_required
+def quick_setup_apply():
+    payload = _quick_setup_request_payload()
+    preset_id = str(payload.get('preset_id') or session.get('quick_setup_preset') or '').strip()
+    try:
+        changes = preset_changes(preset_id)
+        current = load_config()
+        preview = preview_changes(current, changes)
+        if not preview.get('valid'):
+            raise ValueError('快速配置包含无效设置')
+        if preview.get('changed_count'):
+            create_config_snapshot(current, reason=f'apply:{preset_id}')
+            updated = update_config(preview['normalized_changes'])
+            configure_app(app, updated)
+            _refresh_local_background_services(updated)
+        session['quick_setup_preset'] = preset_id
+        results = _quick_setup_health_results(load_config())
+        session['quick_setup_health'] = results
+        message = (
+            f"已应用 {preview.get('changed_count', 0)} 项安全设置；账号与凭据未被修改。"
+        )
+        if request.is_json:
+            return jsonify({'success': True, 'message': message, 'preview': preview})
+        flash(message, 'success')
+    except ValueError as exc:
+        if request.is_json:
+            return jsonify({'success': False, 'message': str(exc)}), 400
+        flash(str(exc), 'danger')
+    return redirect(url_for('quick_setup'))
+
+
+@app.route('/quick-setup/repair/money-printer', methods=['POST'])
+@login_required
+def quick_setup_repair_money_printer():
+    try:
+        result = repair_money_printer(_transfer_center().money_printer_health)
+        session['quick_setup_health'] = _quick_setup_health_results()
+        category = 'success' if result.get('success') else 'warning'
+        flash(str(result.get('message') or '制作端修复已完成'), category)
+    except Exception:
+        logger.exception('本地制作端安全修复失败')
+        flash('制作端修复失败，请查看本地日志。', 'danger')
+    return redirect(url_for('quick_setup') + '#quick-verify')
+
+
+@app.route('/quick-setup/restore/<snapshot_id>', methods=['POST'])
+@login_required
+def quick_setup_restore(snapshot_id):
+    try:
+        current = load_config()
+        restored = load_config_snapshot(snapshot_id)
+        create_config_snapshot(current, reason=f'before_restore:{snapshot_id}')
+        updated = update_config(restored)
+        configure_app(app, updated)
+        _refresh_local_background_services(updated)
+        session.pop('quick_setup_health', None)
+        flash('已撤销到所选脱敏设置快照；账号、Token 和 Cookie 均未改变。', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+    return redirect(url_for('quick_setup') + '#quick-processing')
 
 
 def _transfer_youtube_redirect_uri():
@@ -5073,7 +5602,12 @@ def cookie_refresh_needed():
         return jsonify({'error': '处理失败，请稍后重试'}), 500
 
 if __name__ == '__main__':
+    _LOCAL_BACKGROUND_SERVICES_MANAGED = True
     logger.info("Y2A-Auto 启动中...")
+
+    _LOCAL_PROXY_STATUS = configure_local_system_proxy()
+    if _LOCAL_PROXY_STATUS.get('configured'):
+        logger.info("已同步 macOS 当前本地代理设置")
 
     # 初始化AcFun分区ID映射
     init_id_mapping()
@@ -5094,6 +5628,7 @@ if __name__ == '__main__':
 
     transfer_center_service = get_transfer_center(config_provider=load_config)
     transfer_center_service.start()
+    _refresh_local_background_services(config)
 
     # 自动启动所有pending任务（如果启用了自动模式）
     if config.get('AUTO_MODE_ENABLED', False):
@@ -5135,6 +5670,8 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"服务启动失败: {str(e)}")
     finally:
+        _stop_local_background_services()
+        _LOCAL_BACKGROUND_SERVICES_MANAGED = False
         # 关闭全局任务处理器
         shutdown_global_task_processor()
 

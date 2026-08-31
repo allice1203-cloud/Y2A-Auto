@@ -4,17 +4,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPOSE_FILE="$PROJECT_ROOT/docker-compose.hk.yml"
-
-if [[ ! -f "$COMPOSE_FILE" ]]; then
-    echo "缺少香港 VPS compose 文件：$COMPOSE_FILE" >&2
-    exit 1
-fi
-
-DEFAULT_IMAGE="$(awk '$1 == "image:" {print $2; exit}' "$COMPOSE_FILE")"
-TEST_IMAGE="${1:-$DEFAULT_IMAGE}"
+TEST_IMAGE="${1:-video-transfer-channel:0.17.0}"
 if [[ -z "$TEST_IMAGE" ]]; then
-    echo "无法从 compose 文件识别测试镜像" >&2
+    echo "缺少本地回归测试镜像名称" >&2
     exit 1
 fi
 

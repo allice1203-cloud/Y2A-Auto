@@ -1,7 +1,12 @@
 import ast
 import json
+import os
 import pathlib
+import shutil
+import tempfile
+import time
 import unittest
+from unittest.mock import MagicMock
 
 
 def _load_functions(*names):
@@ -18,7 +23,50 @@ def _load_functions(*names):
     return [namespace[name] for name in names]
 
 
+def _load_cleanup_downloads(downloads_dir):
+    app_path = pathlib.Path(__file__).resolve().parents[1] / "app.py"
+    source = app_path.read_text(encoding="utf-8")
+    module_ast = ast.parse(source, filename=str(app_path))
+    selected = [
+        node for node in module_ast.body
+        if isinstance(node, ast.FunctionDef) and node.name == "cleanup_downloads"
+    ]
+    isolated_module = ast.Module(body=selected, type_ignores=[])
+    namespace = {
+        "os": os,
+        "shutil": shutil,
+        "time": time,
+        "get_app_subdir": lambda name: downloads_dir,
+        "logger": MagicMock(),
+        "_human_readable_size": lambda size: f"{size}B",
+    }
+    exec(compile(isolated_module, str(app_path), "exec"), namespace)
+    return namespace["cleanup_downloads"]
+
+
 class AppLoggingHelperTests(unittest.TestCase):
+    def test_generic_download_cleanup_permanently_skips_transfer_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            downloads_dir = os.path.join(temp_dir, "downloads")
+            transfer_dir = os.path.join(downloads_dir, "transfer")
+            ordinary_dir = os.path.join(downloads_dir, "ordinary-task")
+            os.makedirs(transfer_dir)
+            os.makedirs(ordinary_dir)
+            with open(os.path.join(transfer_dir, "video.mp4"), "wb") as handle:
+                handle.write(b"protected")
+            with open(os.path.join(ordinary_dir, "video.mp4"), "wb") as handle:
+                handle.write(b"cleanup")
+            old_mtime = time.time() - 2 * 3600
+            os.utime(transfer_dir, (old_mtime, old_mtime))
+            os.utime(ordinary_dir, (old_mtime, old_mtime))
+
+            result = _load_cleanup_downloads(downloads_dir)(hours=1)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["dirs_removed"], 1)
+            self.assertTrue(os.path.isdir(transfer_dir))
+            self.assertFalse(os.path.exists(ordinary_dir))
+
     def test_status_mapping_uses_fixed_messages(self):
         describe_status, = _load_functions("_describe_youtube_api_status")
 

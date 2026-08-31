@@ -37,6 +37,26 @@ class PublicSecurityTests(unittest.TestCase):
                 msg=f"missing login protection for {route}",
             )
 
+    def test_quick_setup_and_repair_routes_require_login(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        route_fragments = (
+            "/quick-setup",
+            "/quick-setup/select",
+            "/quick-setup/health",
+            "/quick-setup/apply",
+            "/quick-setup/repair/money-printer",
+            "/quick-setup/restore/<snapshot_id>",
+        )
+        for route in route_fragments:
+            self.assertRegex(
+                source,
+                re.compile(
+                    rf"@app\.route\(['\"]{re.escape(route)}['\"](?:, methods=\[[^\]]+\])?\)\s*"
+                    r"@login_required\s*def "
+                ),
+                msg=f"missing login protection for {route}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

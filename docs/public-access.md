@@ -1,81 +1,48 @@
-# 公网访问运维说明
+# 当前本地运行方式
 
-## 当前生产入口
+视频搬运通道已经迁移到当前 M1 Max MacBook，只提供本机回环访问：
 
-- 产品名称：视频搬运通道
-- 公网地址：`https://transfer.sg99.online`
-- 本地源站：`http://127.0.0.1:15188`
-- 传输方式：香港 VPS 上的独立 Cloudflare Tunnel
-- 安全边界：源站只监听回环地址，VPS 安全组不开放应用端口
+- 视频工作台：`http://127.0.0.1:15188`
+- 超级印钞机：`http://127.0.0.1:8080/app/`
+- OpenList：`http://127.0.0.1:5245`
+- 运行方式：macOS LaunchAgent，原生 arm64
+- 公网域名：无
 
-公网入口必须同时满足：
+当前边界：
 
-1. HTTPS 由 Cloudflare 提供；
-2. 应用的 `password_protection_enabled` 已启用；
-3. `config/config.json`、Cookie、OAuth Token 和隧道凭据权限为 `600`；
-4. 密码、Cookie、OAuth Token、Tunnel ID 凭据不进入 Git。
+1. 不向香港或日本 VPS 同步代码、Cookie、数据库或视频文件；
+2. 不恢复旧 Cloudflare Tunnel、Docker 视频容器或远程 Cookie 同步；
+3. MacBook 合盖、断电或断网时，本地服务会暂停；
+4. 账号凭据继续保存在各应用自己的私有目录，不写入 Git；
+5. 115 OAuth 只由本机 OpenList 保存，视频系统只调用回环接口。
 
-## 开机恢复
+## 日常入口
 
-视频搬运通道的公网入口、日区出口和模型桥接由香港 VPS 的 PM2 进程托管：
+登录视频工作台后优先打开“快速配置”：
 
-```text
-video-transfer-tunnel
-video-jp-egress
-video-jp-docker-bridge
-video-jp-http-docker-bridge
-video-hermes-codex
-```
+1. 选择个人稳妥、热点快速或多平台增长；
+2. 运行一键体检；
+3. 只处理页面列出的必需项；
+4. 在任务中心粘贴一条或多条链接；
+5. 成片经人工确认后发布，并自动备份到 115。
 
-PM2 由 `pm2-ubuntu.service` 随系统启动，Tunnel 异常退出时由 PM2 自动恢复。
-Docker 容器由 Docker 服务自动恢复应用。
+已连接的 Telegram Bot 同时是快速收件箱：可直接发送单条或多条公开视频链接，用
+`#direct` / `#quick` / `#professional` 和平台标签覆盖本次默认值。该入口只准备任务，
+不触发自动发布，也不接收密码、Token、Cookie 或设置命令。
 
-容器的通用外网流量通过 `video-jp-http-docker-bridge` 转到日本 VPS；
-`video-hermes-codex` 仅在 Docker 内网地址 `172.26.0.1:18317` 提供
-OpenAI 兼容接口，复用香港 VPS 上 Hermes 的 Codex 登录，当前模型为
-`gpt-5.6-luna`。两个内网端口都由防火墙限制为仅允许视频搬运容器所在网段访问。
+## 本地服务验收
 
-## 无敏感信息健康检查
+不能只看进程或端口。有效验收应同时满足：
 
-```bash
-curl -I https://transfer.sg99.online/transfer-center
-```
+- `com.sg99.video-transfer-channel.local` 为 running，登录页 HTTP 200；
+- `com.sg99.moneyprinter-video-worker.local` 为 running，受保护 projects API HTTP 200；
+- 一键体检中的二剪制作端和 115 备份均显示可用；
+- 视频数据库完整性检查通过；
+- 可用磁盘高于系统保护线。
+- Telegram 快速入口为 running，且制作端 watchdog 正在定时检查。
 
-未登录时预期返回 `302`，并跳转到 `/login`。登录后搬运中心应返回 `200`。
+外网请求会在启动时跟随 macOS “网络→代理”中的当前回环端口，不再写死某个代理应用端口。
 
-本机检查：
+## 恢复原则
 
-```bash
-docker inspect -f '{{.State.Status}}' video-transfer-channel
-pm2 describe video-transfer-tunnel
-pm2 describe video-jp-egress
-pm2 describe video-jp-docker-bridge
-pm2 describe video-jp-http-docker-bridge
-pm2 describe video-hermes-codex
-cloudflared tunnel info video-transfer-channel
-```
-
-## 故障定位顺序
-
-1. 确认 Docker 容器为 `running`；
-2. 确认 `http://127.0.0.1:15188/login` 本机可访问；
-3. 确认 PM2 中 `video-transfer-tunnel` 为 `online`；
-4. 确认 Cloudflare Tunnel 至少有一个已连接 Connector；
-5. AI 故障时确认 `video-hermes-codex` 和 `video-jp-http-docker-bridge` 为 `online`；
-6. 最后通过对应 PM2 进程日志定位故障，日志中不得记录 API Key 或 Cookie。
-
-## 回滚
-
-需要临时关闭公网入口时，只停止 Tunnel PM2 进程，不停止本地应用：
-
-```bash
-pm2 stop video-transfer-tunnel
-```
-
-恢复时重新加载：
-
-```bash
-pm2 start video-transfer-tunnel
-```
-
-删除 DNS 或 Tunnel 属于外部状态变更，应在确认不再使用后执行。
+设置保存前会创建不含密码、Token、Cookie 和 API Key 的本地快照；快速配置页可撤销非敏感设置。数据库、账号凭据和 OpenList 数据应进入单独的加密备份与恢复演练，不能依赖同一个 115 账号作为唯一备份。

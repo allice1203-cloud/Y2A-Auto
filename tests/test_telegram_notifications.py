@@ -1,8 +1,10 @@
+import json
 from unittest.mock import Mock, patch
 
 import pytest
 import requests
 
+import modules.config_manager as config_module
 from modules.config_manager import DEFAULT_CONFIG
 from modules.notifications.adapters import (
     CHANNEL_TELEGRAM,
@@ -14,6 +16,11 @@ from modules.notifications.adapters import (
     validate_channel_config_fields,
 )
 from modules.notifications.models import NotificationMessage
+from modules.notifications import (
+    EVENT_SYSTEM_WATCHDOG,
+    NotificationEvent,
+    build_notification_message,
+)
 
 
 def _message():
@@ -28,10 +35,57 @@ def test_telegram_channel_defaults_to_disabled_and_requires_two_credentials():
     assert DEFAULT_CONFIG["NOTIFY_TELEGRAM_ENABLED"] is False
     assert DEFAULT_CONFIG["NOTIFY_TELEGRAM_BOT_TOKEN"] == ""
     assert DEFAULT_CONFIG["NOTIFY_TELEGRAM_CHAT_ID"] == ""
+    assert DEFAULT_CONFIG["NOTIFY_EVENT_TRANSFER_REVIEW_READY"] is True
+    assert DEFAULT_CONFIG["NOTIFY_EVENT_TRANSFER_PUBLISHED"] is True
+    assert DEFAULT_CONFIG["NOTIFY_EVENT_TRANSFER_FAILED"] is True
+    assert DEFAULT_CONFIG["NOTIFY_EVENT_SYSTEM_WATCHDOG"] is True
+    assert DEFAULT_CONFIG["TRANSFER_TELEGRAM_INTAKE_ENABLED"] is True
     assert validate_channel_config_fields(CHANNEL_TELEGRAM, {}) == [
         "NOTIFY_TELEGRAM_BOT_TOKEN",
         "NOTIFY_TELEGRAM_CHAT_ID",
     ]
+
+
+def test_transfer_notification_event_flags_are_persisted(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "config.json"
+    config_path.write_text(
+        json.dumps(DEFAULT_CONFIG, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        config_module,
+        "get_app_subdir",
+        lambda name: str(tmp_path / name),
+    )
+
+    updated = config_module.update_config(
+        {
+            "NOTIFY_EVENT_TRANSFER_REVIEW_READY": "off",
+            "NOTIFY_EVENT_TRANSFER_PUBLISHED": "on",
+            "NOTIFY_EVENT_TRANSFER_FAILED": "off",
+        }
+    )
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert updated["NOTIFY_EVENT_TRANSFER_REVIEW_READY"] is False
+    assert updated["NOTIFY_EVENT_TRANSFER_PUBLISHED"] is True
+    assert updated["NOTIFY_EVENT_TRANSFER_FAILED"] is False
+    assert saved["NOTIFY_EVENT_TRANSFER_REVIEW_READY"] is False
+    assert saved["NOTIFY_EVENT_TRANSFER_PUBLISHED"] is True
+    assert saved["NOTIFY_EVENT_TRANSFER_FAILED"] is False
+
+
+def test_watchdog_notification_is_fixed_and_points_to_local_quick_setup():
+    message = build_notification_message(
+        NotificationEvent(EVENT_SYSTEM_WATCHDOG, {"status": "needs_attention"})
+    )
+
+    assert "本地制作端自检" in message.title
+    assert "MacBook" in message.markdown
+    assert "快速配置" in message.markdown
+    assert "http" not in message.markdown
 
 
 def test_telegram_channel_is_registered_and_can_be_enabled():

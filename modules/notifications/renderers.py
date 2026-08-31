@@ -8,6 +8,7 @@ from .models import (
     EVENT_LOGIN_SUCCESS,
     EVENT_QR_LOGIN_FAILED,
     EVENT_QR_LOGIN_SUCCESS,
+    EVENT_SYSTEM_WATCHDOG,
     EVENT_TASK_ADDED,
     EVENT_TASK_COMPLETED,
     EVENT_TASK_FAILED,
@@ -86,6 +87,27 @@ def build_notification_message(event: NotificationEvent) -> NotificationMessage:
     payload = event.as_payload()
     event_type = event.event_type
 
+    if event_type == EVENT_SYSTEM_WATCHDOG:
+        status = _as_text(payload.get("status")) or "needs_attention"
+        recovered = status == "recovered"
+        title = "视频搬运 🛠️ 本地制作端自检"
+        summary = "已执行安全修复" if recovered else "需要在 MacBook 检查"
+        heading = (
+            "**🛠️ 本地制作端已执行安全修复**"
+            if recovered
+            else "**⚠️ 本地制作端修复未完成**"
+        )
+        body = _section_block(
+            _kv("状态", summary),
+            _kv("建议", "打开 MacBook 上的“快速配置”执行一键体检"),
+            _kv("时间", _as_text(payload.get("occurred_at"))),
+        )
+        return NotificationMessage(
+            title=title,
+            summary=summary,
+            markdown=_markdown_lines(heading, "", body),
+        )
+
     if event_type in {EVENT_TRANSFER_BACKUP_COMPLETED, EVENT_TRANSFER_BACKUP_FAILED}:
         title_text = _task_title(payload)
         failed = event_type == EVENT_TRANSFER_BACKUP_FAILED
@@ -136,7 +158,11 @@ def build_notification_message(event: NotificationEvent) -> NotificationMessage:
             _kv("任务 ID", f"`{_as_text(payload.get('task_id'))}`"),
             _kv("目标平台", targets),
             _kv("当前状态", _as_text(payload.get("status"))),
-            _kv("入口", _as_text(payload.get("review_url"))),
+            _kv(
+                "入口",
+                _as_text(payload.get("review_url"))
+                or "请在 MacBook 打开视频搬运通道",
+            ),
             _kv("时间", _as_text(payload.get("occurred_at"))),
         )
         markdown = _markdown_lines(heading, "", body)

@@ -2,6 +2,8 @@ import os
 
 import pytest
 
+from scripts.source_login_helper import SourceLoginApplication
+
 from modules.source_login import (
     build_netscape_cookie_text,
     create_login_authorization,
@@ -164,3 +166,24 @@ def test_login_authorization_rejects_tampering_and_expiry():
         )
     with pytest.raises(ValueError, match="失效"):
         verify_login_authorization(secret, authorization, now=1200)
+
+
+def test_source_login_helper_accepts_only_loopback_success_url(tmp_path):
+    (tmp_path / "secret").write_text("a" * 64, encoding="utf-8")
+    kwargs = {
+        "cookie_dir": tmp_path / "cookies",
+        "profile_dir": tmp_path / "profiles",
+        "secret_file": tmp_path / "secret",
+        "chrome_path": tmp_path / "chrome",
+    }
+    application = SourceLoginApplication(
+        **kwargs,
+        success_url="http://127.0.0.1:15188/transfer-center",
+    )
+    assert application.success_url.startswith("http://127.0.0.1:15188/")
+
+    with pytest.raises(RuntimeError, match="返回地址无效"):
+        SourceLoginApplication(
+            **kwargs,
+            success_url="https://transfer.sg99.online/transfer-center",
+        )

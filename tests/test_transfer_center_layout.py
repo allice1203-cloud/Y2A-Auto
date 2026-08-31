@@ -50,6 +50,18 @@ def test_standard_remix_is_the_default_review_experience():
     assert "下一批{% if not performance.strategy.sample_size %}" in center
 
 
+def test_task_intake_supports_batch_links_and_three_processing_presets():
+    tasks = (ROOT / "templates" / "tasks.html").read_text(encoding="utf-8")
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert 'name="source_urls"' in tasks
+    assert "一行一条，最多 20 条" in tasks
+    assert 'name="processing_mode" value="quick"' in tasks
+    assert 'name="processing_mode" value="professional"' in tasks
+    assert 'name="processing_mode" value="direct"' in tasks
+    assert "parse_source_url_batch(source_value, limit=20)" in app_source
+
+
 def test_performance_panel_exposes_one_click_sync_route():
     app_source = (ROOT / "app.py").read_text(encoding="utf-8")
     center = (ROOT / "templates" / "transfer_center.html").read_text(

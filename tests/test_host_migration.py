@@ -19,8 +19,6 @@ ACTIVE_TEXT_FILES = (
     "templates/settings.html",
     "templates/tasks.html",
     "templates/transfer_center.html",
-    "ops/com.video-transfer-channel.cookie-sync.plist",
-    "scripts/sync_source_cookies_to_server.sh",
 )
 
 
@@ -33,17 +31,23 @@ class HostMigrationTests(unittest.TestCase):
                 msg=f"retired host reference in {relative_path}",
             )
 
-    def test_hong_kong_compose_is_the_only_host_specific_compose(self):
-        self.assertTrue((ROOT / "docker-compose.hk.yml").is_file())
-        retired_name = "docker-compose." + "win" + "mini.yml"
-        self.assertFalse((ROOT / retired_name).exists())
-
-    def test_cookie_sync_defaults_to_hong_kong_vps(self):
-        content = (ROOT / "scripts/sync_source_cookies_to_server.sh").read_text(
-            encoding="utf-8"
+    def test_host_specific_compose_files_are_absent(self):
+        retired_names = (
+            "docker-compose.hk.yml",
+            "docker-compose." + "win" + "mini.yml",
         )
-        self.assertIn("VIDEO_TRANSFER_SYNC_HOST:-vps-hk", content)
-        self.assertIn("/home/ubuntu/apps/video-transfer-channel/cookies/", content)
+        for relative_path in retired_names:
+            self.assertFalse((ROOT / relative_path).exists(), relative_path)
+
+    def test_retired_remote_cookie_sync_and_tunnel_files_are_absent(self):
+        retired_files = (
+            "scripts/sync_source_cookies_to_server.sh",
+            "ops/com.video-transfer-channel.cookie-sync.plist",
+            "ops/video-transfer-channel-tunnel.service",
+            "ops/video-transfer-channel-tunnel.winmini.yml",
+        )
+        for relative_path in retired_files:
+            self.assertFalse((ROOT / relative_path).exists(), relative_path)
 
 
 if __name__ == "__main__":
