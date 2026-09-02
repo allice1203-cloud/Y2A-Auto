@@ -335,6 +335,71 @@ def test_run_forever_has_bounded_backoff_and_exits_after_failure_limit():
     assert raw_secret not in " ".join(error_codes)
 
 
+def test_run_forever_can_retry_forever_until_stopped():
+    client = FakeClient(poll_error=TelegramIntakeTransportError())
+    stop_signal = RecordingStopSignal()
+
+    def stop_after_second_wait(timeout=None):
+        stop_signal.waits.append(timeout)
+        if len(stop_signal.waits) >= 2:
+            stop_signal.set()
+        return stop_signal.stopped
+
+    stop_signal.wait = stop_after_second_wait
+    service = TelegramIntakeService(
+        make_config(max_consecutive_failures=0, backoff_seconds=(0.25, 0.5)),
+        lambda _request: None,
+        client=client,
+        stop_signal=stop_signal,
+    )
+
+    service.run_forever()
+
+    assert len(client.poll_calls) == 2
+    assert stop_signal.waits == [0.25, 0.5]
+    assert service.running is False
+    assert service.last_error_code == "telegram_poll_failed"
+
+
+def test_initial_discard_retries_in_background_before_normal_polling():
+    stop_signal = RecordingStopSignal()
+
+    class RecoveringClient(FakeClient):
+        def get_updates(self, *, offset, timeout_seconds):
+            self.poll_calls.append({"offset": offset, "timeout_seconds": timeout_seconds})
+            if len(self.poll_calls) == 1:
+                raise TelegramIntakeTransportError()
+            if len(self.poll_calls) == 2:
+                return [update(70, 987654321, "https://x.com/old/status/70")]
+            stop_signal.set()
+            return []
+
+    client = RecoveringClient()
+    requests = []
+    checkpoint = MemoryUpdateCheckpoint()
+    service = TelegramIntakeService(
+        make_config(
+            discard_pending_on_start=True,
+            max_consecutive_failures=0,
+            backoff_seconds=(0.01,),
+        ),
+        requests.append,
+        client=client,
+        checkpoint=checkpoint,
+        stop_signal=stop_signal,
+    )
+
+    service.run_forever()
+
+    assert client.poll_calls == [
+        {"offset": -1, "timeout_seconds": 1},
+        {"offset": -1, "timeout_seconds": 1},
+        {"offset": 71, "timeout_seconds": 1},
+    ]
+    assert checkpoint.get() == 70
+    assert requests == []
+
+
 def test_stop_is_cooperative_and_prevents_new_poll():
     client = FakeClient()
     service = TelegramIntakeService(make_config(), lambda _request: None, client=client)

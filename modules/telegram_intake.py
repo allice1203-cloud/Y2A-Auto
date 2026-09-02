@@ -126,6 +126,7 @@ class TelegramIntakeConfig:
     max_message_chars: int = 12_000
     max_consecutive_failures: int = 8
     backoff_seconds: tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 20.0, 30.0)
+    discard_pending_on_start: bool = False
 
     def __post_init__(self) -> None:
         token = str(self.bot_token or "").strip()
@@ -142,7 +143,7 @@ class TelegramIntakeConfig:
             raise ValueError("单次链接数上限无效")
         if not 256 <= int(self.max_message_chars) <= 100_000:
             raise ValueError("消息长度上限无效")
-        if not 1 <= int(self.max_consecutive_failures) <= 100:
+        if not 0 <= int(self.max_consecutive_failures) <= 100:
             raise ValueError("连续失败上限无效")
         delays = tuple(float(delay) for delay in self.backoff_seconds)
         if not delays or any(delay < 0 or delay > 300 for delay in delays):
@@ -158,6 +159,7 @@ class TelegramIntakeConfig:
         object.__setattr__(self, "max_message_chars", int(self.max_message_chars))
         object.__setattr__(self, "max_consecutive_failures", int(self.max_consecutive_failures))
         object.__setattr__(self, "backoff_seconds", delays)
+        object.__setattr__(self, "discard_pending_on_start", bool(self.discard_pending_on_start))
 
 
 @dataclass(frozen=True)
@@ -644,7 +646,12 @@ class TelegramIntakeService:
         return len(update_ids)
 
     def run_forever(self) -> None:
-        """运行可停止的长轮询；退避有上限且连续失败达限后退出。"""
+        """运行可停止的长轮询，并在网络恢复后自动继续。
+
+        ``max_consecutive_failures=0`` 表示常驻服务不因临时网络故障
+        永久退出。首次启用时可把历史消息丢弃动作放进同一重试循环，
+        避免电脑启动早于 VPN 时整个 Telegram 入口直接失效。
+        """
 
         with self._state_lock:
             if self._running:
@@ -652,16 +659,30 @@ class TelegramIntakeService:
             self._running = True
 
         failures = 0
+        pending_initial_discard = bool(
+            self.config.discard_pending_on_start and self._checkpoint.get() is None
+        )
         try:
             while not self._stop_signal.is_set():
                 try:
-                    self.poll_once()
+                    if pending_initial_discard:
+                        self.discard_pending_updates()
+                        pending_initial_discard = False
+                    else:
+                        self.poll_once()
                     failures = 0
                     self.last_error_code = None
                 except Exception:
                     failures += 1
-                    self._report_error("telegram_poll_failed")
-                    if failures >= self.config.max_consecutive_failures:
+                    self._report_error(
+                        "telegram_prime_failed"
+                        if pending_initial_discard
+                        else "telegram_poll_failed"
+                    )
+                    if (
+                        self.config.max_consecutive_failures > 0
+                        and failures >= self.config.max_consecutive_failures
+                    ):
                         self.last_error_code = "telegram_poll_exhausted"
                         break
                     delay = self.config.backoff_seconds[

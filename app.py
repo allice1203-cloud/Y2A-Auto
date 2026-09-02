@@ -3761,6 +3761,10 @@ def _refresh_local_background_services(config=None):
                             ),
                         ),
                     ),
+                    # 本机开机时 VPN/代理可能晚于应用就绪。0 表示持续
+                    # 退避重试，恢复网络后自动接回，不需要人工重启应用。
+                    max_consecutive_failures=0,
+                    discard_pending_on_start=checkpoint.get() is None,
                 ),
                 _create_and_prepare_telegram_task,
                 checkpoint=checkpoint,
@@ -3768,10 +3772,6 @@ def _refresh_local_background_services(config=None):
                     "Telegram 快速入口状态：%s", code
                 ),
             )
-            if checkpoint.get() is None:
-                discarded = telegram_service.discard_pending_updates()
-                if discarded:
-                    logger.info("Telegram 快速入口已跳过启用前的历史消息")
             telegram_thread = threading.Thread(
                 target=telegram_service.run_forever,
                 name="telegram-transfer-intake",
