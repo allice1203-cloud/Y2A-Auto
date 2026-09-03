@@ -46,6 +46,7 @@ from .content_recreation import (
     validate_review_payload,
 )
 from .douyin_downloader import DouyinDownloadError, download_douyin_video
+from .local_visual_analysis import analyze_video, local_visual_health
 from .media_preflight import build_distribution_plan, prepare_platform_variants
 from .openlist_backup import (
     DEFAULT_OPENLIST_URL,
@@ -1837,6 +1838,7 @@ class TransferCenter:
         return {
             "capacity": self.runtime_capacity(),
             "money_printer": self.money_printer_health(),
+            "local_vision": local_visual_health(self._config()),
             "backup_115": self.backup_health(),
         }
 
@@ -3447,6 +3449,10 @@ class TransferCenter:
 
     def _recreation_input_job(self, job: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(job)
+        if not isinstance(enriched.get("visual_analysis"), dict):
+            current_plan = deserialize_plan(job.get("recreation_plan_json"))
+            if isinstance(current_plan.get("visual_analysis"), dict):
+                enriched["visual_analysis"] = current_plan["visual_analysis"]
         transcript = self._timecoded_transcript(str(job.get("local_video_path") or ""))
         enriched["source_transcript"] = transcript["cues"]
         enriched["transcript_source"] = transcript["source"]
@@ -4416,7 +4422,17 @@ class TransferCenter:
             targets,
         )
         distribution_plan = build_distribution_plan(media_info, targets)
+        selected_processing_mode = str(job.get("processing_mode") or "professional")
+        if selected_processing_mode not in {"direct", "quick", "professional"}:
+            selected_processing_mode = "professional"
+        visual_analysis = analyze_video(
+            str(videos[0]),
+            selected_processing_mode,
+            media_info,
+            self._config(),
+        )
         recreation_job = self._recreation_input_job({**job, **prepared_fields})
+        recreation_job["visual_analysis"] = visual_analysis
         plan = generate_recreation_plan(
             recreation_job,
             self._config(),
@@ -4458,9 +4474,6 @@ class TransferCenter:
         cover_preflight = run_cover_preflight(
             find_local_cover(str(videos[0])), media_info, targets
         )
-        selected_processing_mode = str(job.get("processing_mode") or "professional")
-        if selected_processing_mode not in {"direct", "quick", "professional"}:
-            selected_processing_mode = "professional"
         processing_messages = {
             "direct": "素材已就绪，等待原片分发审核",
             "quick": "素材已就绪，等待快速二剪",

@@ -33,6 +33,9 @@ def test_standard_remix_is_the_default_review_experience():
     review = (ROOT / "templates" / "transfer_review.html").read_text(
         encoding="utf-8"
     )
+    transfer_source = (ROOT / "modules" / "transfer_center.py").read_text(
+        encoding="utf-8"
+    )
     center = (ROOT / "templates" / "transfer_center.html").read_text(
         encoding="utf-8"
     )
@@ -41,6 +44,13 @@ def test_standard_remix_is_the_default_review_experience():
     assert "标准二剪 / AI 重制" in review
     assert "AI 一键生成二剪成片" in review
     assert "分平台二剪版本" in review
+    assert "本地视觉分析" in review
+    assert "visual_analysis.suggested_segments" in review
+    assert "不替代人工确认" in review
+    assert transfer_source.index("visual_analysis = analyze_video(") < transfer_source.index(
+        "plan = generate_recreation_plan(",
+        transfer_source.index("def prepare_job("),
+    )
     assert "仅提示，不阻塞" in review
     assert "来源跟踪列表" in center
     assert "value=\"unconfirmed\" selected" in center

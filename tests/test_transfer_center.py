@@ -1170,6 +1170,38 @@ def test_recreation_plan_reads_local_subtitle_timecodes(center, tmp_path):
     assert plan["segment_plan"][1]["source_end"] == 26.0
 
 
+def test_recreation_regeneration_reuses_saved_visual_analysis(center, tmp_path):
+    job_id = center.add_manual_job(
+        "https://www.bilibili.com/video/BV1visualcontext",
+        ["youtube"],
+    )
+    source_path = tmp_path / "source.mp4"
+    source_path.write_bytes(b"video")
+    visual_analysis = {
+        "status": "ok",
+        "summary": "人物在室内展示产品",
+        "frames": [],
+        "suggested_segments": [
+            {"start": 2.0, "end": 8.0, "reason": "动作完整", "score": 0.9}
+        ],
+        "warnings": [],
+        "frame_count": 6,
+        "elapsed_seconds": 2.4,
+    }
+    center._update_job(
+        job_id,
+        local_video_path=str(source_path),
+        original_video_path=str(source_path),
+        recreation_plan_json=json.dumps(
+            {"visual_analysis": visual_analysis}, ensure_ascii=False
+        ),
+    )
+
+    enriched = center._recreation_input_job(center.get_job(job_id))
+
+    assert enriched["visual_analysis"] == visual_analysis
+
+
 def test_sync_recreation_plan_updates_existing_shots_without_paid_generation(
     center, monkeypatch
 ):
@@ -1445,6 +1477,28 @@ def test_runtime_health_explains_material_package_fallback_without_credentials(c
     assert status["configured"] is False
     assert status["ready"] is False
     assert "二剪素材包" in status["message"]
+
+
+def test_runtime_health_includes_redacted_local_visual_status(center, monkeypatch):
+    monkeypatch.setattr(center, "runtime_capacity", lambda: {"ready": True})
+    monkeypatch.setattr(center, "money_printer_health", lambda: {"ready": True})
+    monkeypatch.setattr(center, "backup_health", lambda: {"ready": True})
+    monkeypatch.setattr(
+        transfer_module,
+        "local_visual_health",
+        lambda config: {
+            "status": "available",
+            "enabled": True,
+            "available": True,
+            "model": "Qwen3-VL-2B-Instruct-4bit",
+            "message": "本地视觉服务可用",
+        },
+    )
+
+    result = center.runtime_health()
+
+    assert result["local_vision"]["available"] is True
+    assert result["local_vision"]["model"] == "Qwen3-VL-2B-Instruct-4bit"
 
 
 def test_transfer_notification_messages_include_configured_review_link():

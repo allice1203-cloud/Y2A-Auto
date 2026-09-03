@@ -203,6 +203,55 @@
             </div>
         </div>
 
+        {% set visual_analysis = recreation_plan.visual_analysis or {} %}
+        {% if visual_analysis and current_mode != 'direct' %}
+        <div class="card review-card mb-4">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center gap-3">
+                <div>
+                    <h2 class="h6 mb-1"><i class="bi bi-eye me-1"></i>本地视觉分析</h2>
+                    <div class="small text-muted">小模型只在本机抽样识别镜头，为二剪提供辅助，不替代人工确认。</div>
+                </div>
+                <span class="badge {{ 'bg-success' if visual_analysis.status == 'ok' else ('bg-warning text-dark' if visual_analysis.status == 'failed' else 'bg-secondary') }}">
+                    {{ '已完成' if visual_analysis.status == 'ok' else ('已降级' if visual_analysis.status == 'failed' else '已跳过') }}
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">{{ visual_analysis.summary or '暂无可展示的画面摘要。' }}</p>
+                <div class="d-flex flex-wrap gap-2 small text-muted">
+                    <span class="badge bg-light text-dark border">抽样 {{ visual_analysis.frame_count or 0 }} 帧</span>
+                    {% if visual_analysis.elapsed_seconds %}
+                    <span class="badge bg-light text-dark border">用时 {{ '%.1f'|format(visual_analysis.elapsed_seconds) }} 秒</span>
+                    {% endif %}
+                    {% if visual_analysis.suggested_segments %}
+                    <span class="badge bg-light text-dark border">候选镜头 {{ visual_analysis.suggested_segments|length }} 段</span>
+                    {% endif %}
+                </div>
+                {% if visual_analysis.suggested_segments or visual_analysis.frames %}
+                <details class="border rounded-3 p-3 mt-3">
+                    <summary class="small fw-semibold">查看镜头线索</summary>
+                    {% for segment in visual_analysis.suggested_segments or [] %}
+                    <div class="small border-top pt-2 mt-2">
+                        <strong>{{ '%.1f'|format(segment.start) }}–{{ '%.1f'|format(segment.end) }} 秒</strong>
+                        <span class="text-muted ms-1">{{ segment.reason }}</span>
+                    </div>
+                    {% endfor %}
+                    {% if not visual_analysis.suggested_segments %}
+                    {% for frame in visual_analysis.frames or [] %}
+                    <div class="small border-top pt-2 mt-2">
+                        <strong>{{ '%.1f'|format(frame.timestamp) }} 秒</strong>
+                        <span class="text-muted ms-1">{{ frame.description }}</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                </details>
+                {% endif %}
+                {% if visual_analysis.warnings %}
+                <div class="small text-warning-emphasis mt-3">{{ visual_analysis.warnings|join('；') }}</div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
         <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" enctype="multipart/form-data" class="card review-card">
             <div class="card-header bg-white py-3">
                 <h2 class="h5 mb-1">发布确认</h2>

@@ -1,8 +1,9 @@
-.PHONY: help test status restart logs moneyprinter-status moneyprinter-restart legacy-release-test
+.PHONY: help test status restart logs moneyprinter-status moneyprinter-restart vision-status vision-restart legacy-release-test
 
 PYTHON := .venv/bin/python
 VIDEO_SERVICE := com.sg99.video-transfer-channel.local
 MONEYPRINTER_SERVICE := com.sg99.moneyprinter-video-worker.local
+VISION_SERVICE := com.sg99.video-vision.local
 USER_DOMAIN := gui/$(shell id -u)
 
 help:
@@ -13,6 +14,8 @@ help:
 	@echo "  make logs                 查看视频工作台最近日志"
 	@echo "  make moneyprinter-status  检查超级印钞机 LaunchAgent"
 	@echo "  make moneyprinter-restart 重启超级印钞机"
+	@echo "  make vision-status        检查本地视觉模型"
+	@echo "  make vision-restart       重启本地视觉模型"
 
 test:
 	$(PYTHON) -m pytest -q
@@ -34,6 +37,14 @@ moneyprinter-status:
 
 moneyprinter-restart:
 	launchctl kickstart -k $(USER_DOMAIN)/$(MONEYPRINTER_SERVICE)
+
+vision-status:
+	@launchctl print $(USER_DOMAIN)/$(VISION_SERVICE) >/dev/null
+	@curl --fail --silent --show-error http://127.0.0.1:49821/health >/dev/null
+	@echo "本地视觉模型运行正常：http://127.0.0.1:49821"
+
+vision-restart:
+	launchctl kickstart -k $(USER_DOMAIN)/$(VISION_SERVICE)
 
 # 仅保留历史 Docker 发布包的隔离回归，不属于当前运行方式。
 legacy-release-test:
