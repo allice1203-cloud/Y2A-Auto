@@ -115,7 +115,7 @@ class SpeechRecognizer:
         self.last_error_message: str = ''
         self._temp_dirs: List[str] = []
 
-        if config.provider not in ('whisper', 'voxtral'):
+        if config.provider not in ('whisper', 'mlx_whisper', 'voxtral'):
             raise ValueError(f"Unsupported speech recognition provider: {config.provider}")
 
         self._vad = VadProcessor(
@@ -198,10 +198,19 @@ class SpeechRecognizer:
                 total_duration = self._probe_media_duration(video_path) or 0.0
 
             cues: List[AlignedSubtitleCue] = []
-            if self.config.vad_enabled:
+            if self.config.provider == 'mlx_whisper':
+                # MLX Whisper performs its own 30-second windowing. Run the
+                # complete audio once in an isolated process so the model is
+                # loaded only once per job and is fully released on exit.
+                cues = self._fallback_whole_audio(audio_wav, total_duration)
+            elif self.config.vad_enabled:
                 cues = self._transcribe_with_vad(audio_wav, total_duration)
 
-            if not cues:
+            # A local MLX job already sends the complete audio to one isolated
+            # worker.  Retrying through the generic chunk fallback would load
+            # the same model once per chunk (and once per retry), which can turn
+            # a single failure or silent video into many expensive model loads.
+            if not cues and self.config.provider != 'mlx_whisper':
                 cues = self._fallback_transcription(audio_wav, total_duration)
             if not cues:
                 self.last_error_message = self.last_error_message or 'No subtitles generated'
@@ -509,9 +518,10 @@ def create_speech_recognizer_from_config(
             return None
 
         provider = str(app_config.get('SPEECH_RECOGNITION_PROVIDER') or 'whisper').strip().lower()
-        if provider not in ('whisper', 'voxtral'):
+        if provider not in ('whisper', 'mlx_whisper', 'voxtral'):
             provider = 'whisper'
         use_voxtral = provider == 'voxtral'
+        use_mlx_whisper = provider == 'mlx_whisper'
 
         if use_voxtral:
             api_provider = 'voxtral'
@@ -521,6 +531,15 @@ def create_speech_recognizer_from_config(
             language = app_config.get('VOXTRAL_LANGUAGE') or ''
             prompt = ''
             max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 3) or 3)
+            timeout_s = float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600.0)
+        elif use_mlx_whisper:
+            api_provider = 'mlx_whisper'
+            api_key = ''
+            base_url = ''
+            model_name = app_config.get('WHISPER_MODEL_NAME') or ''
+            language = app_config.get('WHISPER_LANGUAGE') or ''
+            prompt = app_config.get('WHISPER_PROMPT') or ''
+            max_retries = int(app_config.get('WHISPER_MAX_RETRIES', 2) or 2)
             timeout_s = float(app_config.get('OPENAI_TIMEOUT_SECONDS', 600) or 600.0)
         else:
             api_provider = 'whisper'
@@ -563,7 +582,7 @@ def create_speech_recognizer_from_config(
             voxtral_max_audio_duration_s=float(app_config.get('VOXTRAL_MAX_AUDIO_DURATION_S', 10800) or 10800.0),
             voxtral_long_audio_margin_s=float(app_config.get('VOXTRAL_LONG_AUDIO_MARGIN_S', 5) or 5.0),
             voxtral_enforce_max_duration=coerce_bool(app_config.get('VOXTRAL_ENFORCE_MAX_DURATION', True)),
-            max_workers=int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3),
+            max_workers=(1 if use_mlx_whisper else int(app_config.get('WHISPER_MAX_WORKERS', 3) or 3)),
             max_subtitle_line_length=int(app_config.get('SUBTITLE_MAX_LINE_LENGTH', 42) or 42),
             max_subtitle_lines=int(app_config.get('SUBTITLE_MAX_LINES', 2) or 2),
             normalize_punctuation=coerce_bool(app_config.get('SUBTITLE_NORMALIZE_PUNCTUATION', True)),

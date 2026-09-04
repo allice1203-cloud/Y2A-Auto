@@ -208,7 +208,7 @@ make moneyprinter-status
 ### 语音识别（ASR）
 
 - `SPEECH_RECOGNITION_ENABLED`：是否启用语音识别生成字幕，默认 `false`
-- `SPEECH_RECOGNITION_PROVIDER`：支持 `whisper`、`voxtral`
+- `SPEECH_RECOGNITION_PROVIDER`：支持 `mlx_whisper`（本机 Apple Silicon）、`whisper`（OpenAI 兼容）、`voxtral`
 - `VAD_ENABLED`：VAD 语音扫描窗，默认 `true`
 - `WHISPER` 路径默认使用 `segment` 级时间戳，并自动兼容不支持 `timestamp_granularities` 的接口
 - `WHISPER_LANGUAGE` / `WHISPER_PROMPT` / `WHISPER_TRANSLATE`：Whisper 专用参数
@@ -314,8 +314,9 @@ QC 会先用规则做硬拦截，只有边界样本才会调用 AI 严格复核�
 
 ## 语音识别说明
 
-当前支持两类 ASR 提供商：
+当前支持三类 ASR 提供商：
 
+- Whisper MLX：专为 Apple Silicon 的本地转写，在隔离子进程中单并发执行，任务后退出并释放模型内存
 - Whisper：兼容 OpenAI 风格接口，可使用独立的 API Key、Base URL 和模型名
 - Voxtral：Mistral /v1/audio/transcriptions，默认模型为 `voxtral-mini-latest`
 

@@ -819,6 +819,7 @@
                                                             <label for="asr-provider" class="form-label">默认 ASR 服务</label>
                                                             <select id="asr-provider" name="SPEECH_RECOGNITION_PROVIDER" class="form-select">
                                                                 <option value="whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'whisper' %}selected{% endif %}>Whisper（OpenAI 兼容）</option>
+                                                                <option value="mlx_whisper" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'mlx_whisper' %}selected{% endif %}>Whisper MLX（本机 Apple Silicon）</option>
                                                                 <option value="voxtral" {% if config.get('SPEECH_RECOGNITION_PROVIDER', 'whisper') == 'voxtral' %}selected{% endif %}>Voxtral（Mistral）</option>
                                                             </select>
                                                         </div>
@@ -838,7 +839,7 @@
                                             </div>
                                             <div class="settings-card-body">
                                                 <div class="row g-3">
-                                                    <div class="col-md-6">
+                                                    <div class="col-md-6 whisper-remote-only">
                                                         <div class="form-group">
                                                             <label for="whisper-api-key" class="form-label">Whisper API 密钥</label>
                                                             <input type="password" id="whisper-api-key" name="WHISPER_API_KEY" value="{{ config.get('WHISPER_API_KEY', '') }}" class="form-control" placeholder="留空沿用 OpenAI 密钥">
@@ -850,10 +851,15 @@
                                                             <input type="text" id="whisper-model" name="WHISPER_MODEL_NAME" value="{{ config.get('WHISPER_MODEL_NAME', 'whisper-1') }}" class="form-control" placeholder="whisper-1">
                                                         </div>
                                                     </div>
-                                                    <div class="col-12">
+                                                    <div class="col-12 whisper-remote-only">
                                                         <div class="form-group">
                                                             <label for="whisper-base-url" class="form-label">Whisper 接口地址</label>
                                                             <input type="text" id="whisper-base-url" name="WHISPER_BASE_URL" value="{{ config.get('WHISPER_BASE_URL', '') }}" class="form-control" placeholder="留空沿用 OpenAI 接口地址">
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12" id="mlx-whisper-local-note" style="display: none;">
+                                                        <div class="alert alert-info mb-0">
+                                                            本机 MLX 模式不需要 API 密钥或接口地址；每个转写任务在隔离子进程中单并发执行，完成后释放模型内存。
                                                         </div>
                                                     </div>
                                                 </div>
@@ -2392,24 +2398,40 @@ document.addEventListener('DOMContentLoaded', function () {
     const sharedVadConfig = document.getElementById('shared-vad-config');
     const sharedVadProviderPill = document.getElementById('shared-vad-provider-pill');
     const sharedVadProviderCopy = document.getElementById('shared-vad-provider-copy');
+    const mlxWhisperLocalNote = document.getElementById('mlx-whisper-local-note');
+    const whisperRemoteOnlyFields = document.querySelectorAll('.whisper-remote-only');
 
     if (asrProvider && whisperConfig && voxtralConfig && sharedVadConfig) {
         const toggleAsrProvider = function () {
             const provider = asrProvider.value;
-            if (provider === 'whisper') {
+            if (provider === 'whisper' || provider === 'mlx_whisper') {
                 whisperConfig.style.display = 'block';
                 voxtralConfig.style.display = 'none';
                 sharedVadConfig.style.display = 'block';
+                whisperRemoteOnlyFields.forEach(function (field) {
+                    field.style.display = provider === 'mlx_whisper' ? 'none' : '';
+                });
+                if (mlxWhisperLocalNote) {
+                    mlxWhisperLocalNote.style.display = provider === 'mlx_whisper' ? 'block' : 'none';
+                }
                 if (sharedVadProviderPill) {
-                    sharedVadProviderPill.textContent = 'Whisper';
+                    sharedVadProviderPill.textContent = provider === 'mlx_whisper' ? 'Whisper MLX' : 'Whisper';
                 }
                 if (sharedVadProviderCopy) {
-                    sharedVadProviderCopy.textContent = '当前为 Whisper 模式，扫描窗、segment 时间戳和失败回退会共同决定最终字幕时间轴。';
+                    sharedVadProviderCopy.textContent = provider === 'mlx_whisper'
+                        ? '当前为本机 Whisper MLX 模式：整段音频在单个隔离子进程内转写，直接生成 segment 与 word 时间戳，任务结束后释放内存。'
+                        : '当前为 Whisper 模式，扫描窗、segment 时间戳和失败回退会共同决定最终字幕时间轴。';
                 }
             } else if (provider === 'voxtral') {
                 whisperConfig.style.display = 'none';
                 voxtralConfig.style.display = 'block';
                 sharedVadConfig.style.display = 'block';
+                whisperRemoteOnlyFields.forEach(function (field) {
+                    field.style.display = '';
+                });
+                if (mlxWhisperLocalNote) {
+                    mlxWhisperLocalNote.style.display = 'none';
+                }
                 if (sharedVadProviderPill) {
                     sharedVadProviderPill.textContent = 'Voxtral';
                 }
