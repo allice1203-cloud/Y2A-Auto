@@ -1,6 +1,7 @@
 import ast
 import importlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -95,6 +96,7 @@ class BilibiliAuthTests(unittest.TestCase):
             self.assertEqual(cookies["bili_jct"], "csrf")
             self.assertEqual(cookies["DedeUserID"], "123")
             self.assertEqual(cookies["buvid3"], "buvid")
+            self.assertEqual(os.stat(cookie_path).st_mode & 0o777, 0o600)
 
     def test_save_credential_writes_netscape_source_cookie_file(self):
         from modules.bilibili_auth import save_credential_to_file
@@ -117,6 +119,13 @@ class BilibiliAuthTests(unittest.TestCase):
             self.assertIn("\tSESSDATA\tsess", content)
             self.assertIn("\tbili_jct\tcsrf", content)
             self.assertIn("\tDedeUserID\t123", content)
+
+            from modules.bilibili_auth import load_cookie_dict
+
+            loaded_cookies = load_cookie_dict(str(cookie_path))
+            self.assertEqual(loaded_cookies["SESSDATA"], "sess")
+            self.assertEqual(loaded_cookies["bili_jct"], "csrf")
+            self.assertEqual(loaded_cookies["DedeUserID"], "123")
 
     def test_save_credential_does_not_write_when_cookie_extraction_fails(self):
         from modules.bilibili_auth import save_credential_to_file
@@ -175,6 +184,69 @@ class BilibiliAuthTests(unittest.TestCase):
         self.assertFalse(payload["cookies_saved"])
         self.assertIn("保存失败", payload["message"])
         self.assertNotIn("credential_ok", payload)
+
+    def test_qrcode_done_synchronizes_publish_and_source_cookie_files(self):
+        import modules.bilibili_auth as auth
+
+        session = object.__new__(auth.BilibiliQrLoginSession)
+        session.generated = True
+        session.last_state = None
+        session.qr = mock.Mock()
+        credential = mock.Mock()
+        session.qr.get_credential.return_value = credential
+        targets = [
+            "cookies/bili_cookies.json",
+            "cookies/bilibili_unified_cookies.txt",
+        ]
+
+        with mock.patch.object(
+            auth,
+            "_run_async",
+            return_value=auth.login_v2.QrCodeLoginEvents.DONE,
+        ), mock.patch.object(
+            auth,
+            "validate_credential_remote",
+            return_value=(True, "ok"),
+        ), mock.patch.object(
+            auth,
+            "save_credential_to_file",
+            return_value=True,
+        ) as save_mock:
+            payload = session.check_status(cookie_files=targets)
+
+        self.assertEqual(payload["status"], "done")
+        self.assertTrue(payload["cookies_saved"])
+        self.assertTrue(payload["cookies_synced"])
+        self.assertEqual(payload["cookies_paths"], targets)
+        self.assertEqual(
+            save_mock.call_args_list,
+            [mock.call(credential, path) for path in targets],
+        )
+
+
+class BilibiliUnifiedUiTests(unittest.TestCase):
+    def test_transfer_center_routes_bilibili_login_to_settings(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "templates" / "transfer_center.html").read_text(encoding="utf-8")
+
+        self.assertIn("前往统一账号设置", source)
+        self.assertIn("#vtab-accounts", source)
+        self.assertNotIn('id="source-bili-qrcode-start"', source)
+
+    def test_settings_describes_one_scan_synchronization(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "templates" / "settings.html").read_text(encoding="utf-8")
+
+        self.assertIn("扫码登录并同步全部凭证", source)
+        self.assertIn("同时刷新来源下载和 B 站投稿登录态", source)
+
+    def test_unified_source_cookie_uses_server_owned_filename(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        app_source = (root / "app.py").read_text(encoding="utf-8")
+        transfer_source = (root / "modules" / "transfer_center.py").read_text(encoding="utf-8")
+
+        self.assertIn("bilibili_unified_cookies.txt", app_source)
+        self.assertIn("bilibili_unified_cookies.txt", transfer_source)
 
 
 class BilibiliUploaderDiagnosticTests(unittest.TestCase):

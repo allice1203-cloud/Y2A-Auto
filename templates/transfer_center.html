@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}搬运中心 - 视频搬运通道{% endblock %}
+{% block body_class %}transfer-center-body{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -56,6 +57,17 @@
             <a class="platform-link" href="{{ url_for('transfer_center_douyin_login') }}">{{ '刷新登录' if transfer_config.douyin_cookies_ready else '打开登录窗口' }} <i class="bi bi-arrow-right"></i></a>
         </article>
         <article class="platform-cell">
+            <div class="platform-label">发布到抖音</div>
+            <div class="platform-state">
+                <span class="connection-dot {{ 'is-success' if transfer_config.douyin_openapi_connected else 'is-warning' }}"></span>
+                {{ '官方发布账号已连接' if transfer_config.douyin_openapi_connected else ('应用已配置 · 待授权' if transfer_config.douyin_openapi_configured else '等待开放平台配置') }}
+            </div>
+            <p>{{ transfer_config.douyin_openapi_message }}</p>
+            {% if transfer_config.douyin_openapi_configured and not transfer_config.douyin_openapi_connected %}
+            <a class="platform-link" href="{{ url_for('transfer_center_douyin_connect') }}">连接抖音发布账号 <i class="bi bi-arrow-right"></i></a>
+            {% endif %}
+        </article>
+        <article class="platform-cell">
             <div class="platform-label">TikTok 来源 / 目标</div>
             <div class="platform-state">
                 <span class="connection-dot {{ 'is-success' if transfer_config.tiktok_cookies_ready else 'is-warning' }}"></span>
@@ -94,7 +106,286 @@
     </div>
 </section>
 
+<section class="workspace-panel rule-card mb-4">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>视频智能工作台</h2>
+            <p>四项能力均在当前系统内运行，不依赖 WorkBuddy 社区脚本。</p>
+        </div>
+        <span class="workspace-count">4 项已接入</span>
+    </div>
+    <div class="workspace-panel-body">
+        <div class="row g-3">
+            <div class="col-md-6 col-xl-3">
+                <div class="border rounded-3 p-3 h-100">
+                    <div class="fw-semibold mb-1"><i class="bi bi-shield-check me-1"></i>发布前本地预检</div>
+                    <div class="small text-muted">检查绝对化、效果保证、医疗和金融等高风险表述；结果会显示在人工审核页。</div>
+                </div>
+            </div>
+            <div class="col-md-6 col-xl-3">
+                <div class="border rounded-3 p-3 h-100">
+                    <div class="fw-semibold mb-1"><i class="bi bi-archive me-1"></i>账号归档与续跑</div>
+                    <div class="small text-muted">只处理授权白名单账号，生成清单并补齐中断的视频和转写。</div>
+                </div>
+            </div>
+            <div class="col-md-6 col-xl-3">
+                <div class="border rounded-3 p-3 h-100">
+                    <div class="fw-semibold mb-1"><i class="bi bi-fire me-1"></i>热点候选池</div>
+                    <div class="small text-muted">先收集公开标题、链接和指标，不自动下载；人工选择后才进入任务。</div>
+                </div>
+            </div>
+            <div class="col-md-6 col-xl-3">
+                <div class="border rounded-3 p-3 h-100">
+                    <div class="fw-semibold mb-1"><i class="bi bi-image me-1"></i>封面发布体检</div>
+                    <div class="small text-muted">检查清晰度、比例、体积和各平台裁切风险，不向第三方上传封面。</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="workspace-panel rule-card mb-4">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>热点候选池</h2>
+            <p>统一收纳增长复盘续作与公开热点；生成或刷新都只保存候选信息。</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <form method="post" action="{{ url_for('transfer_center_generate_growth_candidates') }}">
+                <button class="btn btn-sm btn-outline-primary text-nowrap">生成续作候选</button>
+            </form>
+            <form method="post" action="{{ url_for('transfer_center_refresh_candidates') }}" class="d-flex gap-2">
+                <select class="form-select form-select-sm" name="platform" aria-label="热点平台">
+                    <option value="all">B站 + 抖音</option>
+                    <option value="bilibili">只看 B站</option>
+                    <option value="douyin">只看抖音</option>
+                </select>
+                <input type="hidden" name="limit" value="20">
+                <button class="btn btn-sm btn-primary text-nowrap"><i class="bi bi-arrow-clockwise me-1"></i>刷新候选</button>
+            </form>
+        </div>
+    </div>
+    <div class="workspace-panel-body">
+        {% if hot_candidates %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light"><tr><th>候选内容</th><th>来源</th><th>优先级/热度</th><th>加入任务</th><th class="text-end">操作</th></tr></thead>
+                <tbody>
+                {% for candidate in hot_candidates %}
+                    <tr>
+                        <td style="min-width:280px"><a href="{{ candidate.source_url }}" target="_blank" rel="noopener" class="fw-semibold text-decoration-none">{{ candidate.title or '未识别标题' }}</a><div class="small text-muted">{{ candidate.uploader or candidate.source_id }}</div>{% if candidate.metrics.candidate_type == 'growth_followup' %}<div class="small text-primary mt-1">24h {{ candidate.metrics.views_24h }} 播放 · 互动 {{ candidate.metrics.engagement_24h }}% · 24→72h {% if candidate.metrics.growth_24h_72h is not none %}{{ candidate.metrics.growth_24h_72h }}%{% else %}待观察{% endif %}</div>{% endif %}</td>
+                        <td><span class="badge {{ 'bg-primary' if candidate.metrics.candidate_type == 'growth_followup' else ('bg-info text-dark' if candidate.platform == 'bilibili' else 'bg-dark') }}">{{ '复盘续作' if candidate.metrics.candidate_type == 'growth_followup' else {'bilibili':'B站','douyin':'抖音'}.get(candidate.platform, candidate.platform) }}</span><div class="small text-muted mt-1">{{ candidate.source_label }}</div></td>
+                        <td>{{ candidate.heat_score or '—' }}{% if candidate.metrics.likes %}<div class="small text-muted">点赞 {{ candidate.metrics.likes }}</div>{% endif %}</td>
+                        <td style="min-width:260px">
+                            {% set recommended_target = candidate.metrics.recommended_target_platform or '' %}
+                            <form method="post" action="{{ url_for('transfer_center_promote_candidate', candidate_id=candidate.id) }}" class="d-flex flex-wrap gap-2 align-items-center">
+                                {% if candidate.platform != 'bilibili' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_bilibili" {% if recommended_target == 'bilibili' or not recommended_target %}checked{% endif %}> B站</label>{% endif %}
+                                {% if candidate.platform != 'douyin' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_douyin" {% if recommended_target == 'douyin' %}checked{% endif %}> 抖音</label>{% endif %}
+                                {% if candidate.platform != 'youtube' %}<label class="small"><input class="form-check-input" type="checkbox" name="target_youtube" {% if recommended_target == 'youtube' or not recommended_target %}checked{% endif %}> YouTube</label>{% endif %}
+                                <label class="small"><input class="form-check-input" type="checkbox" name="target_x"> X</label>
+                                <button class="btn btn-sm btn-outline-primary">加入</button>
+                            </form>
+                        </td>
+                        <td class="text-end"><form method="post" action="{{ url_for('transfer_center_dismiss_candidate', candidate_id=candidate.id) }}"><button class="btn btn-sm btn-outline-secondary">忽略</button></form></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-muted">候选池为空。点击“刷新候选”后，公开热点只会进入这里，不会自动下载或发布。</div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="workspace-panel rule-card mb-4">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>授权账号归档</h2>
+            <p>归档状态来自白名单账号对应的自动发现规则；清单可下载，未完成项目可以断点续跑。</p>
+        </div>
+        <span class="workspace-count">{{ archive_summaries|length }} 个账号</span>
+    </div>
+    <div class="workspace-panel-body">
+        {% if archive_summaries %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light"><tr><th>授权账号</th><th>归档完整性</th><th>状态</th><th class="text-end">操作</th></tr></thead>
+                <tbody>
+                {% for archive in archive_summaries %}
+                    <tr>
+                        <td><strong>{{ archive.display_name or archive.platform }}</strong><div class="small text-muted text-truncate" style="max-width:420px">{{ archive.account_url }}</div></td>
+                        <td>视频 {{ archive.video_ready or 0 }}/{{ archive.total_items or 0 }}<div class="small text-muted">文案 {{ archive.transcript_ready or 0 }}/{{ archive.total_items or 0 }}</div></td>
+                        <td>{% if archive.error %}<span class="text-danger">{{ archive.error }}</span>{% elif archive.incomplete %}<span class="badge bg-warning text-dark">待补齐 {{ archive.incomplete }}</span>{% else %}<span class="badge bg-success">完整</span>{% endif %}</td>
+                        <td class="text-end text-nowrap">
+                            <form method="post" action="{{ url_for('transfer_center_refresh_archive', source_id=archive.id) }}" class="d-inline"><button class="btn btn-sm btn-outline-primary">刷新清单</button></form>
+                            <form method="post" action="{{ url_for('transfer_center_resume_archive', source_id=archive.id) }}" class="d-inline"><button class="btn btn-sm btn-outline-secondary">续跑</button></form>
+                            <a class="btn btn-sm btn-outline-dark" href="{{ url_for('transfer_center_archive_manifest', source_id=archive.id) }}">下载清单</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-muted">先在下方添加一个授权来源，再为它建立“账号”自动发现规则。</div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="workspace-panel rule-card mb-4">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>发布效果闭环</h2>
+            <p>YouTube 和 B站可一键同步公开数据；完播、收益与其他平台数据按需手工补录。</p>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <span class="workspace-count">{{ performance.records|length }} 条最新样本</span>
+            {% if published_jobs %}
+            <form method="post" action="{{ url_for('transfer_center_sync_performance') }}">
+                <button class="btn btn-sm btn-outline-primary">同步平台数据</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    <div class="workspace-panel-body">
+        <div class="row g-3 mb-4">
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">曝光</div><strong>{{ performance.totals.impressions }}</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">播放</div><strong>{{ performance.totals.views }}</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">点击率</div><strong>{{ performance.totals.ctr }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">完播率</div><strong>{{ performance.totals.completion_rate }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">涨粉转化</div><strong>{{ performance.totals.follow_conversion_rate }}%</strong></div></div>
+            <div class="col-md-2"><div class="border rounded-3 p-3"><div class="small text-muted">净收益</div><strong>¥{{ '%.2f'|format(performance.totals.net_revenue_cny) }}</strong></div></div>
+        </div>
+        <div class="small text-muted mb-3">
+            平均观看 {{ performance.totals.average_view_duration }} 秒 · 3 秒留存 {{ performance.totals.retention_3s }}% ·
+            互动率 {{ performance.totals.engagement_rate }}% · 每千次播放净收益 ¥{{ '%.2f'|format(performance.totals.net_rpm_cny) }} ·
+            已结算 {{ performance.totals.settled_records }} 条 · 变现受限 {{ performance.totals.restricted_records }} 条 · 违规/限流 {{ performance.totals.violation_count }} 次
+        </div>
+        <div class="alert alert-primary">
+            {% for suggestion in performance.suggestions %}<div>{{ suggestion }}</div>{% endfor %}
+            <div class="border-top border-primary-subtle mt-2 pt-2">
+                下一批{% if not performance.strategy.sample_size %}（暂用默认值）{% endif %}：{{ performance.strategy.hook_guidance }}；{{ performance.strategy.duration_guidance }}；
+                零成本本地画面目标占比约 {{ performance.strategy.target_local_visual_ratio }}%。
+                <div class="mt-1">选题动作：{{ performance.strategy.topic_guidance }}。</div>
+            </div>
+        </div>
+        {% if published_jobs %}
+        <div class="small text-muted mb-3">
+            <span class="badge {{ 'bg-success' if performance_sync.enabled else 'bg-secondary' }} me-1">自动采样{{ '已开启' if performance_sync.enabled else '已关闭' }}</span>
+            发布后 24 小时、72 小时和 7 天自动同步，待执行 {{ performance_sync.pending }} 个，已完成 {{ performance_sync.completed }} 个。
+            {% if performance_sync.missed %}错过历史窗口 {{ performance_sync.missed }} 个（不补造数据）。{% endif %}
+            YouTube 自动更新播放、点赞、评论；B站额外更新分享。不覆盖已手工填写的完播率、收益、成本和制作特征。
+        </div>
+        <form method="post" action="{{ url_for('transfer_center_record_performance') }}" class="row g-3">
+            <div class="col-md-4"><label class="form-label">已发布任务</label><select class="form-select" name="job_id" required>{% for job in published_jobs %}<option value="{{ job.id }}">{{ job.title or job.id[:8] }}</option>{% endfor %}</select></div>
+            <div class="col-md-2"><label class="form-label">平台</label><select class="form-select" name="platform" required><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="youtube">YouTube</option><option value="x">X</option><option value="tiktok">TikTok</option></select></div>
+            <div class="col-md-2"><label class="form-label">曝光</label><input class="form-control" type="number" name="impressions" min="0" value="0"></div>
+            <div class="col-md-2"><label class="form-label">播放</label><input class="form-control" type="number" name="views" min="0" value="0"></div>
+            <div class="col-md-2"><label class="form-label">完播率 %</label><input class="form-control" type="number" name="completion_rate" min="0" max="100" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">平均观看秒数</label><input class="form-control" type="number" name="average_view_duration" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">3 秒留存 %</label><input class="form-control" type="number" name="retention_3s" min="0" max="100" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">涨粉</label><input class="form-control" type="number" name="followers_delta" value="0"></div>
+            <div class="col-md-2"><label class="form-label">平台收益 ¥</label><input class="form-control" type="number" name="revenue_cny" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">制作成本 ¥</label><input class="form-control" type="number" name="production_cost_cny" min="0" step="0.01" value="0"></div>
+            <div class="col-md-2"><label class="form-label">变现状态</label><select class="form-select" name="monetization_status"><option value="unknown">尚未确认</option><option value="eligible">已具备资格</option><option value="settled">已结算</option><option value="restricted">被限制</option><option value="ineligible">不具备资格</option></select></div>
+            <div class="col-12">
+                <details class="border rounded-3 p-3">
+                    <summary class="fw-semibold">补充互动和制作特征（可选）</summary>
+                    <div class="row g-3 mt-1">
+                        <div class="col-md-2"><label class="form-label">点赞</label><input class="form-control" type="number" name="likes" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">评论</label><input class="form-control" type="number" name="comments" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">分享</label><input class="form-control" type="number" name="shares" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">违规/限流次数</label><input class="form-control" type="number" name="violation_count" min="0" value="0"></div>
+                        <div class="col-md-2"><label class="form-label">开场类型</label><select class="form-select" name="hook_type"><option value="">未记录</option><option value="result_first">结果前置</option><option value="question">问题开场</option><option value="conflict">冲突开场</option><option value="story">故事开场</option><option value="other">其他</option></select></div>
+                        <div class="col-md-2"><label class="form-label">声音类型</label><select class="form-select" name="voice_type"><option value="">未记录</option><option value="local_tts">本地 TTS</option><option value="ai_voice">AI 配音</option><option value="human">真人配音</option><option value="mixed">混合</option></select></div>
+                        <div class="col-md-2"><label class="form-label">原片画面 %</label><input class="form-control" type="number" name="source_visual_ratio" min="0" max="100" step="0.01" placeholder="自动计算"></div>
+                        <div class="col-md-2"><label class="form-label">本地画面 %</label><input class="form-control" type="number" name="local_visual_ratio" min="0" max="100" step="0.01" placeholder="自动计算"></div>
+                        <div class="col-md-2"><label class="form-label">AI 画面 %</label><input class="form-control" type="number" name="ai_visual_ratio" min="0" max="100" step="0.01" value="0"></div>
+                        <div class="col-md-6"><label class="form-label">备注</label><input class="form-control" name="note" placeholder="例如：发布后 24 小时数据"></div>
+                    </div>
+                </details>
+            </div>
+            <div class="col-12 d-flex justify-content-end"><button class="btn btn-primary px-4">记录并更新建议</button></div>
+        </form>
+        {% else %}
+        <div class="text-muted">完成第一条平台发布后，这里会开放效果录入。</div>
+        {% endif %}
+    </div>
+</section>
+
 <section class="transfer-work-grid transfer-work-grid-single">
+<div class="workspace-panel rule-card mb-4">
+    <div class="workspace-panel-head">
+        <div>
+            <h2>来源跟踪列表</h2>
+            <p>把需要持续观察的账号加入这里即可自动下载；来源状态只做风险提示，不阻塞二剪制作。</p>
+        </div>
+        <span class="workspace-count">{{ allowed_sources|length }} 个来源</span>
+    </div>
+    <div class="workspace-panel-body">
+        <form method="post" action="{{ url_for('transfer_center_save_allowed_source') }}" class="row g-3 mb-4">
+            <div class="col-md-2">
+                <label class="form-label">平台</label>
+                <select class="form-select" name="platform" required>
+                    <option value="bilibili">B站</option>
+                    <option value="douyin">国内抖音</option>
+                    <option value="tiktok">TikTok</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">账号主页链接</label>
+                <input class="form-control" name="account_url" placeholder="填写完整公开主页链接" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">来源名称</label>
+                <input class="form-control" name="display_name" placeholder="便于识别">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">来源状态</label>
+                <select class="form-select" name="rights_basis" required>
+                    <option value="unconfirmed" selected>尚未确认</option>
+                    <option value="owned">本人/本团队账号</option>
+                    <option value="authorized">已获作者授权</option>
+                    <option value="licensed">许可协议覆盖</option>
+                    <option value="public_domain">公版内容</option>
+                </select>
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" name="enabled" id="allowSourceEnabled" checked>
+                    <label class="form-check-label" for="allowSourceEnabled">允许自动下载</label>
+                </div>
+            </div>
+            <div class="col-md-10">
+                <label class="form-label">来源备注（可选）</label>
+                <input class="form-control" name="rights_note" placeholder="例如：热点观察账号、本人账号、已沟通作者或待后续确认">
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button class="btn btn-primary w-100">加入跟踪列表</button>
+            </div>
+        </form>
+        {% if allowed_sources %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light"><tr><th>来源</th><th>来源状态</th><th>自动化</th><th class="text-end">操作</th></tr></thead>
+                <tbody>
+                {% for source in allowed_sources %}
+                    <tr>
+                        <td><strong>{{ source.display_name or {'bilibili':'B站账号','douyin':'抖音账号','tiktok':'TikTok账号'}.get(source.platform, source.platform) }}</strong><div class="small text-muted text-truncate" style="max-width:520px">{{ source.account_url }}</div></td>
+                        <td>{{ {'unconfirmed':'尚未确认','owned':'本人/本团队账号','authorized':'已获作者授权','licensed':'许可协议覆盖','public_domain':'公版内容'}.get(source.rights_basis, source.rights_basis) }}{% if source.rights_note %}<div class="small text-muted">{{ source.rights_note }}</div>{% endif %}</td>
+                        <td><span class="badge {{ 'bg-success' if source.enabled else 'bg-secondary' }}">{{ '允许自动下载' if source.enabled else '已停用' }}</span></td>
+                        <td class="text-end"><form method="post" action="{{ url_for('transfer_center_delete_allowed_source', source_id=source.id) }}" onsubmit="return confirm('移除这个授权来源？关联规则会停止自动下载。')"><button class="btn btn-sm btn-outline-danger">移除</button></form></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-warning mb-0">当前跟踪列表为空。先加入账号，即可为该账号开启自动下载和标准二剪。</div>
+        {% endif %}
+    </div>
+</div>
 <div class="workspace-panel rule-card">
     <div class="workspace-panel-head">
         <div>
@@ -187,7 +478,7 @@
             </div>
             <div class="modal-body">
                 <div class="source-hint small mb-3">
-                    “账号”适合持续跟踪一个发布者；“关键词/类别”适合发现一类内容。TikTok 当前采用 yt-dlp 实验性候选扫描，建议先用单链接验证。仅搬运你拥有或已获授权发布的内容。
+                    “账号”适合持续跟踪授权来源，开启自动下载前必须加入上方白名单；“关键词/类别”仅生成候选，不会自动下载。TikTok 当前采用实验性候选扫描。
                 </div>
                 <div class="row g-3">
                     <div class="col-md-6">
@@ -284,6 +575,7 @@
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="auto_prepare" id="autoPrepare" checked>
                             <label class="form-check-label" for="autoPrepare">首次预览通过后，后续发现自动下载并进行媒体体检</label>
+                            <div class="form-text">仅对已启用的账号白名单生效；关键词规则会强制保持候选模式。</div>
                         </div>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="first_scan_preview" id="firstScanPreview" checked>
@@ -312,7 +604,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div class="alert alert-info small">所有凭据只保存在这台 Mac mini，不需要开放公网端口，也不要通过聊天发送密码或令牌。</div>
+                <div class="alert alert-info small">所有凭据只保存在当前 MacBook 的应用私有目录，不开放应用公网端口，也不要通过聊天发送密码或令牌。</div>
                 <h4 class="h6 mt-3">来源平台</h4>
                 <div class="row g-3 mb-4">
                     <div class="col-md-6">
@@ -321,24 +613,16 @@
                                 <div>
                                     <strong>B站账号</strong>
                                     <div class="small text-muted">
-                                        {{ '已连接，可重新扫码刷新' if transfer_config.bilibili_cookies_ready else '使用哔哩哔哩客户端扫码' }}
+                                        {{ '下载与投稿凭证已同步' if transfer_config.bilibili_cookies_ready else '请到统一账号设置扫码' }}
                                     </div>
                                 </div>
                                 <span class="badge {{ 'bg-success' if transfer_config.bilibili_cookies_ready else 'bg-secondary' }}">
                                     {{ '已连接' if transfer_config.bilibili_cookies_ready else '未连接' }}
                                 </span>
                             </div>
-                            <button class="btn btn-outline-primary w-100" type="button" id="source-bili-qrcode-start">
-                                <i class="bi bi-qr-code me-1"></i>{{ '重新扫码登录' if transfer_config.bilibili_cookies_ready else '扫码登录并自动保存' }}
-                            </button>
-                            <div class="d-none text-center mt-3" id="source-bili-qrcode-wrap">
-                                <img id="source-bili-qrcode-image" alt="B站登录二维码" class="img-fluid border rounded p-2 bg-white" style="max-width: 220px;">
-                                <div class="small mt-2" id="source-bili-qrcode-status"></div>
-                            </div>
-                            <details class="mt-3">
-                                <summary class="small text-muted">备用：手动上传 Cookie 文件</summary>
-                                <input class="form-control form-control-sm mt-2" type="file" name="bilibili_source_cookies" accept=".txt">
-                            </details>
+                            <a class="btn btn-outline-primary w-100" href="{{ url_for('settings') }}#vtab-accounts">
+                                <i class="bi bi-person-gear me-1"></i>前往统一账号设置
+                            </a>
                         </div>
                     </div>
                     <div class="col-md-6">
@@ -389,6 +673,37 @@
                 </div>
                 <h4 class="h6">发布平台</h4>
                 <div class="row g-3">
+                    <div class="col-12">
+                        <div class="border rounded-3 p-3 bg-light-subtle">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
+                                <div>
+                                    <label class="form-label fw-semibold mb-1">抖音官方发布接口</label>
+                                    <div class="small text-muted">用于把审核完成的任务上传到已授权抖音号；与上方“来源 Cookie 登录”相互独立。</div>
+                                </div>
+                                <span class="badge {{ 'bg-success' if transfer_config.douyin_openapi_connected else ('bg-warning text-dark' if transfer_config.douyin_openapi_configured else 'bg-secondary') }}">
+                                    {{ '已连接' if transfer_config.douyin_openapi_connected else ('待授权' if transfer_config.douyin_openapi_configured else '未配置') }}
+                                </span>
+                            </div>
+                            <div class="alert alert-warning small py-2">
+                                需要在抖音开放平台创建“网站应用”，申请能力实验室中的“代替用户发布内容到抖音”（scope: <code>video.create.bind</code>）。该能力目前无沙盒，未获批时仍可继续使用网页手动发布。
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Client Key</label>
+                                    <input class="form-control" name="douyin_client_key" value="{{ transfer_config.douyin_client_key }}" autocomplete="off" placeholder="抖音开放平台应用 Client Key">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Client Secret</label>
+                                    <input class="form-control" type="password" name="douyin_client_secret" autocomplete="new-password" placeholder="{{ '留空则保留现有密钥' if transfer_config.douyin_openapi_configured else '抖音开放平台应用 Client Secret' }}">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label">授权回调地址（原样填入开放平台）</label>
+                                    <input class="form-control" value="{{ transfer_config.douyin_redirect_uri }}" readonly>
+                                    <div class="form-text">保存应用凭据后，再点击“连接抖音发布账号”完成授权。</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="col-md-6">
                         <label class="form-label">X 免费半自动发布</label>
                         <div class="border rounded p-3 bg-light">
@@ -416,8 +731,13 @@
                 </div>
             </div>
             <div class="modal-footer">
+                {% if transfer_config.douyin_openapi_configured %}
+                    <a class="btn btn-outline-dark me-auto" href="{{ url_for('transfer_center_douyin_connect') }}">
+                        {{ '更换抖音发布账号' if transfer_config.douyin_openapi_connected else '连接抖音发布账号' }}
+                    </a>
+                {% endif %}
                 {% if transfer_config.youtube_connected %}
-                    <span class="text-success me-auto"><i class="bi bi-check-circle"></i> YouTube：{{ transfer_config.youtube_channel_title or '频道已验证' }}</span>
+                    <span class="text-success"><i class="bi bi-check-circle"></i> YouTube：{{ transfer_config.youtube_channel_title or '频道已验证' }}</span>
                     <a class="btn btn-outline-secondary" href="{{ url_for('transfer_center_youtube_connect') }}">更换频道</a>
                 {% else %}
                     <a class="btn btn-outline-danger me-auto" href="{{ url_for('transfer_center_youtube_connect') }}">
@@ -468,88 +788,6 @@ document.addEventListener('DOMContentLoaded', () => {
     platform.addEventListener('change', syncHint);
     syncHint();
 
-    const biliStart = document.getElementById('source-bili-qrcode-start');
-    const biliWrap = document.getElementById('source-bili-qrcode-wrap');
-    const biliImage = document.getElementById('source-bili-qrcode-image');
-    const biliStatus = document.getElementById('source-bili-qrcode-status');
-    let biliSessionId = '';
-    let biliPollTimer = null;
-    const biliStatusUrl = {{ url_for('transfer_center_bilibili_qrcode_status', session_id='__SESSION__')|tojson }};
-
-    const setBiliStatus = (message, tone = 'muted') => {
-        if (!biliStatus) return;
-        biliStatus.textContent = message;
-        biliStatus.className = `small mt-2 text-${tone}`;
-    };
-    const stopBiliPolling = () => {
-        if (biliPollTimer) {
-            clearInterval(biliPollTimer);
-            biliPollTimer = null;
-        }
-    };
-    const pollBiliLogin = () => {
-        if (!biliSessionId) return;
-        fetch(biliStatusUrl.replace('__SESSION__', encodeURIComponent(biliSessionId)), {
-            method: 'GET',
-            cache: 'no-store'
-        })
-            .then(response => response.json())
-            .then(data => {
-                if (!data.success) {
-                    setBiliStatus(data.message || '登录状态查询失败', 'danger');
-                    stopBiliPolling();
-                    return;
-                }
-                if (data.status === 'scan') {
-                    setBiliStatus('请使用哔哩哔哩客户端扫码', 'primary');
-                } else if (data.status === 'confirm') {
-                    setBiliStatus('已扫码，请在手机端确认登录', 'primary');
-                } else if (data.status === 'done' && data.cookies_saved === true) {
-                    setBiliStatus('登录成功，Cookie 已保存到本机', 'success');
-                    stopBiliPolling();
-                    setTimeout(() => window.location.reload(), 900);
-                } else if (data.status === 'timeout') {
-                    setBiliStatus('二维码已过期，请重新获取', 'danger');
-                    stopBiliPolling();
-                } else if (data.status === 'failed') {
-                    setBiliStatus(data.message || '登录失败，请重新获取二维码', 'danger');
-                    stopBiliPolling();
-                }
-            })
-            .catch(() => {
-                setBiliStatus('暂时无法查询登录状态，请重新尝试', 'danger');
-                stopBiliPolling();
-            });
-    };
-
-    if (biliStart) {
-        biliStart.addEventListener('click', () => {
-            biliStart.disabled = true;
-            setBiliStatus('正在生成二维码…', 'muted');
-            fetch({{ url_for('transfer_center_bilibili_qrcode_start')|tojson }}, {
-                method: 'POST',
-                cache: 'no-store'
-            })
-                .then(response => response.json())
-                .then(data => {
-                    biliStart.disabled = false;
-                    if (!data.success || !data.session_id || !data.image_base64) {
-                        setBiliStatus(data.message || '二维码生成失败，请重试', 'danger');
-                        return;
-                    }
-                    biliSessionId = data.session_id;
-                    biliImage.src = `data:${data.mime_type || 'image/png'};base64,${data.image_base64}`;
-                    biliWrap.classList.remove('d-none');
-                    setBiliStatus('请使用哔哩哔哩客户端扫码', 'primary');
-                    stopBiliPolling();
-                    biliPollTimer = setInterval(pollBiliLogin, 2000);
-                })
-                .catch(() => {
-                    biliStart.disabled = false;
-                    setBiliStatus('二维码生成失败，请稍后重试', 'danger');
-                });
-        });
-    }
 });
 </script>
 {% endblock %}

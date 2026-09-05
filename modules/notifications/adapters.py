@@ -11,26 +11,34 @@ from .models import NotificationMessage
 CHANNEL_WECOM = "wecom"
 CHANNEL_SERVERCHAN = "serverchan"
 CHANNEL_MESSAGE_PUSHER = "message_pusher"
+CHANNEL_TELEGRAM = "telegram"
 
 ALL_CHANNELS = (
+    CHANNEL_TELEGRAM,
     CHANNEL_WECOM,
     CHANNEL_SERVERCHAN,
     CHANNEL_MESSAGE_PUSHER,
 )
 
 CHANNEL_LABELS = {
+    CHANNEL_TELEGRAM: "Telegram",
     CHANNEL_WECOM: "企业微信",
     CHANNEL_SERVERCHAN: "Server酱",
     CHANNEL_MESSAGE_PUSHER: "message-pusher",
 }
 
 CHANNEL_ENABLE_KEY_MAP = {
+    CHANNEL_TELEGRAM: "NOTIFY_TELEGRAM_ENABLED",
     CHANNEL_WECOM: "NOTIFY_WECOM_ENABLED",
     CHANNEL_SERVERCHAN: "NOTIFY_SERVERCHAN_ENABLED",
     CHANNEL_MESSAGE_PUSHER: "NOTIFY_MESSAGE_PUSHER_ENABLED",
 }
 
 CHANNEL_REQUIRED_CONFIG_MAP = {
+    CHANNEL_TELEGRAM: (
+        "NOTIFY_TELEGRAM_BOT_TOKEN",
+        "NOTIFY_TELEGRAM_CHAT_ID",
+    ),
     CHANNEL_WECOM: ("NOTIFY_WECOM_WEBHOOK_URL",),
     CHANNEL_SERVERCHAN: ("NOTIFY_SERVERCHAN_SENDKEY",),
     CHANNEL_MESSAGE_PUSHER: (
@@ -69,6 +77,56 @@ def validate_channel_config_fields(channel_id: str, config: dict[str, Any] | Non
 
 class NotificationSendError(RuntimeError):
     pass
+
+
+def detect_latest_telegram_chat(bot_token: str) -> dict[str, str]:
+    normalized_token = str(bot_token or "").strip()
+    if not normalized_token:
+        raise ValueError("缺少 BotFather Bot Token")
+
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{normalized_token}/getUpdates",
+            params={"limit": 20, "timeout": 0},
+            timeout=10,
+        )
+    except requests.RequestException:
+        raise NotificationSendError("Telegram 网络请求失败") from None
+
+    if not response.ok:
+        raise NotificationSendError(f"Telegram API 返回 HTTP {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError:
+        raise NotificationSendError("Telegram API 返回了无效响应") from None
+    if not bool(data.get("ok")):
+        description = str(data.get("description") or "Telegram 会话读取失败").strip()
+        raise NotificationSendError(description[:240])
+
+    for update in reversed(list(data.get("result") or [])):
+        if not isinstance(update, dict):
+            continue
+        message = update.get("message") or update.get("channel_post")
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat")
+        if not isinstance(chat, dict) or chat.get("id") is None:
+            continue
+        display_name = (
+            chat.get("title")
+            or chat.get("username")
+            or " ".join(
+                part for part in (str(chat.get("first_name") or "").strip(), str(chat.get("last_name") or "").strip())
+                if part
+            )
+            or str(chat.get("id"))
+        )
+        return {
+            "chat_id": str(chat["id"]),
+            "display_name": str(display_name),
+        }
+
+    raise ValueError("尚未发现会话，请先在 Telegram 中向该 Bot 发送 /start")
 
 
 @dataclass
@@ -131,6 +189,40 @@ class WeComNotifier(Notifier):
                 raise NotificationSendError(f"企业微信推送失败(含回退): {fallback_exc}") from original_exc
 
 
+class TelegramNotifier(Notifier):
+    MAX_TEXT_LENGTH = 4096
+
+    def __init__(self) -> None:
+        super().__init__(channel_id=CHANNEL_TELEGRAM, label=CHANNEL_LABELS[CHANNEL_TELEGRAM])
+
+    def send(self, message: NotificationMessage, config: dict[str, Any]) -> None:
+        bot_token = str(config.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+        chat_id = str(config.get("NOTIFY_TELEGRAM_CHAT_ID") or "").strip()
+        text = f"{message.title}\n\n{message.summary}\n\n{message.markdown}"[:self.MAX_TEXT_LENGTH]
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            raise NotificationSendError("Telegram 网络请求失败") from None
+
+        if not response.ok:
+            raise NotificationSendError(f"Telegram API 返回 HTTP {response.status_code}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise NotificationSendError("Telegram API 返回了无效响应") from exc
+        if not bool(data.get("ok")):
+            description = str(data.get("description") or "Telegram 推送失败").strip()
+            raise NotificationSendError(description[:240])
+
+
 class ServerChanNotifier(Notifier):
     def __init__(self) -> None:
         super().__init__(channel_id=CHANNEL_SERVERCHAN, label=CHANNEL_LABELS[CHANNEL_SERVERCHAN])
@@ -182,6 +274,7 @@ class MessagePusherNotifier(Notifier):
 
 def build_notifier_registry() -> dict[str, Notifier]:
     return {
+        CHANNEL_TELEGRAM: TelegramNotifier(),
         CHANNEL_WECOM: WeComNotifier(),
         CHANNEL_SERVERCHAN: ServerChanNotifier(),
         CHANNEL_MESSAGE_PUSHER: MessagePusherNotifier(),

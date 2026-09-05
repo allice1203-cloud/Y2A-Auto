@@ -126,6 +126,10 @@
         padding-left: .8rem;
         margin-bottom: .9rem;
     }
+    .material-ready-list {
+        max-height: 190px;
+        overflow: auto;
+    }
     @media (max-width: 767.98px) {
         .workflow-rail, .mode-grid { grid-template-columns: 1fr; }
         .workflow-step, .mode-option { min-height: auto; }
@@ -134,14 +138,14 @@
 {% endblock %}
 
 {% block content %}
-{% set current_mode = job.processing_mode or 'direct' %}
+{% set current_mode = job.processing_mode or 'professional' %}
 <div class="review-hero mb-4 d-flex flex-column flex-lg-row justify-content-between gap-3">
     <div>
         <a class="small text-decoration-none" href="{{ url_for('transfer_center_index') }}">
             <i class="bi bi-arrow-left"></i> 返回搬运中心
         </a>
-        <h1 class="h3 mt-2 mb-2">选择处理方式并发布</h1>
-        <p class="text-muted mb-0">可以直接转发，也可以先做简单或专业加工；最后都由你确认。</p>
+        <h1 class="h3 mt-2 mb-2">{{ '标准二剪与发布' if job.local_video_path else '续作策划草稿' }}</h1>
+        <p class="text-muted mb-0">{{ '默认重写脚本、重组镜头并补充旁白；也可以选择快速二剪或原片分发。' if job.local_video_path else '先编辑脚本、分镜和素材清单；保存草稿不会下载、制作或发布。' }}</p>
     </div>
     <div class="align-self-lg-center">
         <span class="badge {{ 'bg-success' if job.recreation_status == 'approved' else 'bg-primary' }} fs-6">
@@ -151,15 +155,15 @@
 </div>
 
 <div class="workflow-rail mb-4">
-    <div class="workflow-step is-done">
-        <div class="workflow-index">01 · 原片就绪</div>
-        <div class="fw-semibold mt-2">来源视频与发布路线已识别</div>
-        <div class="small text-muted mt-1">标题、作者、时长和平台媒体规格已读取。</div>
+    <div class="workflow-step {{ 'is-done' if job.local_video_path else 'is-current' }}">
+        <div class="workflow-index">01 · {{ '原片就绪' if job.local_video_path else '策划就绪' }}</div>
+        <div class="fw-semibold mt-2">{{ '来源视频与发布路线已识别' if job.local_video_path else '续作方向已生成，等待人工修改' }}</div>
+        <div class="small text-muted mt-1">{{ '标题、作者、时长和平台媒体规格已读取。' if job.local_video_path else '当前只是文本草稿，尚未准备视频素材。' }}</div>
     </div>
-    <div class="workflow-step is-current">
+    <div class="workflow-step {{ 'is-current' if job.local_video_path else '' }}">
         <div class="workflow-index">02 · 选择方式</div>
-        <div class="fw-semibold mt-2">直接转发 / 简单加工 / 专业加工</div>
-        <div class="small text-muted mt-1">默认走最短路径，需要时再增加加工。</div>
+        <div class="fw-semibold mt-2">标准二剪 / 快速二剪 / 原片分发</div>
+        <div class="small text-muted mt-1">默认使用标准二剪，需要追热点时可切换快速模式。</div>
     </div>
     <div class="workflow-step">
         <div class="workflow-index">03 · 确认并发布</div>
@@ -169,8 +173,8 @@
 </div>
 
 <div class="alert alert-primary border-0">
-    <strong>最简单的做法：</strong>选择“直接转发”，核对来源与水印后即可确认。
-    如果只想统一画幅、片头片尾和编码，选择“简单加工”。
+    <strong>推荐做法：</strong>使用“标准二剪 / AI 重制”生成新脚本、旁白、镜头计划和分平台版本。
+    来源状态只作为风险提示，不会阻塞策划、粗剪或成片制作。
 </div>
 
 <div class="row g-4">
@@ -199,7 +203,56 @@
             </div>
         </div>
 
-        <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" class="card review-card">
+        {% set visual_analysis = recreation_plan.visual_analysis or {} %}
+        {% if visual_analysis and current_mode != 'direct' %}
+        <div class="card review-card mb-4">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center gap-3">
+                <div>
+                    <h2 class="h6 mb-1"><i class="bi bi-eye me-1"></i>本地视觉分析</h2>
+                    <div class="small text-muted">小模型只在本机抽样识别镜头，为二剪提供辅助，不替代人工确认。</div>
+                </div>
+                <span class="badge {{ 'bg-success' if visual_analysis.status == 'ok' else ('bg-warning text-dark' if visual_analysis.status == 'failed' else 'bg-secondary') }}">
+                    {{ '已完成' if visual_analysis.status == 'ok' else ('已降级' if visual_analysis.status == 'failed' else '已跳过') }}
+                </span>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">{{ visual_analysis.summary or '暂无可展示的画面摘要。' }}</p>
+                <div class="d-flex flex-wrap gap-2 small text-muted">
+                    <span class="badge bg-light text-dark border">抽样 {{ visual_analysis.frame_count or 0 }} 帧</span>
+                    {% if visual_analysis.elapsed_seconds %}
+                    <span class="badge bg-light text-dark border">用时 {{ '%.1f'|format(visual_analysis.elapsed_seconds) }} 秒</span>
+                    {% endif %}
+                    {% if visual_analysis.suggested_segments %}
+                    <span class="badge bg-light text-dark border">候选镜头 {{ visual_analysis.suggested_segments|length }} 段</span>
+                    {% endif %}
+                </div>
+                {% if visual_analysis.suggested_segments or visual_analysis.frames %}
+                <details class="border rounded-3 p-3 mt-3">
+                    <summary class="small fw-semibold">查看镜头线索</summary>
+                    {% for segment in visual_analysis.suggested_segments or [] %}
+                    <div class="small border-top pt-2 mt-2">
+                        <strong>{{ '%.1f'|format(segment.start) }}–{{ '%.1f'|format(segment.end) }} 秒</strong>
+                        <span class="text-muted ms-1">{{ segment.reason }}</span>
+                    </div>
+                    {% endfor %}
+                    {% if not visual_analysis.suggested_segments %}
+                    {% for frame in visual_analysis.frames or [] %}
+                    <div class="small border-top pt-2 mt-2">
+                        <strong>{{ '%.1f'|format(frame.timestamp) }} 秒</strong>
+                        <span class="text-muted ms-1">{{ frame.description }}</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                </details>
+                {% endif %}
+                {% if visual_analysis.warnings %}
+                <div class="small text-warning-emphasis mt-3">{{ visual_analysis.warnings|join('；') }}</div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <form method="post" action="{{ url_for('transfer_center_save_review', job_id=job.id) }}" enctype="multipart/form-data" class="card review-card">
             <div class="card-header bg-white py-3">
                 <h2 class="h5 mb-1">发布确认</h2>
                 <div class="small text-muted">先选处理方式，再核对来源与目标平台。</div>
@@ -208,20 +261,32 @@
                 <h3 class="h6 mb-3">1. 这条视频怎么处理？</h3>
                 <div class="mode-grid mb-4">
                     <label class="mode-option">
-                        <input class="form-check-input" type="radio" name="processing_mode" value="direct" {% if current_mode == 'direct' %}checked{% endif %}>
-                        <div class="mode-title">直接转发</div>
-                        <div class="mode-copy">使用当前原片，不进入超级印钞机。核对来源、水印和发布文案后即可确认。</div>
+                        <input class="form-check-input" type="radio" name="processing_mode" value="professional" {% if current_mode == 'professional' %}checked{% endif %}>
+                        <div class="mode-title">标准二剪 / AI 重制</div>
+                        <div class="mode-copy">重写中文脚本、重组镜头，加入旁白、B-roll、字幕和独立平台版本。</div>
                     </label>
                     <label class="mode-option">
                         <input class="form-check-input" type="radio" name="processing_mode" value="quick" {% if current_mode == 'quick' %}checked{% endif %}>
-                        <div class="mode-title">简单加工</div>
-                        <div class="mode-copy">在超级印钞机中一键统一画幅、片头片尾、来源标识与 H.264 编码。</div>
+                        <div class="mode-title">快速二剪</div>
+                        <div class="mode-copy">快速统一画幅、节奏、字幕、片头片尾和编码，用于热点测试。</div>
                     </label>
                     <label class="mode-option">
-                        <input class="form-check-input" type="radio" name="processing_mode" value="professional" {% if current_mode == 'professional' %}checked{% endif %}>
-                        <div class="mode-title">专业加工</div>
-                        <div class="mode-copy">进行镜头重组、原创口播、配音、字幕、短剧复盘与复杂包装。</div>
+                        <input class="form-check-input" type="radio" name="processing_mode" value="direct" {% if current_mode == 'direct' %}checked{% endif %}>
+                        <div class="mode-title">原片分发</div>
+                        <div class="mode-copy">使用已经制作好的成片，不进入二剪流程，核对后直接分发。</div>
                     </label>
+                </div>
+
+                {% set rights_risk = recreation_plan.rights_risk or {} %}
+                <div class="alert {{ 'alert-success' if rights_risk.level == 'green' else ('alert-warning' if rights_risk.level == 'yellow' else 'alert-danger') }} border-0 mb-4">
+                    <div class="d-flex justify-content-between gap-3 align-items-start">
+                        <div>
+                            <strong>{{ rights_risk.label or '来源尚未确认' }}</strong>
+                            <div class="small mt-1">{{ rights_risk.summary or '允许继续制作，公开发布前由你人工判断。' }}</div>
+                            {% if rights_risk.note %}<div class="small mt-1">备注：{{ rights_risk.note }}</div>{% endif %}
+                        </div>
+                        <span class="badge bg-white text-dark">仅提示，不阻塞</span>
+                    </div>
                 </div>
 
                 <h3 class="h6 mb-3">2. 来源与水印</h3>
@@ -233,7 +298,7 @@
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">画面核对结果</label>
-                        <select class="form-select" name="watermark_status" required>
+                        <select class="form-select" name="watermark_status" id="watermarkStatus">
                             <option value="">请选择核对结果</option>
                             {% for value, label in watermark_states.items() %}
                             <option value="{{ value }}" {% if job.watermark_status == value %}selected{% endif %}>{{ label }}</option>
@@ -249,7 +314,7 @@
                 <div class="mode-section" data-mode-section="processed">
                     <h3 class="h6 mb-3">3. 加工说明</h3>
                     <div class="mb-3 mode-section" data-mode-section="professional">
-                        <label class="form-label">专业加工类型</label>
+                        <label class="form-label">标准二剪类型</label>
                         <select class="form-select" name="recreation_mode">
                             {% for value, label in recreation_modes.items() %}
                             <option value="{{ value }}" {% if job.recreation_mode == value %}selected{% endif %}>{{ label }}</option>
@@ -264,12 +329,71 @@
                         <label class="form-label" id="contributionLabel">本次加工内容</label>
                         <textarea class="form-control" name="original_contribution" id="originalContribution" rows="4">{{ job.original_contribution or '' }}</textarea>
                     </div>
+                    <div class="mb-4 mode-section" data-mode-section="professional">
+                        <label class="form-label">原创解说稿</label>
+                        <textarea class="form-control" name="commentary_script" rows="10" maxlength="8000" placeholder="这份完整口播稿将用于本地配音和字幕生成。">{{ job.commentary_script or recreation_plan.commentary_script or '' }}</textarea>
+                        <div class="form-text">一键二创会使用此解说稿生成新配音、字幕和重构成片。</div>
+                    </div>
+                    <div class="row g-3 mb-4 mode-section" data-mode-section="professional">
+                        <div class="col-lg-7">
+                            <label class="form-label">分镜草稿</label>
+                            <textarea class="form-control" name="storyboard_text" rows="9" maxlength="12000" placeholder="每行：阶段｜旁白｜画面｜所需素材">{{ storyboard_text }}</textarea>
+                            <div class="form-text">每行一个镜头，用“｜”分隔阶段、旁白、画面和素材；下载后可再生成精确时间线。</div>
+                        </div>
+                        <div class="col-lg-5">
+                            <label class="form-label">素材清单</label>
+                            <textarea class="form-control" name="material_checklist_text" rows="6" maxlength="6000" placeholder="每行一项需要拍摄、录屏或制作的素材">{{ material_checklist_text }}</textarea>
+                            <div class="form-text">修改清单后先保存，新增项会以“未就绪”进入下方进度。</div>
+                            {% if material_readiness.gate_enabled and material_readiness.total %}
+                            <div class="border rounded-3 p-3 mt-3">
+                                <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+                                    <strong class="small">准备进度 <span id="materialReadyCount">{{ material_readiness.ready }}/{{ material_readiness.total }}</span></strong>
+                                    <div class="d-flex gap-1">
+                                        <a class="btn btn-sm btn-outline-secondary py-0" href="{{ url_for('transfer_center_export_materials', job_id=job.id) }}"><i class="bi bi-download"></i> 素材包</a>
+                                        <button class="btn btn-sm btn-outline-secondary py-0" type="button" id="toggleMaterialsReady">手工全部就绪</button>
+                                    </div>
+                                </div>
+                                <div class="progress mb-2" style="height:6px" role="progressbar" aria-label="素材准备进度">
+                                    <div class="progress-bar" id="materialReadyBar" style="width:{{ material_readiness.percent }}%"></div>
+                                </div>
+                                <div class="material-ready-list">
+                                    {% for item in material_readiness.items %}
+                                    <div class="border-top py-2">
+                                        <label class="form-check small mb-1">
+                                            <input class="form-check-input material-ready-check" type="checkbox" name="material_ready" value="{{ item.label }}" data-binding-ready="{{ 1 if item.binding_ready else 0 }}" {% if item.manual_ready %}checked{% endif %}>
+                                            <span class="form-check-label">{{ item.label }}</span>
+                                        </label>
+                                        {% if item.binding_ready %}
+                                        <div class="small text-success ps-4 mb-1">
+                                            <i class="bi bi-link-45deg"></i>
+                                            {% if item.binding_type == 'url' %}<a href="{{ item.binding_url }}" target="_blank" rel="noopener">参考地址已绑定</a>{% else %}{{ item.binding_label or '文件已绑定' }}{% endif %}
+                                        </div>
+                                        {% endif %}
+                                        <details class="ps-4">
+                                            <summary class="small text-muted">绑定文件或参考地址</summary>
+                                            <input class="form-control form-control-sm mt-2" type="file" name="material_file_{{ item.key }}" accept="video/*,image/*,audio/*,.srt,.vtt,.txt,.md,.pdf">
+                                            <input class="form-control form-control-sm mt-2" type="url" name="material_url_{{ item.key }}" value="{{ item.binding_url if item.binding_type == 'url' else '' }}" placeholder="https://...">
+                                            {% if item.binding_type %}
+                                            <label class="form-check small mt-2 mb-0">
+                                                <input class="form-check-input" type="checkbox" name="material_unbind" value="{{ item.key }}">
+                                                <span class="form-check-label">取消当前绑定（不删除已上传文件）</span>
+                                            </label>
+                                            {% endif %}
+                                        </details>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <div class="form-text mt-2">可手工勾选，也可绑定本地文件或公网地址自动就绪；保存后生效，全部就绪才开放制作入口。</div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                     <div class="form-check border rounded-3 p-3 ps-5 mb-4">
                         <input class="form-check-input" type="checkbox" name="recreation_confirmed" id="recreationConfirmed">
                         <label class="form-check-label fw-semibold" for="recreationConfirmed">
                             我确认当前预览的是已经加工完成的新成片
                         </label>
-                        <div class="form-text">简单或专业加工都需要先回传新成片。</div>
+                        <div class="form-text">快速或标准二剪都需要先回传新成片。</div>
                     </div>
                 </div>
 
@@ -340,9 +464,89 @@
                     <textarea class="form-control" name="tiktok_text" rows="4" maxlength="2000">{{ job.tiktok_text or job.x_text or job.title or '' }}</textarea>
                 </div>
                 {% endif %}
+
+                <h3 class="h6 mt-4 mb-3">5. 发布前预检</h3>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="d-flex justify-content-between gap-2 align-items-center mb-2">
+                                <strong>文案与内容</strong>
+                                {% if content_preflight and content_preflight.verdict %}
+                                <span class="badge {{ 'bg-success' if content_preflight.verdict == 'pass' else ('bg-danger' if content_preflight.verdict == 'block' else 'bg-warning text-dark') }}">
+                                    {{ '通过' if content_preflight.verdict == 'pass' else ('阻止发布' if content_preflight.verdict == 'block' else '需要确认') }}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary">尚未检测</span>
+                                {% endif %}
+                            </div>
+                            {% if content_preflight %}
+                            <div class="small text-muted mb-2">风险分：{{ content_preflight.score or 0 }}。修改文案后保存草稿即可刷新结果。</div>
+                            {% for issue in content_preflight.issues or [] %}
+                            <div class="small alert {{ 'alert-danger' if issue.severity == 'block' else 'alert-warning' }} py-2 mb-2">
+                                <strong>{{ issue.field or '文案' }}</strong>：{{ issue.reason }}
+                                {% if issue.term %}（命中“{{ issue.term }}”）{% endif %}
+                                {% if issue.replacement %}<div class="mt-1">建议：{{ issue.replacement }}</div>{% endif %}
+                            </div>
+                            {% endfor %}
+                            {% for note in content_preflight.category_notes or [] %}
+                            <div class="small text-muted mb-1"><strong>{{ note.category }}</strong>：命中 {{ (note.matched or [])|join('、') }}，{{ note.note }}</div>
+                            {% endfor %}
+                            {% for note in content_preflight.notes or [] %}
+                            <div class="small text-muted mb-1">{{ note }}</div>
+                            {% endfor %}
+                            {% if content_preflight.verdict == 'review' %}
+                            <div class="form-check border rounded-3 p-2 ps-5 mt-3">
+                                <input class="form-check-input" type="checkbox" name="content_preflight_confirmed" id="contentPreflightConfirmed">
+                                <label class="form-check-label small" for="contentPreflightConfirmed">我已人工核对以上文案风险，确认继续发布</label>
+                            </div>
+                            {% endif %}
+                            <div class="small text-muted mt-2">{{ content_preflight.disclaimer }}</div>
+                            {% else %}
+                            <div class="small text-muted">首次准备或保存草稿后生成本地检测结果。</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="d-flex justify-content-between gap-2 align-items-center mb-2">
+                                <strong>封面与画幅</strong>
+                                {% if cover_preflight and cover_preflight.verdict %}
+                                <span class="badge {{ 'bg-success' if cover_preflight.verdict == 'pass' else ('bg-danger' if cover_preflight.verdict == 'block' else 'bg-warning text-dark') }}">
+                                    {{ '通过' if cover_preflight.verdict == 'pass' else ('阻止发布' if cover_preflight.verdict == 'block' else '需要确认') }}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary">尚未检测</span>
+                                {% endif %}
+                            </div>
+                            {% if cover_preflight %}
+                            <div class="small text-muted mb-2">
+                                {% if cover_preflight.width and cover_preflight.height %}{{ cover_preflight.width }} × {{ cover_preflight.height }} · {% endif %}
+                                {{ '独立封面' if cover_preflight.source == 'dedicated_cover' else '使用视频首帧/平台自动截帧' }}
+                            </div>
+                            {% for issue in cover_preflight.issues or [] %}
+                            <div class="small alert {{ 'alert-danger' if issue.severity == 'block' else 'alert-warning' }} py-2 mb-2">
+                                {{ issue.message }}
+                            </div>
+                            {% endfor %}
+                            {% for platform, result in (cover_preflight.platforms or {}).items() %}
+                            <div class="small mb-1"><strong>{{ result.label or platform }}</strong>：推荐 {{ result.preferred_ratio }}；{{ result.safe_zone_note }}</div>
+                            {% endfor %}
+                            {% if cover_preflight.verdict == 'review' %}
+                            <div class="form-check border rounded-3 p-2 ps-5 mt-3">
+                                <input class="form-check-input" type="checkbox" name="cover_preflight_confirmed" id="coverPreflightConfirmed">
+                                <label class="form-check-label small" for="coverPreflightConfirmed">我已预览封面和安全区，确认继续发布</label>
+                            </div>
+                            {% endif %}
+                            <div class="small text-muted mt-2">{{ cover_preflight.disclaimer }}</div>
+                            {% else %}
+                            <div class="small text-muted">首次准备或保存草稿后生成本地检测结果。</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2 py-3">
-                <button class="btn btn-outline-primary" name="action" value="draft">保存草稿</button>
+                <button class="btn btn-outline-primary" name="action" value="draft" formnovalidate>保存草稿</button>
                 <button class="btn btn-success" id="approveButton" name="action" value="approve_publish" data-recreated="{{ 1 if job.recreation_completed else 0 }}">
                     <i class="bi bi-send-check me-1"></i><span id="approveButtonLabel">确认并开始发布</span>
                 </button>
@@ -407,13 +611,21 @@
         {% endif %}
 
         <div class="card review-card production-card mb-4">
-            <div class="card-header py-3"><h2 class="h6 mb-0">超级印钞机 · 可选加工</h2></div>
+            <div class="card-header py-3"><h2 class="h6 mb-0">二剪制作台</h2></div>
             <div class="card-body">
-                <p class="small mb-3">不加工可直接跳过。需要加工时先选简单模式；只有确实要重做内容才进入专业模式。</p>
+                <p class="small mb-3">正常制作可进入编辑台手工调整；AI 混合制作会生成解说、配音、字幕和粗剪，再由你终审。</p>
+                {% if not job.local_video_path %}
+                <div class="small text-warning mb-3">当前只能编辑策划草稿；准备好视频素材后才会开放制作按钮。</div>
+                {% elif material_readiness.blocking %}
+                <div class="small text-warning mb-3">素材已就绪 {{ material_readiness.ready }}/{{ material_readiness.total }}；请补齐并保存后再开始制作。</div>
+                {% else %}
+                <div class="small text-success mb-3">视频与所需素材已就绪，可以进入制作。</div>
+                {% endif %}
                 <div class="production-state mb-3">
                     <div class="small">联动状态</div>
                     <div class="fw-semibold mt-1">
                         {% if job.mpt_status == 'imported' %}加工成片已同步，等待最终确认
+                        {% elif job.mpt_status == 'rendering' %}正在后台生成配音、字幕和成片
                         {% elif job.mpt_status == 'ready' %}项目已建立，原片已就绪
                         {% elif job.mpt_status == 'failed' %}联动失败，可以重试
                         {% elif job.mpt_status == 'sending' %}正在送入超级印钞机
@@ -422,25 +634,35 @@
                     {% if job.mpt_message %}<div class="small mt-1">{{ job.mpt_message }}</div>{% endif %}
                 </div>
                 {% if money_printer_quick_url %}
-                <a class="btn btn-light w-100 mb-2" href="{{ money_printer_quick_url }}">
-                    <i class="bi bi-lightning-charge me-1"></i>简单加工
+                <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
+                    <input type="hidden" name="workflow" value="professional">
+                    <input type="hidden" name="operation" value="ai_rebuild">
+                    <button class="btn btn-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
+                </form>
+                <a class="btn btn-light w-100 mb-2 {% if not production_ready %}disabled{% endif %}" {% if production_ready %}href="{{ money_printer_quick_url }}"{% else %}aria-disabled="true"{% endif %}>
+                    <i class="bi bi-lightning-charge me-1"></i>打开快速二剪
                 </a>
                 <form method="post" action="{{ url_for('transfer_center_sync_money_printer', job_id=job.id) }}" class="mb-2">
-                    <button class="btn btn-success w-100">
+                    <button class="btn btn-success w-100" {% if not job.local_video_path %}disabled{% endif %}>
                         <i class="bi bi-cloud-arrow-down me-1"></i>同步加工成片
                     </button>
                 </form>
-                <a class="btn btn-outline-light w-100" href="{{ money_printer_professional_url }}">
-                    <i class="bi bi-sliders me-1"></i>专业加工
+                <a class="btn btn-outline-light w-100 {% if not production_ready %}disabled{% endif %}" {% if production_ready %}href="{{ money_printer_professional_url }}"{% else %}aria-disabled="true"{% endif %}>
+                    <i class="bi bi-sliders me-1"></i>打开标准二剪编辑台
                 </a>
                 {% else %}
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
-                    <input type="hidden" name="workflow" value="quick">
-                    <button class="btn btn-light w-100"><i class="bi bi-lightning-charge me-1"></i>开始简单加工</button>
+                    <input type="hidden" name="workflow" value="professional">
+                    <input type="hidden" name="operation" value="ai_rebuild">
+                    <button class="btn btn-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-stars me-1"></i>AI 一键生成二剪成片</button>
+                </form>
+                <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}" class="mb-2">
+                    <input type="hidden" name="workflow" value="professional">
+                    <button class="btn btn-outline-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-sliders me-1"></i>建立标准二剪项目</button>
                 </form>
                 <form method="post" action="{{ url_for('transfer_center_send_to_money_printer', job_id=job.id) }}">
-                    <input type="hidden" name="workflow" value="professional">
-                    <button class="btn btn-outline-light w-100"><i class="bi bi-sliders me-1"></i>进入专业加工</button>
+                    <input type="hidden" name="workflow" value="quick">
+                    <button class="btn btn-outline-light w-100" {% if not production_ready %}disabled{% endif %}><i class="bi bi-lightning me-1"></i>改用快速二剪</button>
                 </form>
                 {% endif %}
             </div>
@@ -470,35 +692,129 @@
                 <form method="post" action="{{ url_for('transfer_center_replace_review_media', job_id=job.id) }}" enctype="multipart/form-data" class="border-top pt-3 mt-2">
                     <label class="form-label fw-semibold">上传加工后导出的新成片</label>
                     <input class="form-control form-control-sm mb-2" type="file" name="recreated_video" accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" required>
-                    <div class="form-text mb-2">只有选择简单或专业加工时才需要上传。</div>
+                    <div class="form-text mb-2">只有选择快速或标准二剪时才需要上传。</div>
                     <button class="btn btn-sm btn-outline-primary w-100">替换成片并重新体检</button>
                 </form>
             </div>
         </div>
 
         <div class="card review-card mb-4 mode-section" data-mode-section="professional">
-            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">AI 专业加工草案</h2></div>
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">AI 二剪策划</h2></div>
             <div class="card-body">
-                <p class="small text-muted">需要重做内容时，可生成新观点、口播结构和镜头建议。</p>
+                <p class="small text-muted">一次生成开场钩子、解说结构、镜头动作、补充素材和平台版本。</p>
                 <form method="post" action="{{ url_for('transfer_center_generate_review', job_id=job.id) }}">
                     <button class="btn btn-outline-warning w-100" {% if not job.local_video_path %}disabled{% endif %}>
-                        <i class="bi bi-stars me-1"></i>生成专业加工草案
+                        <i class="bi bi-stars me-1"></i>{{ '按字幕重新生成精确策划' if job.local_video_path else '下载后可生成精确策划' }}
                     </button>
                 </form>
+                {% if recreation_plan.hook_options %}
+                <div class="mt-3">
+                    <div class="small fw-semibold mb-2">开场钩子</div>
+                    {% for item in recreation_plan.hook_options %}<div class="small border-start border-primary border-3 ps-2 mb-2">{{ item }}</div>{% endfor %}
+                </div>
+                {% endif %}
                 {% if recreation_plan.commentary_outline %}
+                <div class="small fw-semibold mt-3 mb-2">解说结构</div>
                 <ol class="small mt-3 mb-0 ps-3">
                     {% for item in recreation_plan.commentary_outline %}<li class="mb-2">{{ item }}</li>{% endfor %}
                 </ol>
                 {% endif %}
+                {% if recreation_plan.transcript_source %}
+                <div class="small text-muted mt-3">
+                    已读取字幕 {{ recreation_plan.transcript_source }}，共 {{ recreation_plan.transcript_cue_count }} 条时间码。
+                </div>
+                {% endif %}
+                {% if recreation_plan.timeline_sync %}
+                <div class="alert alert-success py-2 px-3 small mt-3 mb-0">
+                    时间线已同步到超级印钞机：{{ recreation_plan.timeline_sync.mapped_shots }} 个镜头已写入，
+                    {{ recreation_plan.timeline_sync.excluded_shots }} 个镜头已排除；未触发付费生成。
+                    {% if recreation_plan.timeline_sync.warnings %}
+                    <div class="mt-1">{{ recreation_plan.timeline_sync.warnings|join('；') }}</div>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if recreation_plan.material_fulfillment %}
+                <div class="alert {{ 'alert-success' if recreation_plan.material_fulfillment.status == 'completed' else ('alert-secondary' if recreation_plan.material_fulfillment.status == 'skipped' else 'alert-warning') }} py-2 px-3 small mt-2 mb-0">
+                    {% if recreation_plan.material_fulfillment.status == 'skipped' %}
+                    当前时间线没有需要替换的镜头，已保留按时间码裁剪的原片。
+                    {% else %}
+                    零成本画面补全：已完成 {{ recreation_plan.material_fulfillment.completed_shots }}/{{ recreation_plan.material_fulfillment.attempted_shots }} 个本地运镜，
+                    费用 ¥{{ '%.2f'|format(recreation_plan.material_fulfillment.cost_cny) }}。
+                    {% if recreation_plan.material_fulfillment.fallback_shots %}
+                    未成功的 {{ recreation_plan.material_fulfillment.fallback_shots }} 个镜头已自动保留原片。
+                    {% endif %}
+                    {% if recreation_plan.material_fulfillment.warnings %}
+                    <div class="mt-1">{{ recreation_plan.material_fulfillment.warnings|join('；') }}</div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if recreation_plan.segment_plan and job.local_video_path %}
+                <details class="border rounded-3 p-3 mt-3">
+                    <summary class="small fw-semibold">查看镜头执行表</summary>
+                    {% for segment in recreation_plan.segment_plan %}
+                    <div class="small border-top pt-2 mt-2">
+                        <div class="d-flex align-items-center flex-wrap gap-2">
+                            <strong>{{ segment.stage }}</strong>
+                            {% if segment.source_start is defined and segment.source_end is defined %}
+                            <span class="badge bg-light text-dark border">
+                                {{ '%.1f'|format(segment.source_start) }}–{{ '%.1f'|format(segment.source_end) }} 秒
+                            </span>
+                            {% endif %}
+                            {% if segment.action is defined %}
+                            <span class="badge {{ 'bg-danger' if segment.action == 'exclude' else ('bg-warning text-dark' if segment.action == 'replace' else 'bg-primary') }}">
+                                {{ {'keep':'保留','trim':'裁剪','replace':'替换画面','exclude':'排除'}.get(segment.action, '裁剪') }}
+                            </span>
+                            {% endif %}
+                        </div>
+                        <div class="text-muted mt-1">原片动作：{{ segment.source_action }}</div>
+                        <div class="mt-1">旁白：{{ segment.narration }}</div>
+                        <div class="text-muted mt-1">画面：{{ segment.visual }}</div>
+                    </div>
+                    {% endfor %}
+                </details>
+                {% endif %}
+                {% if recreation_plan.broll_suggestions and not recreation_plan.draft_storyboard %}
+                <div class="small fw-semibold mt-3 mb-2">B-roll / 补充画面</div>
+                <ul class="small mb-0 ps-3">
+                    {% for item in recreation_plan.broll_suggestions %}<li class="mb-2">{{ item }}</li>{% endfor %}
+                </ul>
+                {% endif %}
+                {% if recreation_plan.ai_visual_prompts %}
+                <details class="border rounded-3 p-3 mt-3">
+                    <summary class="small fw-semibold">查看 AI 画面提示词</summary>
+                    <ul class="small mt-2 mb-0 ps-3">
+                        {% for item in recreation_plan.ai_visual_prompts %}<li class="mb-2">{{ item }}</li>{% endfor %}
+                    </ul>
+                </details>
+                {% endif %}
             </div>
         </div>
+
+        {% if recreation_plan.platform_versions %}
+        <div class="card review-card mb-4 mode-section" data-mode-section="professional">
+            <div class="card-header bg-white py-3"><h2 class="h6 mb-0">分平台二剪版本</h2></div>
+            <div class="card-body">
+                {% for platform, version in recreation_plan.platform_versions.items() %}
+                <div class="route-card {% if not loop.first %}mt-2{% endif %}">
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>{{ {'bilibili':'B站','douyin':'抖音','youtube':'YouTube'}.get(platform, platform) }}</strong>
+                        <span class="badge bg-primary">{{ version.format }}</span>
+                    </div>
+                    <div class="small mt-2">{{ version.hook }}</div>
+                    <div class="small text-muted mt-1">{{ version.duration }}；{{ version.edit_note }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
 
         <div class="card review-card">
             <div class="card-header bg-white py-3"><h2 class="h6 mb-0">发布前确认</h2></div>
             <div class="card-body small">
                 <div class="check-line">来源作者、原账号或原视频链接已经记录。</div>
-                <div class="check-line">平台浮层可以清理，但来源标识仍需保留。</div>
-                <div class="check-line">直接转发已核对原片；选择加工时已上传新成片。</div>
+                <div class="check-line">来源状态只作提示，发布决定由人工确认。</div>
+                <div class="check-line">原片分发已核对成片；选择二剪时已上传新成片。</div>
                 <div class="check-line mb-0">目标平台和发布文案已经最后确认。</div>
             </div>
         </div>
@@ -514,45 +830,85 @@ document.addEventListener('DOMContentLoaded', () => {
     const contributionLabel = document.getElementById('contributionLabel');
     const publishConfirmed = document.getElementById('publishConfirmed');
     const recreationConfirmed = document.getElementById('recreationConfirmed');
+    const watermarkStatus = document.getElementById('watermarkStatus');
+    const materialChecks = Array.from(document.querySelectorAll('.material-ready-check'));
+    const materialReadyCount = document.getElementById('materialReadyCount');
+    const materialReadyBar = document.getElementById('materialReadyBar');
+    const toggleMaterialsReady = document.getElementById('toggleMaterialsReady');
     const hasRecreatedMedia = approveButton?.dataset.recreated === '1';
     const reviewForm = approveButton?.closest('form');
 
     function syncMode() {
-        const mode = modeInputs.find((input) => input.checked)?.value || 'direct';
+        const mode = modeInputs.find((input) => input.checked)?.value || 'professional';
         document.querySelectorAll('[data-mode-section]').forEach((section) => {
             const target = section.dataset.modeSection;
             section.hidden = !(target === mode || (target === 'processed' && mode !== 'direct'));
         });
-        if (publishConfirmed) publishConfirmed.required = mode === 'direct';
-        if (recreationConfirmed) recreationConfirmed.required = mode !== 'direct';
+        if (publishConfirmed) publishConfirmed.required = false;
+        if (recreationConfirmed) recreationConfirmed.required = false;
         if (contribution) {
-            contribution.required = mode !== 'direct';
-            contribution.minLength = mode === 'professional' ? 30 : 4;
+            contribution.required = false;
+            contribution.removeAttribute('minlength');
             contribution.placeholder = mode === 'professional'
-                ? '具体写明新增口播、观点、核验、案例或重组叙事。'
-                : '例如：改为竖屏、增加片头片尾和来源标识。';
+                ? '具体写明新增口播、观点、镜头重组、B-roll 或 AI 画面。'
+                : '例如：改为竖屏、压缩节奏、增加字幕和片头片尾。';
         }
         if (contributionLabel) {
             contributionLabel.textContent = mode === 'professional'
-                ? '实际成片增加的原创贡献'
-                : '本次简单加工内容';
+                ? '实际成片增加的二剪内容'
+                : '本次快速二剪内容';
         }
         if (approveButton) approveButton.disabled = mode !== 'direct' && !hasRecreatedMedia;
         if (approveLabel) {
             approveLabel.textContent = mode === 'direct'
-                ? '确认原片并开始发布'
-                : '确认加工成片并开始发布';
+                ? '确认原片分发并开始发布'
+                : '确认二剪成片并开始发布';
+        }
+    }
+
+    function syncMaterialProgress() {
+        if (!materialChecks.length) return;
+        const ready = materialChecks.filter((input) => input.checked || input.dataset.bindingReady === '1').length;
+        const manualChecks = materialChecks.filter((input) => input.dataset.bindingReady !== '1');
+        if (materialReadyCount) materialReadyCount.textContent = `${ready}/${materialChecks.length}`;
+        if (materialReadyBar) materialReadyBar.style.width = `${Math.round(100 * ready / materialChecks.length)}%`;
+        if (toggleMaterialsReady) {
+            toggleMaterialsReady.disabled = manualChecks.length === 0;
+            toggleMaterialsReady.textContent = manualChecks.length === 0
+                ? '均已绑定'
+                : (manualChecks.every((input) => input.checked) ? '取消手工勾选' : '手工全部就绪');
         }
     }
 
     modeInputs.forEach((input) => input.addEventListener('change', syncMode));
+    materialChecks.forEach((input) => input.addEventListener('change', syncMaterialProgress));
+    toggleMaterialsReady?.addEventListener('click', () => {
+        const manualChecks = materialChecks.filter((input) => input.dataset.bindingReady !== '1');
+        const nextState = !manualChecks.every((input) => input.checked);
+        manualChecks.forEach((input) => { input.checked = nextState; });
+        syncMaterialProgress();
+    });
     reviewForm?.addEventListener('submit', (event) => {
         if (event.submitter !== approveButton) return;
+        const mode = modeInputs.find((input) => input.checked)?.value || 'professional';
+        if (publishConfirmed) publishConfirmed.required = mode === 'direct';
+        if (recreationConfirmed) recreationConfirmed.required = mode !== 'direct';
+        if (watermarkStatus) watermarkStatus.required = true;
+        if (contribution && mode !== 'direct') {
+            contribution.required = true;
+            contribution.minLength = mode === 'professional' ? 30 : 4;
+        }
+        if (!reviewForm.checkValidity()) {
+            event.preventDefault();
+            reviewForm.reportValidity();
+            return;
+        }
         approveButton.disabled = true;
         approveButton.setAttribute('aria-busy', 'true');
         if (approveLabel) approveLabel.textContent = '正在提交到后台…';
     });
     syncMode();
+    syncMaterialProgress();
 });
 </script>
 {% endblock %}

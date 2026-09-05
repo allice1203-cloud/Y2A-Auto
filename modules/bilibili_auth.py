@@ -6,8 +6,9 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 from .bili_sdk import login_v2
 from .bili_sdk.exceptions import ArgsException
@@ -41,7 +42,9 @@ def _parse_cookies_text(content: str) -> Dict[str, str]:
     if content.startswith("# Netscape HTTP Cookie File") or "\t" in content:
         for line in content.splitlines():
             line = line.strip()
-            if not line or line.startswith("#"):
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+            elif not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
             if len(parts) >= 7:
@@ -245,8 +248,20 @@ def save_credential_to_file(credential: Credential, cookie_file: str) -> bool:
             ]
             write_netscape_cookie_file(netscape_items, "bilibili", cookie_file)
         else:
-            with open(cookie_file, "w", encoding="utf-8") as f:
-                json.dump(cookie_items, f, ensure_ascii=False, indent=2)
+            target_dir = os.path.dirname(cookie_file) or "."
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".bilibili-cookies-",
+                suffix=".tmp",
+                dir=target_dir,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(cookie_items, f, ensure_ascii=False, indent=2)
+                os.chmod(temp_path, 0o600)
+                os.replace(temp_path, cookie_file)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
     except (OSError, TypeError, ValueError) as exc:
         logger.error("保存 Bilibili 登录 Cookie 失败: %s", exc)
         return False
@@ -277,7 +292,11 @@ class BilibiliQrLoginSession:
             "mime_type": "image/png",
         }
 
-    def check_status(self, cookie_file: Optional[str] = None) -> Dict[str, object]:
+    def check_status(
+        self,
+        cookie_file: Optional[str] = None,
+        cookie_files: Optional[Iterable[str]] = None,
+    ) -> Dict[str, object]:
         if not self.generated:
             return {"status": "not_started"}
 
@@ -298,20 +317,32 @@ class BilibiliQrLoginSession:
                 payload["message"] = msg
                 return payload
 
-            if not cookie_file:
+            target_files = []
+            for target_file in [cookie_file, *(cookie_files or [])]:
+                normalized_path = str(target_file or "").strip()
+                if normalized_path and normalized_path not in target_files:
+                    target_files.append(normalized_path)
+
+            if not target_files:
                 payload["status"] = "failed"
                 payload["message"] = "Bilibili 登录成功，但未配置 Cookie 保存路径"
                 payload["cookies_saved"] = False
                 return payload
 
-            cookies_saved = save_credential_to_file(credential, cookie_file)
-            payload["cookies_saved"] = cookies_saved
-            if not cookies_saved:
+            saved_paths = [
+                target_file
+                for target_file in target_files
+                if save_credential_to_file(credential, target_file)
+            ]
+            payload["cookies_saved"] = len(saved_paths) == len(target_files)
+            payload["cookies_paths"] = saved_paths
+            if len(saved_paths) != len(target_files):
                 payload["status"] = "failed"
-                payload["message"] = "Bilibili 登录成功，但 Cookies 保存失败"
+                payload["message"] = "Bilibili 登录成功，但下载或投稿凭证同步保存失败"
                 return payload
 
-            payload["cookies_path"] = cookie_file
+            payload["cookies_path"] = target_files[0]
+            payload["cookies_synced"] = len(saved_paths) > 1
             payload["credential_ok"] = True
 
         return payload

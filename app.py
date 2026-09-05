@@ -14,7 +14,7 @@ import uuid
 import threading
 
 from datetime import datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file, session, Response, stream_with_context
 from functools import wraps
@@ -27,7 +27,12 @@ from modules.config_manager import load_config, update_config, reset_specific_co
 from modules.whisper_languages import WHISPER_LANGUAGE_LIST
 from modules.task_manager import add_task, start_task, get_task, get_tasks_paginated, get_tasks_by_status, update_task, delete_task, force_upload_task, TASK_STATES, clear_all_tasks, retry_failed_tasks, register_task_updates_listener, unregister_task_updates_listener, resolve_cookie_file_path
 from modules.acfun_auth import AcfunQrLoginSession
-from modules.bilibili_auth import BilibiliQrLoginSession
+from modules.bilibili_auth import (
+    BilibiliQrLoginSession,
+    load_credential_from_file,
+    save_credential_to_file,
+    validate_credential_remote,
+)
 from queue import Empty
 from modules.youtube_monitor import youtube_monitor
 from modules.transfer_center import (
@@ -40,11 +45,22 @@ from modules.transfer_center import (
     verify_youtube_credentials,
     youtube_connection_state,
 )
+from modules.douyin_openapi import (
+    build_douyin_authorization_url,
+    build_douyin_oauth_redirect_uri,
+    douyin_connection_state,
+    exchange_douyin_code,
+    load_douyin_app_credentials,
+    publish_douyin_video,
+    save_douyin_app_credentials,
+)
 from modules.content_recreation import (
     PROCESSING_MODES,
     RECREATION_MODES,
     WATERMARK_STATES,
     deserialize_plan,
+    format_material_checklist_text,
+    format_storyboard_text,
 )
 from modules.source_login import create_login_authorization
 from modules.speech_pipeline_settings import (
@@ -57,16 +73,41 @@ from modules.cookiecloud import (
     sync_cookiecloud_to_youtube_file,
     test_cookiecloud_youtube_sync,
 )
+from modules.config_snapshots import (
+    create_config_snapshot,
+    list_config_snapshots,
+    load_config_snapshot,
+)
+from modules.local_control import launchd_service_state, repair_money_printer
+from modules.local_proxy import configure_local_system_proxy
+from modules.health_watchdog import HealthWatchdog
+from modules.quick_setup import (
+    build_quick_setup_context,
+    get_preset,
+    preset_changes,
+    preview_changes,
+)
+from modules.task_intake import normalize_processing_preset, parse_source_url_batch
+from modules.telegram_intake import (
+    FileUpdateCheckpoint,
+    TARGET_PLATFORMS,
+    TelegramIntakeConfig,
+    TelegramIntakeService,
+    TelegramTaskRequest,
+)
 from modules.notifications import (
     CHANNEL_LABELS,
     CHANNEL_MESSAGE_PUSHER,
     CHANNEL_SERVERCHAN,
+    CHANNEL_TELEGRAM,
     CHANNEL_WECOM,
     EVENT_LOGIN_LOCKED,
     EVENT_LOGIN_SUCCESS,
     EVENT_QR_LOGIN_FAILED,
     EVENT_QR_LOGIN_SUCCESS,
+    EVENT_SYSTEM_WATCHDOG,
     NotificationEvent,
+    detect_latest_telegram_chat,
     emit_notification_event,
     get_global_notification_service,
     iter_enabled_channel_ids,
@@ -76,6 +117,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于flash消息
+
+_MONEY_PRINTER_WATCHDOG = None
+_TELEGRAM_INTAKE_SERVICE = None
+_TELEGRAM_INTAKE_THREAD = None
+_LOCAL_BACKGROUND_SERVICES_MANAGED = False
+_LOCAL_BACKGROUND_SERVICES_LOCK = threading.RLock()
+_LOCAL_PROXY_STATUS = {}
 
 
 @app.context_processor
@@ -713,10 +761,55 @@ def _persist_settings_uploads(form_data: dict, uploads: dict):
             continue
         save_name, config_key, relative_path, service_name = spec
         target_path = os.path.join(cookies_dir, save_name)
+        if field_name == 'bilibili_cookies_file':
+            upload_path = f"{target_path}.upload-{uuid.uuid4().hex}.tmp"
+            try:
+                with open(upload_path, 'wb') as target_file:
+                    target_file.write(payload.get('content') or b'')
+                os.chmod(upload_path, 0o600)
+                credential = load_credential_from_file(upload_path)
+                targets = _bilibili_cookie_paths({
+                    **load_config(),
+                    'BILIBILI_COOKIES_PATH': relative_path,
+                })
+                if not all(save_credential_to_file(credential, path) for path in targets):
+                    raise ValueError('Bilibili 下载或投稿凭证同步失败')
+            finally:
+                try:
+                    os.remove(upload_path)
+                except FileNotFoundError:
+                    pass
+            form_data[config_key] = relative_path
+            logger.info("Bilibili cookies 已上传并同步到下载与投稿凭证")
+            continue
         with open(target_path, 'wb') as target_file:
             target_file.write(payload.get('content') or b'')
         form_data[config_key] = relative_path
         logger.info(f"{service_name} cookies文件已上传并保存到: {target_path}")
+
+
+def _bilibili_cookie_paths(config_data=None, publish_path=None):
+    config_data = config_data if isinstance(config_data, dict) else load_config()
+    if not publish_path:
+        publish_path = resolve_cookie_file_path(
+            path_value=config_data.get('BILIBILI_COOKIES_PATH', 'cookies/bili_cookies.json'),
+            default_relative_path='cookies/bili_cookies.json',
+            service_name='Bilibili',
+            logger_obj=logger,
+            allow_json_txt_fallback=False,
+        )
+    source_path = os.path.join(get_app_subdir('cookies'), 'bilibili_unified_cookies.txt')
+    return list(dict.fromkeys([publish_path, source_path]))
+
+
+def _bilibili_account_state(config_data=None):
+    paths = _bilibili_cookie_paths(config_data)
+    ready = [os.path.isfile(path) and os.path.getsize(path) > 40 for path in paths]
+    return {
+        'publish_ready': bool(ready and ready[0]),
+        'source_ready': bool(len(ready) > 1 and ready[1]),
+        'all_ready': bool(ready) and all(ready),
+    }
 
 
 def _build_settings_progress_reporter(operation_id: str | None):
@@ -759,6 +852,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
 
     try:
         report('saving_config', '正在保存配置', '正在校验并写入设置。')
+        config_before_save = load_config()
         form_data.pop('save_operation_id', None)
 
         new_password = form_data.get('new_password')
@@ -795,10 +889,16 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             'NOTIFY_EVENT_TASK_ADDED',
             'NOTIFY_EVENT_TASK_COMPLETED',
             'NOTIFY_EVENT_TASK_FAILED',
+            'NOTIFY_EVENT_TRANSFER_REVIEW_READY',
+            'NOTIFY_EVENT_TRANSFER_PUBLISHED',
+            'NOTIFY_EVENT_TRANSFER_FAILED',
+            'NOTIFY_EVENT_SYSTEM_WATCHDOG',
             'NOTIFY_EVENT_LOGIN_SUCCESS',
             'NOTIFY_EVENT_LOGIN_LOCKED',
             'NOTIFY_EVENT_QR_LOGIN_SUCCESS',
             'NOTIFY_EVENT_QR_LOGIN_FAILED',
+            'NOTIFY_TELEGRAM_ENABLED',
+            'TRANSFER_TELEGRAM_INTAKE_ENABLED',
             'NOTIFY_WECOM_ENABLED',
             'NOTIFY_SERVERCHAN_ENABLED',
             'NOTIFY_MESSAGE_PUSHER_ENABLED',
@@ -904,6 +1004,15 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             form_data['SUBTITLE_FONT_NAME'] = str(form_data['SUBTITLE_FONT_NAME']).strip()
 
         _persist_settings_uploads(form_data, uploads)
+        try:
+            create_config_snapshot(config_before_save, reason='settings_save')
+        except Exception:
+            logger.exception('创建脱敏设置快照失败')
+            _append_settings_message(
+                messages,
+                'warning',
+                '设置将继续保存，但本次无法创建撤销快照。',
+            )
         updated_config = update_config(form_data)
 
         try:
@@ -915,6 +1024,7 @@ def _perform_settings_save(form_data: dict, uploads: dict, operation_id: str | N
             logger.warning(f"同步任务处理器配置失败: {e}")
 
         _sync_notification_service(updated_config)
+        _refresh_local_background_services(updated_config)
         _append_notification_config_warnings(messages, updated_config)
 
         try:
@@ -1723,7 +1833,8 @@ def tasks():
                          pagination=pagination_data,
                          config=config,
                          transfer_jobs=center.list_jobs(limit=100),
-                         transfer_stats=center.get_dashboard_stats())
+                         transfer_stats=center.get_dashboard_stats(),
+                         douyin_openapi_state=douyin_connection_state())
 
 
 @app.route('/tasks/transfer-state')
@@ -1745,6 +1856,8 @@ def transfer_task_state():
                 'youtube_publish_status': job.get('youtube_publish_status') or '',
                 'bilibili_publish_status': job.get('bilibili_publish_status') or '',
                 'douyin_publish_status': job.get('douyin_publish_status') or '',
+                'backup_status': job.get('backup_status') or 'pending',
+                'backup_error': job.get('backup_error') or '',
                 'error_message': job.get('error_message') or '',
                 'updated_at': job.get('updated_at') or '',
             }
@@ -1852,8 +1965,6 @@ def tasks_event_stream():
     response = Response(stream_with_context(generate()), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'
-    response.headers['Connection'] = 'keep-alive'
-    response.headers['Transfer-Encoding'] = 'chunked'
     return response
 
 @app.route('/manual_review')
@@ -2149,23 +2260,48 @@ def add_task_via_extension():
 @login_required
 def add_task_route():
     """统一使用 yt-dlp 下载，再进入审核与多平台发布链路。"""
-    source_url = str(
-        request.form.get('source_url')
+    source_value = str(
+        request.form.get('source_urls')
+        or request.form.get('source_url')
         or request.form.get('youtube_url')
         or ''
     ).strip()
-    if not source_url:
+    if not source_value:
         flash('视频链接不能为空', 'danger')
         return redirect(url_for('tasks'))
 
     try:
         targets = _transfer_target_list(request.form)
-        job_id = _transfer_center().add_manual_job(source_url, targets)
-        _transfer_center().prepare_job_async(job_id, publish_after=False)
-        flash(
-            'yt-dlp 下载任务已创建；素材会保存在服务器，完成后进入确认与发布。',
-            'success',
+        processing_mode = normalize_processing_preset(
+            request.form.get('processing_mode') or session.get('last_processing_preset') or ''
         )
+        source_urls = parse_source_url_batch(source_value, limit=20)
+        if not targets:
+            raise ValueError('至少选择一个发布平台')
+        center = _transfer_center()
+        created = []
+        failures = []
+        for source_url in source_urls:
+            try:
+                job_id = center.add_manual_job(
+                    source_url,
+                    targets,
+                    processing_mode=processing_mode,
+                )
+                center.prepare_job_async(job_id, publish_after=False)
+                created.append(job_id)
+            except Exception as exc:
+                failures.append(f'{source_url[:60]}：{exc}')
+        session['last_transfer_targets'] = targets
+        session['last_processing_preset'] = processing_mode
+        if not created:
+            raise ValueError(failures[0] if failures else '没有创建任何任务')
+        message = (
+            f'已创建 {len(created)} 条任务；素材会保存在当前 MacBook，完成后进入确认与发布。'
+        )
+        if failures:
+            message += f' 另有 {len(failures)} 条未创建，请检查来源与目标是否重复。'
+        flash(message, 'warning' if failures else 'success')
     except Exception as exc:
         flash(f'创建搬运任务失败：{exc}', 'danger')
     return redirect(url_for('tasks'))
@@ -2476,6 +2612,7 @@ def get_path_debug_info(file_path):
         return {'error': _public_health_check_error_message('路径')}
 
 @app.route('/system_health')
+@login_required
 def system_health():
     """系统健康检查 - 增强Docker环境兼容性"""
     from modules.task_manager import get_db_connection, validate_cookies, resolve_cookie_file_path
@@ -2501,12 +2638,32 @@ def system_health():
         'bilibili_cookies': {'status': 'unknown', 'message': ''},
         'stuck_tasks': {'count': 0, 'tasks': []},
         'recent_errors': [],
-        'docker_volumes': {}
+        'docker_volumes': {},
+        'transfer_center': {},
+        'money_printer_watchdog': {},
+        'telegram_intake': {},
+        'local_proxy': {},
     }
     
     # Docker环境特殊检查
     if is_docker:
         health_status['docker_volumes'] = check_docker_volumes()
+
+    try:
+        health_status['transfer_center'] = _transfer_center().runtime_health()
+    except Exception:
+        logger.exception("搬运中心运行状态检查失败")
+        health_status['transfer_center'] = {
+            'status': 'error',
+            'message': _public_health_check_error_message('搬运中心'),
+        }
+    health_status['money_printer_watchdog'] = (
+        _MONEY_PRINTER_WATCHDOG.status()
+        if _MONEY_PRINTER_WATCHDOG
+        else {'running': False, 'last_event': 'disabled'}
+    )
+    health_status['telegram_intake'] = _telegram_intake_status()
+    health_status['local_proxy'] = dict(_LOCAL_PROXY_STATUS)
     
     # 检查数据库
     try:
@@ -2786,6 +2943,7 @@ def settings():
         whisper_languages=WHISPER_LANGUAGE_LIST,
         acfun_partition_mapping=acfun_partition_mapping,
         bilibili_partition_mapping=bilibili_partition_mapping,
+        bilibili_account_state=_bilibili_account_state(config),
         builtin_prompts=builtin_prompts,
     )
 
@@ -2878,7 +3036,7 @@ def settings_test_notification():
     else:
         channel = str(request.form.get('channel') or '').strip()
 
-    if channel not in (CHANNEL_WECOM, CHANNEL_SERVERCHAN, CHANNEL_MESSAGE_PUSHER):
+    if channel not in (CHANNEL_TELEGRAM, CHANNEL_WECOM, CHANNEL_SERVERCHAN, CHANNEL_MESSAGE_PUSHER):
         return jsonify({'success': False, 'message': '不支持的通知渠道'}), 400
 
     try:
@@ -2899,6 +3057,28 @@ def settings_test_notification():
     except Exception:
         logger.exception("测试通知发送失败，渠道=%s", channel)
         return jsonify({'success': False, 'message': '测试通知发送失败，请稍后重试'}), 500
+
+
+@app.route('/settings/notifications/telegram/detect-chat', methods=['POST'])
+@login_required
+def settings_detect_telegram_chat():
+    data = request.get_json(silent=True) or {}
+    bot_token = str(data.get('bot_token') or '').strip()
+    if not bot_token:
+        bot_token = str(load_config().get('NOTIFY_TELEGRAM_BOT_TOKEN') or '').strip()
+
+    try:
+        chat = detect_latest_telegram_chat(bot_token)
+        return jsonify({
+            'success': True,
+            'message': f"已找到 Telegram 会话：{chat['display_name']}",
+            'chat_id': chat['chat_id'],
+        })
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except Exception:
+        logger.exception("自动获取 Telegram Chat ID 失败")
+        return jsonify({'success': False, 'message': '读取 Telegram 会话失败，请检查 Bot Token 后重试'}), 502
 
 
 @app.route('/settings/cookiecloud/test', methods=['POST'])
@@ -3064,8 +3244,9 @@ def bilibili_qrcode_start():
         default_relative_path='cookies/bili_cookies.json',
         service_name='Bilibili',
         logger_obj=logger,
-        allow_json_txt_fallback=False
+        allow_json_txt_fallback=False,
     )
+    cookie_paths = _bilibili_cookie_paths(config, publish_path=cookie_path)
 
     try:
         session_id, qr_session = _create_bilibili_qr_session()
@@ -3076,7 +3257,8 @@ def bilibili_qrcode_start():
             'image_base64': qr_data.get('image_base64', ''),
             'mime_type': qr_data.get('mime_type', 'image/png'),
             'expires_in': _BILIBILI_QR_SESSION_TTL_SECONDS,
-            'cookie_path': cookie_path,
+            'cookie_path': cookie_paths[0],
+            'cookie_paths': cookie_paths,
         })
     except Exception as e:
         logger.error(f"发起 bilibili 二维码登录失败: {e}")
@@ -3096,11 +3278,12 @@ def bilibili_qrcode_status(session_id):
         default_relative_path='cookies/bili_cookies.json',
         service_name='Bilibili',
         logger_obj=logger,
-        allow_json_txt_fallback=False
+        allow_json_txt_fallback=False,
     )
+    cookie_paths = _bilibili_cookie_paths(config, publish_path=cookie_path)
 
     try:
-        status_data = qr_session.check_status(cookie_file=cookie_path)
+        status_data = qr_session.check_status(cookie_files=cookie_paths)
         _emit_qr_login_event_once(
             _BILIBILI_QR_SESSIONS,
             _BILIBILI_QR_SESSION_LOCK,
@@ -3287,6 +3470,10 @@ def cleanup_downloads(hours: int):
         bytes_freed = 0
 
         for entry in os.listdir(downloads_dir):
+            # 搬运任务有独立的终态、115 备份校验和保留期管理，
+            # 不得由通用下载清理按目录时间直接删除。
+            if entry == 'transfer':
+                continue
             path = os.path.join(downloads_dir, entry)
             try:
                 if os.path.isdir(path):
@@ -3424,9 +3611,191 @@ def _transfer_center():
     return get_transfer_center(config_provider=load_config)
 
 
+def _watchdog_notification(message):
+    """Send a fixed, credential-free watchdog event through configured channels."""
+
+    logger.warning("%s", str(message or "本地制作端健康状态变更"))
+    try:
+        recovered = "已执行" in str(message or "")
+        emit_notification_event(
+            NotificationEvent(
+                event_type=EVENT_SYSTEM_WATCHDOG,
+                payload={"status": "recovered" if recovered else "needs_attention"},
+            )
+        )
+    except Exception:
+        logger.debug("本地制作端 watchdog 通知未启用或不可用", exc_info=True)
+
+
+def _telegram_default_targets(config):
+    raw_targets = str(
+        config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_TARGETS") or "bilibili"
+    )
+    requested = {
+        item.strip().lower() for item in raw_targets.split(",") if item.strip()
+    }
+    targets = tuple(target for target in TARGET_PLATFORMS if target in requested)
+    return targets or ("bilibili",)
+
+
+def _create_and_prepare_telegram_task(task_request: TelegramTaskRequest):
+    center = _transfer_center()
+    job_id = center.add_manual_job(
+        task_request.source_url,
+        list(task_request.target_platforms),
+        processing_mode=task_request.processing_mode,
+    )
+    if not center.prepare_job_async(job_id, publish_after=False):
+        raise RuntimeError("任务已创建，但暂时无法进入准备队列")
+    return job_id
+
+
+def _telegram_intake_status(config=None):
+    config = config if isinstance(config, dict) else load_config()
+    enabled = _coerce_checkbox_value(
+        config.get("TRANSFER_TELEGRAM_INTAKE_ENABLED", True)
+    )
+    credentials_ready = bool(
+        str(config.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+        and str(config.get("NOTIFY_TELEGRAM_CHAT_ID") or "").strip()
+    )
+    service = _TELEGRAM_INTAKE_SERVICE
+    return {
+        "enabled": enabled,
+        "credentials_ready": credentials_ready,
+        "running": bool(service and service.running),
+        "last_error_code": str(getattr(service, "last_error_code", "") or ""),
+        "default_processing_mode": str(
+            config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE") or "professional"
+        ),
+        "default_target_platforms": list(_telegram_default_targets(config)),
+    }
+
+
+def _stop_local_background_services():
+    global _MONEY_PRINTER_WATCHDOG
+    global _TELEGRAM_INTAKE_SERVICE
+    global _TELEGRAM_INTAKE_THREAD
+
+    with _LOCAL_BACKGROUND_SERVICES_LOCK:
+        service = _TELEGRAM_INTAKE_SERVICE
+        thread = _TELEGRAM_INTAKE_THREAD
+        watchdog = _MONEY_PRINTER_WATCHDOG
+        _TELEGRAM_INTAKE_SERVICE = None
+        _TELEGRAM_INTAKE_THREAD = None
+        _MONEY_PRINTER_WATCHDOG = None
+    if service:
+        service.stop()
+    if thread and thread is not threading.current_thread():
+        thread.join(timeout=16)
+    if watchdog:
+        watchdog.stop(timeout=5)
+
+
+def _refresh_local_background_services(config=None):
+    """Apply local watchdog and Telegram intake settings without opening ports."""
+
+    global _MONEY_PRINTER_WATCHDOG
+    global _TELEGRAM_INTAKE_SERVICE
+    global _TELEGRAM_INTAKE_THREAD
+
+    if not _LOCAL_BACKGROUND_SERVICES_MANAGED:
+        return {
+            "watchdog_running": False,
+            "telegram_intake_running": False,
+            "skipped": True,
+        }
+
+    config = config if isinstance(config, dict) else load_config()
+    _stop_local_background_services()
+    center = _transfer_center()
+
+    watchdog = None
+    if _coerce_checkbox_value(config.get("TRANSFER_MPT_WATCHDOG_ENABLED", True)):
+        try:
+            watchdog = HealthWatchdog(
+                center.money_printer_health,
+                lambda: repair_money_printer(center.money_printer_health),
+                notification_callback=_watchdog_notification,
+                check_interval_seconds=max(
+                    10,
+                    int(config.get("TRANSFER_MPT_WATCHDOG_INTERVAL_SECONDS") or 60),
+                ),
+            )
+            watchdog.start()
+        except Exception:
+            watchdog = None
+            logger.exception("本地制作端 watchdog 启动失败")
+
+    telegram_service = None
+    telegram_thread = None
+    intake_enabled = _coerce_checkbox_value(
+        config.get("TRANSFER_TELEGRAM_INTAKE_ENABLED", True)
+    )
+    bot_token = str(config.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = str(config.get("NOTIFY_TELEGRAM_CHAT_ID") or "").strip()
+    if intake_enabled and bot_token and chat_id:
+        try:
+            checkpoint = FileUpdateCheckpoint(
+                os.path.join(get_app_subdir("db"), "telegram_intake_checkpoint.json")
+            )
+            telegram_service = TelegramIntakeService(
+                TelegramIntakeConfig(
+                    bot_token=bot_token,
+                    allowed_chat_id=chat_id,
+                    default_processing_mode=str(
+                        config.get("TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE")
+                        or "professional"
+                    ),
+                    default_target_platforms=_telegram_default_targets(config),
+                    connect_timeout_seconds=5,
+                    poll_timeout_seconds=max(
+                        1,
+                        min(
+                            50,
+                            int(
+                                config.get(
+                                    "TRANSFER_TELEGRAM_INTAKE_POLL_TIMEOUT_SECONDS"
+                                )
+                                or 25
+                            ),
+                        ),
+                    ),
+                    # 本机开机时 VPN/代理可能晚于应用就绪。0 表示持续
+                    # 退避重试，恢复网络后自动接回，不需要人工重启应用。
+                    max_consecutive_failures=0,
+                    discard_pending_on_start=checkpoint.get() is None,
+                ),
+                _create_and_prepare_telegram_task,
+                checkpoint=checkpoint,
+                error_reporter=lambda code: logger.warning(
+                    "Telegram 快速入口状态：%s", code
+                ),
+            )
+            telegram_thread = threading.Thread(
+                target=telegram_service.run_forever,
+                name="telegram-transfer-intake",
+                daemon=True,
+            )
+            telegram_thread.start()
+        except Exception:
+            telegram_service = None
+            telegram_thread = None
+            logger.exception("Telegram 快速入口启动失败")
+
+    with _LOCAL_BACKGROUND_SERVICES_LOCK:
+        _MONEY_PRINTER_WATCHDOG = watchdog
+        _TELEGRAM_INTAKE_SERVICE = telegram_service
+        _TELEGRAM_INTAKE_THREAD = telegram_thread
+    return {
+        "watchdog_running": bool(watchdog and watchdog.status().get("running")),
+        "telegram_intake_running": bool(telegram_service and telegram_service.running),
+    }
+
+
 def _source_cookie_path(platform):
     filenames = {
-        'bilibili': 'bilibili_source_cookies.txt',
+        'bilibili': 'bilibili_unified_cookies.txt',
         'douyin': 'douyin_cookies.txt',
         'tiktok': 'tiktok_cookies.txt',
     }
@@ -3459,6 +3828,270 @@ def _transfer_target_list(form):
     ]
 
 
+def _quick_ai_health(config):
+    import requests
+
+    api_key = str(config.get('OPENAI_API_KEY') or '').strip()
+    base_url = str(config.get('OPENAI_BASE_URL') or '').strip().rstrip('/')
+    model_name = str(config.get('OPENAI_MODEL_NAME') or '').strip()
+    if not api_key or not base_url or not model_name:
+        return {
+            'ready': False,
+            'message': 'AI 接口、密钥或模型名尚未配置完整',
+        }
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        return {'ready': False, 'message': 'AI 接口地址格式无效'}
+
+    session_obj = requests.Session()
+    if parsed.hostname in {'127.0.0.1', 'localhost', '::1'}:
+        session_obj.trust_env = False
+    try:
+        response = session_obj.get(
+            f'{base_url}/models',
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=(3, 8),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        models = payload.get('data') if isinstance(payload, dict) else None
+        available_ids = {
+            str(item.get('id') or '').strip()
+            for item in (models or [])
+            if isinstance(item, dict)
+        }
+        if available_ids and model_name not in available_ids:
+            return {
+                'ready': False,
+                'message': '模型服务可连接，但当前模型名不在可用列表中',
+            }
+        return {
+            'ready': True,
+            'message': 'AI 模型服务已通过只读连通检查',
+            'model': model_name,
+        }
+    except Exception:
+        return {
+            'ready': False,
+            'message': 'AI 模型服务暂不可用，请检查本地模型或接口设置',
+        }
+
+
+def _quick_telegram_health(config):
+    enabled = bool(config.get('NOTIFY_TELEGRAM_ENABLED'))
+    token_ready = bool(str(config.get('NOTIFY_TELEGRAM_BOT_TOKEN') or '').strip())
+    chat_ready = bool(str(config.get('NOTIFY_TELEGRAM_CHAT_ID') or '').strip())
+    intake = _telegram_intake_status(config)
+    intake_required = bool(intake.get('enabled'))
+    ready = enabled and token_ready and chat_ready and (
+        not intake_required or bool(intake.get('running'))
+    )
+    return {
+        'ready': ready,
+        'message': (
+            'Telegram Bot 已连接，可直接发链接创建搬运任务'
+            if ready
+            else 'Telegram 通知或快速任务入口尚未完整启用'
+        ),
+        'intake_running': bool(intake.get('running')),
+        'default_processing_mode': intake.get('default_processing_mode'),
+        'default_target_platforms': intake.get('default_target_platforms'),
+    }
+
+
+def _quick_setup_health_results(config=None):
+    config = config if isinstance(config, dict) else load_config()
+    center = _transfer_center()
+    bilibili_state = _bilibili_account_state(config)
+    bilibili_remote_ready = False
+    bilibili_message = 'B站凭据文件尚未准备'
+    if bilibili_state.get('publish_ready'):
+        try:
+            credential = load_credential_from_file(_bilibili_cookie_paths(config)[0])
+            bilibili_remote_ready, bilibili_message = validate_credential_remote(credential)
+        except Exception:
+            bilibili_message = 'B站登录态校验失败，请重新扫码登录'
+
+    money_printer = center.money_printer_health()
+    try:
+        launchd_state = launchd_service_state('money_printer')
+        money_printer['service_running'] = bool(launchd_state.get('running'))
+    except Exception:
+        money_printer['service_running'] = False
+    money_printer['watchdog'] = (
+        _MONEY_PRINTER_WATCHDOG.status()
+        if _MONEY_PRINTER_WATCHDOG
+        else {'running': False, 'last_event': 'disabled'}
+    )
+
+    douyin_state = douyin_connection_state()
+    youtube_state = youtube_connection_state()
+    return {
+        'bilibili_source': {
+            'ready': bool(bilibili_remote_ready and bilibili_state.get('source_ready')),
+            'message': bilibili_message,
+        },
+        'bilibili_publish': {
+            'ready': bool(bilibili_remote_ready and bilibili_state.get('publish_ready')),
+            'message': bilibili_message,
+        },
+        'douyin_source': {
+            'ready': _source_cookie_ready('douyin'),
+            'message': (
+                '抖音来源 Cookie 已准备，将在实际下载时再次校验'
+                if _source_cookie_ready('douyin')
+                else '抖音来源账号尚未登录'
+            ),
+        },
+        'douyin_publish': {
+            'connected': bool(douyin_state.get('connected')),
+            'message': str(douyin_state.get('message') or '抖音发布账号待检查'),
+        },
+        'youtube_publish': {
+            'connected': bool(youtube_state.get('connected')),
+            'message': (
+                f"已记录频道：{youtube_state.get('channel_title') or '未命名频道'}；发布时会再次验证"
+                if youtube_state.get('connected')
+                else str(youtube_state.get('message') or 'YouTube 发布频道尚未连接')
+            ),
+        },
+        'ai': _quick_ai_health(config),
+        'money_printer': money_printer,
+        'backup_115': center.backup_health(),
+        'telegram': _quick_telegram_health(config),
+    }
+
+
+def _quick_setup_request_payload():
+    return (request.get_json(silent=True) or {}) if request.is_json else request.form
+
+
+@app.route('/quick-setup')
+@login_required
+def quick_setup():
+    config = load_config()
+    preset_id = str(
+        request.args.get('preset')
+        or session.get('quick_setup_preset')
+        or 'personal_stable'
+    ).strip()
+    if not get_preset(preset_id):
+        preset_id = 'personal_stable'
+    cached_health = session.get('quick_setup_health')
+    if not isinstance(cached_health, dict):
+        cached_health = {}
+    context = build_quick_setup_context(
+        config,
+        preset_id,
+        cached_health,
+        {
+            'select_preset': url_for('quick_setup_select'),
+            'health': url_for('quick_setup_health'),
+            'apply': url_for('quick_setup_apply'),
+        },
+    )
+    context['config_snapshots'] = list_config_snapshots()
+    context['quick_setup_component_actions'] = {
+        'bilibili_source': {'url': url_for('settings') + '#vtab-accounts', 'label': '去登录'},
+        'bilibili_publish': {'url': url_for('settings') + '#vtab-accounts', 'label': '去登录'},
+        'douyin_source': {'url': url_for('transfer_center_index') + '#connections', 'label': '去连接'},
+        'douyin_publish': {'url': url_for('transfer_center_index') + '#connections', 'label': '去授权'},
+        'youtube_publish': {'url': url_for('transfer_center_index') + '#connections', 'label': '去连接'},
+        'ai': {'url': url_for('settings') + '#vtab-ai', 'label': '检查设置'},
+        'money_printer': {'url': url_for('quick_setup_repair_money_printer'), 'label': '安全修复', 'method': 'post'},
+        'backup_115': {'url': url_for('transfer_center_index') + '#connections', 'label': '检查备份'},
+        'telegram': {'url': url_for('settings') + '#vtab-notifications', 'label': '设置通知'},
+    }
+    return render_template('quick_setup.html', **context)
+
+
+@app.route('/quick-setup/select', methods=['POST'])
+@login_required
+def quick_setup_select():
+    payload = _quick_setup_request_payload()
+    preset_id = str(payload.get('preset_id') or '').strip()
+    if not get_preset(preset_id):
+        flash('请选择有效的快速配置预设', 'danger')
+        return redirect(url_for('quick_setup'))
+    session['quick_setup_preset'] = preset_id
+    session.pop('quick_setup_health', None)
+    return redirect(url_for('quick_setup'))
+
+
+@app.route('/quick-setup/health', methods=['POST'])
+@login_required
+def quick_setup_health():
+    results = _quick_setup_health_results()
+    session['quick_setup_health'] = results
+    if request.is_json:
+        return jsonify({'success': True, 'results': results})
+    flash('一键体检已完成，页面只显示状态，不显示任何凭据。', 'success')
+    return redirect(url_for('quick_setup') + '#quick-verify')
+
+
+@app.route('/quick-setup/apply', methods=['POST'])
+@login_required
+def quick_setup_apply():
+    payload = _quick_setup_request_payload()
+    preset_id = str(payload.get('preset_id') or session.get('quick_setup_preset') or '').strip()
+    try:
+        changes = preset_changes(preset_id)
+        current = load_config()
+        preview = preview_changes(current, changes)
+        if not preview.get('valid'):
+            raise ValueError('快速配置包含无效设置')
+        if preview.get('changed_count'):
+            create_config_snapshot(current, reason=f'apply:{preset_id}')
+            updated = update_config(preview['normalized_changes'])
+            configure_app(app, updated)
+            _refresh_local_background_services(updated)
+        session['quick_setup_preset'] = preset_id
+        results = _quick_setup_health_results(load_config())
+        session['quick_setup_health'] = results
+        message = (
+            f"已应用 {preview.get('changed_count', 0)} 项安全设置；账号与凭据未被修改。"
+        )
+        if request.is_json:
+            return jsonify({'success': True, 'message': message, 'preview': preview})
+        flash(message, 'success')
+    except ValueError as exc:
+        if request.is_json:
+            return jsonify({'success': False, 'message': str(exc)}), 400
+        flash(str(exc), 'danger')
+    return redirect(url_for('quick_setup'))
+
+
+@app.route('/quick-setup/repair/money-printer', methods=['POST'])
+@login_required
+def quick_setup_repair_money_printer():
+    try:
+        result = repair_money_printer(_transfer_center().money_printer_health)
+        session['quick_setup_health'] = _quick_setup_health_results()
+        category = 'success' if result.get('success') else 'warning'
+        flash(str(result.get('message') or '制作端修复已完成'), category)
+    except Exception:
+        logger.exception('本地制作端安全修复失败')
+        flash('制作端修复失败，请查看本地日志。', 'danger')
+    return redirect(url_for('quick_setup') + '#quick-verify')
+
+
+@app.route('/quick-setup/restore/<snapshot_id>', methods=['POST'])
+@login_required
+def quick_setup_restore(snapshot_id):
+    try:
+        current = load_config()
+        restored = load_config_snapshot(snapshot_id)
+        create_config_snapshot(current, reason=f'before_restore:{snapshot_id}')
+        updated = update_config(restored)
+        configure_app(app, updated)
+        _refresh_local_background_services(updated)
+        session.pop('quick_setup_health', None)
+        flash('已撤销到所选脱敏设置快照；账号、Token 和 Cookie 均未改变。', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+    return redirect(url_for('quick_setup') + '#quick-processing')
+
+
 def _transfer_youtube_redirect_uri():
     config = load_config()
     public_base_url = str(
@@ -3483,23 +4116,61 @@ def _transfer_youtube_redirect_uri():
     )
 
 
+def _transfer_douyin_redirect_uri():
+    config = load_config()
+    public_base_url = str(
+        os.environ.get('TRANSFER_PUBLIC_BASE_URL')
+        or config.get('TRANSFER_PUBLIC_BASE_URL')
+        or ''
+    ).strip()
+    forwarded_host = str(
+        request.headers.get('X-Forwarded-Host')
+        or request.host
+        or ''
+    )
+    forwarded_scheme = str(
+        request.headers.get('X-Forwarded-Proto')
+        or request.scheme
+        or 'http'
+    )
+    return build_douyin_oauth_redirect_uri(
+        public_base_url,
+        request_host=forwarded_host,
+        request_scheme=forwarded_scheme,
+    )
+
+
 @app.route('/transfer-center')
 @login_required
 def transfer_center_index():
     center = _transfer_center()
     config = load_config()
     youtube_state = youtube_connection_state()
+    douyin_state = douyin_connection_state()
+    bilibili_state = _bilibili_account_state(config)
     return render_template(
         'transfer_center.html',
         rules=center.list_rules(),
+        allowed_sources=center.list_allowed_sources(),
+        hot_candidates=center.list_hot_candidates(limit=80),
+        archive_summaries=center.list_archive_summaries(),
+        published_jobs=center.list_published_jobs(limit=100),
+        performance=center.get_performance_summary(days=7),
+        performance_sync=center.get_performance_sync_status(),
         transfer_config={
             'x_mode': 'manual_free',
             'youtube_connected': youtube_state.get('connected', False),
             'youtube_status': youtube_state.get('status', 'disconnected'),
             'youtube_channel_title': youtube_state.get('channel_title', ''),
             'youtube_message': youtube_state.get('message', ''),
-            'bilibili_cookies_ready': _source_cookie_ready('bilibili'),
+            'bilibili_cookies_ready': bilibili_state.get('all_ready', False),
             'douyin_cookies_ready': _source_cookie_ready('douyin'),
+            'douyin_openapi_connected': douyin_state.get('connected', False),
+            'douyin_openapi_configured': douyin_state.get('app_configured', False),
+            'douyin_openapi_status': douyin_state.get('status', 'unconfigured'),
+            'douyin_openapi_message': douyin_state.get('message', ''),
+            'douyin_client_key': douyin_state.get('client_key', ''),
+            'douyin_redirect_uri': _transfer_douyin_redirect_uri(),
             'tiktok_cookies_ready': _source_cookie_ready('tiktok'),
             'platform_catalog': PLATFORM_CATALOG,
             'source_login_helper_ready': bool(_source_login_helper_secret()),
@@ -3507,6 +4178,166 @@ def transfer_center_index():
             'youtube_category_id': config.get('TRANSFER_YOUTUBE_CATEGORY_ID', '22'),
         },
     )
+
+
+@app.route('/transfer-center/performance', methods=['POST'])
+@login_required
+def transfer_center_record_performance():
+    try:
+        _transfer_center().record_performance(
+            str(request.form.get('job_id') or ''),
+            {
+                'platform': request.form.get('platform'),
+                'views': request.form.get('views'),
+                'likes': request.form.get('likes'),
+                'comments': request.form.get('comments'),
+                'shares': request.form.get('shares'),
+                'followers_delta': request.form.get('followers_delta'),
+                'impressions': request.form.get('impressions'),
+                'average_view_duration': request.form.get('average_view_duration'),
+                'completion_rate': request.form.get('completion_rate'),
+                'retention_3s': request.form.get('retention_3s'),
+                'revenue_cny': request.form.get('revenue_cny'),
+                'production_cost_cny': request.form.get('production_cost_cny'),
+                'violation_count': request.form.get('violation_count'),
+                'source_visual_ratio': request.form.get('source_visual_ratio'),
+                'local_visual_ratio': request.form.get('local_visual_ratio'),
+                'ai_visual_ratio': request.form.get('ai_visual_ratio'),
+                'hook_type': request.form.get('hook_type'),
+                'voice_type': request.form.get('voice_type'),
+                'monetization_status': request.form.get('monetization_status'),
+                'note': request.form.get('note'),
+            },
+        )
+        flash('发布效果已记录，7 天汇总和下一轮建议已更新。', 'success')
+    except Exception as exc:
+        flash(f'记录发布效果失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/performance/sync', methods=['POST'])
+@login_required
+def transfer_center_sync_performance():
+    try:
+        result = _transfer_center().sync_performance_metrics()
+        message = (
+            f"平台数据同步完成：更新 {result['synced']} 条，"
+            f"无变化 {result['unchanged']} 条"
+        )
+        if result['failed']:
+            first_error = str((result.get('errors') or [{}])[0].get('message') or '')
+            message += f"，失败 {result['failed']} 条"
+            if first_error:
+                message += f"（{first_error}）"
+        if result['manual']:
+            message += f"；另有 {result['manual']} 条需手工补录"
+        flash(message + '。', 'warning' if result['failed'] else 'success')
+    except Exception as exc:
+        flash(f'同步平台数据失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/candidates/refresh', methods=['POST'])
+@login_required
+def transfer_center_refresh_candidates():
+    try:
+        result = _transfer_center().refresh_hot_candidates(
+            request.form.get('platform', 'all'),
+            request.form.get('limit', 20),
+        )
+        flash(result['message'], 'success' if result['success'] else 'warning')
+    except Exception as exc:
+        flash(f'刷新热点候选失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/candidates/growth', methods=['POST'])
+@login_required
+def transfer_center_generate_growth_candidates():
+    try:
+        result = _transfer_center().generate_growth_followup_candidates()
+        total = int(result['created']) + int(result['updated'])
+        if total:
+            flash(
+                f"已生成/更新 {total} 条增长续作候选，确认后才会进入制作任务。",
+                'success',
+            )
+        else:
+            flash('暂无达到续作条件的定时样本。', 'warning')
+    except Exception as exc:
+        flash(f'生成增长续作候选失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/candidates/<candidate_id>/promote', methods=['POST'])
+@login_required
+def transfer_center_promote_candidate(candidate_id):
+    try:
+        job_id = _transfer_center().promote_hot_candidate(
+            candidate_id,
+            _transfer_target_list(request.form),
+        )
+        job = _transfer_center().get_job(job_id) or {}
+        if str(job.get('recreation_status') or '') == 'draft':
+            flash('续作候选已转为可编辑脚本、分镜和素材清单；尚未下载或发布。', 'success')
+            return redirect(url_for('transfer_center_review_job', job_id=job_id))
+        flash('热点候选已加入任务；请确认处理方式后再下载发布。', 'success')
+        return redirect(url_for('tasks'))
+    except Exception as exc:
+        flash(f'候选加入任务失败：{exc}', 'danger')
+        return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/candidates/<candidate_id>/dismiss', methods=['POST'])
+@login_required
+def transfer_center_dismiss_candidate(candidate_id):
+    if _transfer_center().dismiss_hot_candidate(candidate_id):
+        flash('候选已忽略，后续刷新不会自动恢复。', 'success')
+    else:
+        flash('热点候选不存在或已经处理。', 'warning')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/archives/<source_id>/refresh', methods=['POST'])
+@login_required
+def transfer_center_refresh_archive(source_id):
+    try:
+        manifest = _transfer_center().refresh_archive(source_id)
+        flash(
+            f"归档清单已刷新：共 {manifest['total_items']} 条，"
+            f"视频就绪 {manifest['video_ready']} 条，文案就绪 {manifest['transcript_ready']} 条。",
+            'success',
+        )
+    except Exception as exc:
+        flash(f'刷新账号归档失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/archives/<source_id>/resume', methods=['POST'])
+@login_required
+def transfer_center_resume_archive(source_id):
+    try:
+        result = _transfer_center().resume_archive(source_id)
+        flash(result['message'], 'success')
+    except Exception as exc:
+        flash(f'续跑账号归档失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/archives/<source_id>/manifest')
+@login_required
+def transfer_center_archive_manifest(source_id):
+    try:
+        manifest = _transfer_center().build_archive_manifest(source_id, persist=True)
+    except Exception as exc:
+        flash(f'读取归档清单失败：{exc}', 'danger')
+        return redirect(url_for('transfer_center_index'))
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2)
+    response = Response(payload, mimetype='application/json')
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="archive-{source_id[:12]}.json"'
+    )
+    return response
 
 
 @app.route('/transfer-center/source/bilibili/qrcode/start', methods=['POST'])
@@ -3534,9 +4365,7 @@ def transfer_center_bilibili_qrcode_status(session_id):
     if not qr_session:
         return jsonify({'success': False, 'message': '二维码会话不存在或已过期'}), 404
     try:
-        status_data = qr_session.check_status(
-            cookie_file=_source_cookie_path('bilibili')
-        )
+        status_data = qr_session.check_status(cookie_files=_bilibili_cookie_paths())
         _emit_qr_login_event_once(
             _BILIBILI_QR_SESSIONS,
             _BILIBILI_QR_SESSION_LOCK,
@@ -3616,6 +4445,34 @@ def transfer_center_save_rule():
     return redirect(url_for('transfer_center_index'))
 
 
+@app.route('/transfer-center/allowed-sources', methods=['POST'])
+@login_required
+def transfer_center_save_allowed_source():
+    try:
+        _transfer_center().save_allowed_source({
+            'platform': request.form.get('platform'),
+            'account_url': request.form.get('account_url'),
+            'display_name': request.form.get('display_name'),
+            'rights_basis': request.form.get('rights_basis'),
+            'rights_note': request.form.get('rights_note'),
+            'enabled': request.form.get('enabled'),
+        })
+        flash('授权来源已保存。现在可以为该账号创建自动下载规则。', 'success')
+    except Exception as exc:
+        flash(f'保存授权来源失败：{exc}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/allowed-sources/<source_id>/delete', methods=['POST'])
+@login_required
+def transfer_center_delete_allowed_source(source_id):
+    if _transfer_center().delete_allowed_source(source_id):
+        flash('授权来源已移除；关联规则下次扫描会停止自动下载。', 'success')
+    else:
+        flash('授权来源不存在。', 'warning')
+    return redirect(url_for('transfer_center_index'))
+
+
 @app.route('/transfer-center/rules/<rule_id>/run', methods=['POST'])
 @login_required
 def transfer_center_run_rule(rule_id):
@@ -3675,6 +4532,18 @@ def transfer_center_prepare_job(job_id):
     return redirect(url_for('tasks'))
 
 
+@app.route('/transfer-center/jobs/<job_id>/backup/retry', methods=['POST'])
+@login_required
+def transfer_center_retry_backup(job_id):
+    center = _transfer_center()
+    try:
+        started = center.retry_backup(job_id)
+        flash('115 备份已重新加入后台队列' if started else '115 备份任务已在运行', 'success')
+    except Exception as exc:
+        flash(str(exc), 'danger')
+    return redirect(url_for('tasks'))
+
+
 @app.route('/transfer-center/jobs/<job_id>/publish', methods=['POST'])
 @login_required
 def transfer_center_publish_job(job_id):
@@ -3689,26 +4558,35 @@ def transfer_center_publish_job(job_id):
 @app.route('/transfer-center/jobs/<job_id>/review')
 @login_required
 def transfer_center_review_job(job_id):
-    job = _transfer_center().get_job(job_id)
+    center = _transfer_center()
+    job = center.get_job(job_id)
     if not job:
         flash('搬运任务不存在。', 'warning')
         return redirect(url_for('transfer_center_index'))
+    recreation_plan = deserialize_plan(job.get('recreation_plan_json'))
+    material_readiness = center.get_material_readiness(job_id)
     return render_template(
         'transfer_review.html',
         job=job,
         recreation_modes=RECREATION_MODES,
         processing_modes=PROCESSING_MODES,
-        recreation_plan=deserialize_plan(job.get('recreation_plan_json')),
+        recreation_plan=recreation_plan,
+        storyboard_text=format_storyboard_text(recreation_plan),
+        material_checklist_text=format_material_checklist_text(recreation_plan),
+        material_readiness=material_readiness,
+        production_ready=bool(job.get('local_video_path')) and not material_readiness['blocking'],
         media_probe=deserialize_plan(job.get('media_probe_json')),
         platform_variants=deserialize_plan(job.get('platform_variants_json')),
         distribution_plan=deserialize_plan(job.get('distribution_plan_json')),
+        content_preflight=deserialize_plan(job.get('content_preflight_json')),
+        cover_preflight=deserialize_plan(job.get('cover_preflight_json')),
         bilibili_partition_mapping=_build_bilibili_partition_mapping(),
         watermark_states=WATERMARK_STATES,
-        money_printer_url=_transfer_center().money_printer_url(job),
-        money_printer_quick_url=_transfer_center().money_printer_url(
+        money_printer_url=center.money_printer_url(job),
+        money_printer_quick_url=center.money_printer_url(
             job, workflow='quick'
         ),
-        money_printer_professional_url=_transfer_center().money_printer_url(
+        money_printer_professional_url=center.money_printer_url(
             job, workflow='professional'
         ),
     )
@@ -3729,6 +4607,23 @@ def transfer_center_review_media(job_id):
     ):
         return '媒体文件不存在', 404
     return send_file(resolved_path, conditional=True)
+
+
+@app.route('/transfer-center/jobs/<job_id>/materials/export')
+@login_required
+def transfer_center_export_materials(job_id):
+    try:
+        package_path, _manifest = _transfer_center().export_material_package(job_id)
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+        return redirect(url_for('transfer_center_review_job', job_id=job_id))
+    return send_file(
+        package_path,
+        as_attachment=True,
+        download_name=f'remix-materials-{job_id[:8]}.zip',
+        mimetype='application/zip',
+        conditional=True,
+    )
 
 
 @app.route('/transfer-center/jobs/<job_id>/x-video')
@@ -3834,6 +4729,27 @@ def transfer_center_douyin_complete(job_id):
     return redirect(url_for('tasks'))
 
 
+@app.route('/transfer-center/jobs/<job_id>/douyin-api-publish', methods=['POST'])
+@login_required
+def transfer_center_douyin_api_publish(job_id):
+    state = douyin_connection_state()
+    if not state.get('connected'):
+        flash(state.get('message') or '请先连接抖音发布账号。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    try:
+        started = _transfer_center().publish_douyin_openapi_async(
+            job_id,
+            publish_douyin_video,
+        )
+        if started:
+            flash('抖音接口发布已进入后台；上传与审核状态会在任务中心更新。', 'success')
+        else:
+            flash('当前任务正在处理中，请稍后刷新。', 'warning')
+    except ValueError as exc:
+        flash(str(exc), 'warning')
+    return redirect(url_for('tasks'))
+
+
 @app.route('/transfer-center/jobs/<job_id>/tiktok-video')
 @login_required
 def transfer_center_tiktok_video(job_id):
@@ -3933,6 +4849,27 @@ def transfer_center_save_review(job_id):
     publish_after = action == 'approve_publish'
     try:
         center = _transfer_center()
+        material_urls = {
+            name.removeprefix('material_url_'): value
+            for name, value in request.form.items()
+            if name.startswith('material_url_')
+        }
+        material_uploads = {
+            name.removeprefix('material_file_'): file_obj
+            for name, file_obj in request.files.items()
+            if name.startswith('material_file_') and file_obj and file_obj.filename
+        }
+        material_removals = {
+            value
+            for value in request.form.getlist('material_unbind')
+            if value
+        }
+        binding_result = center.bind_material_assets(
+            job_id,
+            urls=material_urls,
+            uploads=material_uploads,
+            removals=material_removals,
+        )
         center.save_recreation_review(
             job_id,
             {
@@ -3941,6 +4878,10 @@ def transfer_center_save_review(job_id):
                 'recreation_mode': request.form.get('recreation_mode'),
                 'original_angle': request.form.get('original_angle'),
                 'original_contribution': request.form.get('original_contribution'),
+                'commentary_script': request.form.get('commentary_script'),
+                'storyboard_text': request.form.get('storyboard_text'),
+                'material_checklist_text': request.form.get('material_checklist_text'),
+                'material_ready': request.form.getlist('material_ready'),
                 'watermark_status': request.form.get('watermark_status'),
                 'watermark_note': request.form.get('watermark_note'),
                 'recreation_confirmed': request.form.get('recreation_confirmed'),
@@ -3953,6 +4894,8 @@ def transfer_center_save_review(job_id):
                 'bilibili_partition_id': request.form.get('bilibili_partition_id'),
                 'douyin_text': request.form.get('douyin_text'),
                 'tiktok_text': request.form.get('tiktok_text'),
+                'content_preflight_confirmed': request.form.get('content_preflight_confirmed'),
+                'cover_preflight_confirmed': request.form.get('cover_preflight_confirmed'),
             },
             approve=approve,
         )
@@ -3965,10 +4908,17 @@ def transfer_center_save_review(job_id):
                 'success',
             )
         else:
+            binding_total = int(binding_result.get('attached') or 0) + int(
+                binding_result.get('unbound') or 0
+            )
             flash(
                 '视频已确认，可以进入发布。'
                 if approve
-                else '确认草稿已保存，尚未允许发布。',
+                else (
+                    f'草稿已保存，已更新 {binding_total} 项素材绑定；尚未允许发布。'
+                    if binding_total
+                    else '确认草稿已保存，尚未允许发布。'
+                ),
                 'success',
             )
     except Exception as e:
@@ -3987,19 +4937,29 @@ def transfer_center_send_to_money_printer(job_id):
     workflow = (
         request.form.get('workflow')
         if request.form.get('workflow') in ('quick', 'professional')
-        else 'quick'
+        else 'professional'
     )
+    operation = str(request.form.get('operation') or '').strip().lower()
     try:
-        job = _transfer_center().send_to_money_printer(job_id, workflow=workflow)
+        center = _transfer_center()
+        if operation == 'ai_rebuild':
+            started = center.recreate_with_money_printer_async(job_id)
+            flash(
+                '已开始后台生成二剪脚本、本地配音、字幕和 AI 混合成片。'
+                if started else '该任务正在处理，请稍后刷新。',
+                'success' if started else 'warning',
+            )
+            return redirect(url_for('transfer_center_review_job', job_id=job_id))
+        job = center.send_to_money_printer(job_id, workflow=workflow)
         flash(
             (
-                '已进入超级印钞机简单加工，只需确认画幅、片头片尾和来源标识。'
+                '已进入超级印钞机快速二剪，可调整画幅、节奏、字幕和包装。'
                 if workflow == 'quick'
-                else '已进入超级印钞机专业加工，可继续镜头重组、配音和深度包装。'
+                else '已进入标准二剪编辑台，可继续镜头重组、配音、B-roll 和深度包装。'
             ),
             'success',
         )
-        target_url = _transfer_center().money_printer_url(job, workflow=workflow)
+        target_url = center.money_printer_url(job, workflow=workflow)
         if target_url:
             return redirect(target_url)
     except Exception as e:
@@ -4032,7 +4992,7 @@ def transfer_center_save_connections():
     }
 
     upload_specs = (
-        ('bilibili_source_cookies', get_app_subdir('cookies'), 'bilibili_source_cookies.txt', 'B站来源 Cookie'),
+        ('bilibili_source_cookies', get_app_subdir('cookies'), 'bilibili_unified_cookies.txt', 'B站统一 Cookie'),
         ('douyin_cookies', get_app_subdir('cookies'), 'douyin_cookies.txt', '抖音 Cookie'),
         ('tiktok_cookies', get_app_subdir('cookies'), 'tiktok_cookies.txt', 'TikTok Cookie'),
         ('youtube_client_secret', get_app_subdir('config'), 'youtube_transfer_client_secret.json', 'YouTube OAuth 客户端'),
@@ -4051,10 +5011,77 @@ def transfer_center_save_connections():
         messages.append(f'{label}已保存')
 
     try:
+        douyin_client_key = str(request.form.get('douyin_client_key') or '').strip()
+        douyin_client_secret = str(request.form.get('douyin_client_secret') or '').strip()
+        if douyin_client_key or douyin_client_secret:
+            existing_douyin_app = load_douyin_app_credentials()
+            save_douyin_app_credentials(
+                douyin_client_key or existing_douyin_app.get('client_key', ''),
+                douyin_client_secret,
+            )
+            messages.append('抖音开放平台应用凭据已保存')
         update_config(config_updates)
         flash('；'.join(messages) if messages else '发布偏好已保存。', 'success')
     except Exception as e:
         flash(f'保存连接配置失败：{e}', 'danger')
+    return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/douyin/connect')
+@login_required
+def transfer_center_douyin_connect():
+    state = douyin_connection_state()
+    if not state.get('app_configured'):
+        flash('请先在“连接平台”中保存抖音开放平台 Client Key 与 Client Secret。', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    try:
+        oauth_state = secrets.token_urlsafe(32)
+        session['transfer_douyin_oauth_state'] = oauth_state
+        return redirect(
+            build_douyin_authorization_url(
+                _transfer_douyin_redirect_uri(),
+                oauth_state,
+            )
+        )
+    except Exception as exc:
+        flash(f'启动抖音授权失败：{exc}', 'danger')
+        return redirect(url_for('transfer_center_index'))
+
+
+@app.route('/transfer-center/douyin/callback')
+@login_required
+def transfer_center_douyin_callback():
+    expected_state = session.pop('transfer_douyin_oauth_state', None)
+    callback_state = str(request.args.get('state') or '')
+    if (
+        not expected_state
+        or not callback_state
+        or not secrets.compare_digest(callback_state, str(expected_state))
+    ):
+        flash('抖音授权状态校验失败，请重新连接。', 'danger')
+        return redirect(url_for('transfer_center_index'))
+    authorization_code = str(request.args.get('code') or '').strip()
+    if not authorization_code:
+        error_description = str(
+            request.args.get('error_description')
+            or request.args.get('error')
+            or '抖音未返回授权码'
+        ).strip()
+        flash(f'抖音授权未完成：{error_description}', 'warning')
+        return redirect(url_for('transfer_center_index'))
+    try:
+        token = exchange_douyin_code(authorization_code)
+        granted_scopes = {
+            item.strip()
+            for item in str(token.get('scope') or '').replace(',', ' ').split()
+            if item.strip()
+        }
+        if 'video.create.bind' not in granted_scopes:
+            flash('抖音账号已授权，但应用尚未获得 video.create.bind 发布能力。', 'warning')
+        else:
+            flash('抖音发布账号连接成功，可以在任务中心使用官方接口发布。', 'success')
+    except Exception as exc:
+        flash(f'抖音授权失败：{exc}', 'danger')
     return redirect(url_for('transfer_center_index'))
 
 
@@ -4575,7 +5602,12 @@ def cookie_refresh_needed():
         return jsonify({'error': '处理失败，请稍后重试'}), 500
 
 if __name__ == '__main__':
+    _LOCAL_BACKGROUND_SERVICES_MANAGED = True
     logger.info("Y2A-Auto 启动中...")
+
+    _LOCAL_PROXY_STATUS = configure_local_system_proxy()
+    if _LOCAL_PROXY_STATUS.get('configured'):
+        logger.info("已同步 macOS 当前本地代理设置")
 
     # 初始化AcFun分区ID映射
     init_id_mapping()
@@ -4596,6 +5628,7 @@ if __name__ == '__main__':
 
     transfer_center_service = get_transfer_center(config_provider=load_config)
     transfer_center_service.start()
+    _refresh_local_background_services(config)
 
     # 自动启动所有pending任务（如果启用了自动模式）
     if config.get('AUTO_MODE_ENABLED', False):
@@ -4629,13 +5662,16 @@ if __name__ == '__main__':
     try:
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"服务启动，监听地址: http://127.0.0.1:{port}")
-        # 使用标准Flask运行
-        app.run(host='0.0.0.0', port=port, debug=False)
+        from modules.wsgi_server import serve_app
+
+        serve_app(app, port)
     except KeyboardInterrupt:
         logger.info("接收到退出信号，服务正在关闭...")
     except Exception as e:
         logger.error(f"服务启动失败: {str(e)}")
     finally:
+        _stop_local_background_services()
+        _LOCAL_BACKGROUND_SERVICES_MANAGED = False
         # 关闭全局任务处理器
         shutdown_global_task_processor()
 

@@ -1,115 +1,51 @@
-# Y2A-Auto Docker 管理工具
+.PHONY: help test status restart logs moneyprinter-status moneyprinter-restart vision-status vision-restart legacy-release-test
 
-.PHONY: help build up down logs restart clean build-local
+PYTHON := .venv/bin/python
+VIDEO_SERVICE := com.sg99.video-transfer-channel.local
+MONEYPRINTER_SERVICE := com.sg99.moneyprinter-video-worker.local
+VISION_SERVICE := com.sg99.video-vision.local
+USER_DOMAIN := gui/$(shell id -u)
 
-# 默认目标
 help:
-	@echo "Y2A-Auto Docker 管理命令:"
-	@echo ""
-	@echo "生产环境:"
-	@echo "  make up          - 启动应用 (使用预构建镜像)"
-	@echo "  make down        - 停止应用"
-	@echo "  make logs        - 查看日志"
-	@echo "  make restart     - 重启应用"
-	@echo ""
-	@echo "构建相关:"
-	@echo "  make build                - 本地构建镜像 (默认，使用 Dockerfile)"
-	@echo "  make build-local          - 使用本地构建配置启动 (默认)"
-	@echo ""
-	@echo "健康检查和诊断:"
-	@echo "  make health      - 基础健康检查"
-	@echo "  make health-check - 详细系统健康检查"
-	@echo "  make diagnose    - 快速环境诊断"
-	@echo "  make status      - 查看容器状态"
-	@echo ""
-	@echo "问题修复:"
-	@echo "  make fix-permissions - 修复文件权限问题"
-	@echo "  make reset-docker    - 重置 Docker 环境 (危险操作)"
-	@echo ""
-	@echo "维护清理:"
-	@echo "  make clean       - 清理 Docker 资源"
-	@echo "  make clean-all   - 深度清理 (包括卷和网络)"
+	@echo "MacBook 本地视频搬运管理："
+	@echo "  make test                 运行完整测试"
+	@echo "  make status               检查视频工作台真实入口"
+	@echo "  make restart              重启视频工作台"
+	@echo "  make logs                 查看视频工作台最近日志"
+	@echo "  make moneyprinter-status  检查超级印钞机 LaunchAgent"
+	@echo "  make moneyprinter-restart 重启超级印钞机"
+	@echo "  make vision-status        检查本地视觉模型"
+	@echo "  make vision-restart       重启本地视觉模型"
 
-# 生产环境命令
-up:
-	docker-compose up -d
+test:
+	$(PYTHON) -m pytest -q
 
-down:
-	docker-compose down
-
-logs:
-	docker-compose logs -f
+status:
+	@launchctl print $(USER_DOMAIN)/$(VIDEO_SERVICE) >/dev/null
+	@curl --fail --silent --show-error http://127.0.0.1:15188/login >/dev/null
+	@echo "视频工作台运行正常：http://127.0.0.1:15188"
 
 restart:
-	docker-compose restart
+	launchctl kickstart -k $(USER_DOMAIN)/$(VIDEO_SERVICE)
 
-# 构建相关命令
-build:
-	docker-compose -f docker-compose-build.yml build
+logs:
+	@tail -n 120 "$(HOME)/Library/Logs/视频搬运通道/video-transfer.err.log"
 
-build-local:
-	docker-compose -f docker-compose-build.yml up -d
+moneyprinter-status:
+	@launchctl print $(USER_DOMAIN)/$(MONEYPRINTER_SERVICE) >/dev/null
+	@echo "超级印钞机 LaunchAgent 已加载；真实 API 状态请在快速配置页检查。"
 
-# 清理命令
-clean:
-	docker system prune -f
-	docker image prune -f
+moneyprinter-restart:
+	launchctl kickstart -k $(USER_DOMAIN)/$(MONEYPRINTER_SERVICE)
 
-clean-all:
-	docker-compose down -v
-	docker-compose -f docker-compose-build.yml down -v
-	docker system prune -af
-	docker volume prune -f
-	docker network prune -f
+vision-status:
+	@launchctl print $(USER_DOMAIN)/$(VISION_SERVICE) >/dev/null
+	@curl --fail --silent --show-error http://127.0.0.1:49821/health >/dev/null
+	@echo "本地视觉模型运行正常：http://127.0.0.1:49821"
 
-# 健康检查
-health:
-	docker-compose ps
-	@echo ""
-	@echo "健康状态检查:"
-	@curl -s http://localhost:5000/ > /dev/null && echo "✅ 应用运行正常" || echo "❌ 应用无法访问"
+vision-restart:
+	launchctl kickstart -k $(USER_DOMAIN)/$(VISION_SERVICE)
 
-# 查看容器状态
-status:
-	docker-compose ps
-	@echo ""
-	@echo "容器资源使用情况:"
-	@docker stats --no-stream y2a-auto 2>/dev/null || echo "容器未运行"
-
-# 系统健康检查（新增）
-health-check:
-	@echo "=== Y2A-Auto 系统健康检查 ==="
-	@echo ""
-	@echo "1. 容器状态:"
-	@docker-compose ps
-	@echo ""
-	@echo "2. 应用健康检查:"
-	@curl -s http://localhost:5000/system_health | python -m json.tool 2>/dev/null || echo "❌ 健康检查API无法访问"
-	@echo ""
-	@echo "3. 挂载目录检查:"
-	@docker-compose exec y2a-auto ls -la /app/config /app/db /app/cookies 2>/dev/null || echo "❌ 无法访问容器目录"
-
-# 简化诊断
-diagnose:
-	@echo "=== Y2A-Auto 环境诊断 ==="
-	@echo ""
-	@echo "容器状态:"
-	@docker ps --filter "name=y2a-auto" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "容器未运行"
-	@echo ""
-	@echo "最近日志:"
-	@docker-compose logs --tail=5 y2a-auto 2>/dev/null || echo "无法获取日志"
-
-# 修复常见问题
-fix-permissions:
-	@echo "修复文件权限问题..."
-	@sudo chown -R $$USER:$$USER ./config ./db ./downloads ./logs ./cookies ./temp 2>/dev/null || echo "权限修复完成"
-	@chmod -R 755 ./config ./db ./downloads ./logs ./cookies ./temp 2>/dev/null || echo "目录权限设置完成"
-
-# 重置 Docker 环境
-reset-docker:
-	@echo "⚠️  警告: 这将删除所有容器、卷和网络！"
-	@read -p "确认重置? (y/N): " confirm && [ "$$confirm" = "y" ] || exit 1
-	@echo "正在重置 Docker 环境..."
-	@docker-compose down -v
-	@docker system prune -f
-	@echo "✅ Docker 环境已重置" 
+# 仅保留历史 Docker 发布包的隔离回归，不属于当前运行方式。
+legacy-release-test:
+	./scripts/run_release_tests.sh

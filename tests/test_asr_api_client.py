@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from modules.asr_api_client import (
     AsrApiClient,
@@ -11,6 +15,88 @@ from modules.subtitle_pipeline_types import DetectedSpeechWindow
 
 
 class AsrApiClientTests(unittest.TestCase):
+    def test_mlx_whisper_uses_isolated_worker_and_preserves_word_timestamps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            model_dir = root / 'model'
+            model_dir.mkdir()
+            audio_path = root / 'clip.wav'
+            audio_path.write_bytes(b'RIFF')
+            client = AsrApiClient(AsrConfig(
+                provider='mlx_whisper',
+                model_name=str(model_dir),
+                max_retries=1,
+            ))
+            client.client = True
+            window = DetectedSpeechWindow(
+                start_s=0.0,
+                end_s=2.0,
+                ownership_start_s=0.0,
+                ownership_end_s=2.0,
+            )
+
+            def fake_run(_argv, **kwargs):
+                request = json.loads(kwargs['input'])
+                Path(request['output_path']).write_text(json.dumps({
+                    'text': '测试语音',
+                    'language': 'zh',
+                    'segments': [{
+                        'start': 0.0,
+                        'end': 2.0,
+                        'text': '测试语音',
+                        'words': [
+                            {'word': '测试', 'start': 0.1, 'end': 0.8},
+                            {'word': '语音', 'start': 0.9, 'end': 1.8},
+                        ],
+                    }],
+                }), encoding='utf-8')
+                return SimpleNamespace(returncode=0, stderr='')
+
+            with patch('modules.asr_api_client.subprocess.run', side_effect=fake_run) as run:
+                result = client.transcribe_window(str(audio_path), window=window)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.provider, 'mlx_whisper')
+            self.assertEqual(result.timestamp_mode, 'word')
+            self.assertEqual([word.text for word in result.segments[0].words], ['测试', '语音'])
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0][1:3], ['-m', 'modules.mlx_whisper_worker'])
+            self.assertEqual(run.call_args.kwargs['stdout'], -3)
+
+    def test_mlx_whisper_does_not_probe_remote_capabilities(self):
+        client = AsrApiClient(AsrConfig(provider='mlx_whisper', model_name='/missing'))
+        self.assertFalse(client._needs_serial_format_probe())
+
+    def test_mlx_whisper_keeps_native_timestamps_before_silent_tail(self):
+        client = AsrApiClient(AsrConfig(provider='mlx_whisper', model_name='/missing'))
+        window = DetectedSpeechWindow(
+            start_s=0.0,
+            end_s=100.0,
+            ownership_start_s=0.0,
+            ownership_end_s=100.0,
+        )
+
+        result = client._payload_to_transcription_result(
+            {
+                'text': 'hello',
+                'segments': [{
+                    'start': 1.0,
+                    'end': 10.0,
+                    'text': 'hello',
+                    'words': [{'word': 'hello', 'start': 1.0, 'end': 2.0}],
+                }],
+            },
+            provider='mlx_whisper',
+            response_format='verbose_json',
+            timestamp_mode='word',
+            window=window,
+            granularities=('segment', 'word'),
+        )
+
+        self.assertEqual(result.segments[0].start_s, 1.0)
+        self.assertEqual(result.segments[0].end_s, 10.0)
+        self.assertEqual(result.segments[0].words[0].start_s, 1.0)
+
     def test_format_error_requires_parameter_rejection(self):
         plain_error = RuntimeError('request includes response_format')
         format_error = RuntimeError('invalid response_format: verbose_json')

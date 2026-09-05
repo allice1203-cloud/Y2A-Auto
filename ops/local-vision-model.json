@@ -1,0 +1,10 @@
+{
+  "model": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+  "source": "https://huggingface.co/mlx-community/Qwen3-VL-2B-Instruct-4bit",
+  "revision": "9c4f5209e57b31f4b9dfba735de3fb983739c9cc",
+  "weight_file": "model.safetensors",
+  "weight_size_bytes": 1782040921,
+  "weight_sha256": "4750d95a2162829e127a94e83ac350d498d02070aab216c4687da48804a06ffb",
+  "runtime": "mlx-vlm==0.6.17",
+  "bind": "127.0.0.1:49821"
+}

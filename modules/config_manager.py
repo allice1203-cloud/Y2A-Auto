@@ -47,10 +47,22 @@ DEFAULT_CONFIG = {
     "NOTIFY_EVENT_TASK_ADDED": True,
     "NOTIFY_EVENT_TASK_COMPLETED": True,
     "NOTIFY_EVENT_TASK_FAILED": True,
+    "NOTIFY_EVENT_TRANSFER_REVIEW_READY": True,
+    "NOTIFY_EVENT_TRANSFER_PUBLISHED": True,
+    "NOTIFY_EVENT_TRANSFER_FAILED": True,
+    "NOTIFY_EVENT_SYSTEM_WATCHDOG": True,
     "NOTIFY_EVENT_LOGIN_SUCCESS": True,
     "NOTIFY_EVENT_LOGIN_LOCKED": True,
     "NOTIFY_EVENT_QR_LOGIN_SUCCESS": True,
     "NOTIFY_EVENT_QR_LOGIN_FAILED": True,
+    "NOTIFY_TELEGRAM_ENABLED": False,
+    "NOTIFY_TELEGRAM_BOT_TOKEN": "",
+    "NOTIFY_TELEGRAM_CHAT_ID": "",
+    # Telegram 快速入口与通知共用已保存的 Bot/Chat ID，但始终只创建并准备任务。
+    "TRANSFER_TELEGRAM_INTAKE_ENABLED": True,
+    "TRANSFER_TELEGRAM_INTAKE_DEFAULT_MODE": "professional",
+    "TRANSFER_TELEGRAM_INTAKE_DEFAULT_TARGETS": "bilibili",
+    "TRANSFER_TELEGRAM_INTAKE_POLL_TIMEOUT_SECONDS": 10,
     "NOTIFY_WECOM_ENABLED": False,
     "NOTIFY_WECOM_WEBHOOK_URL": "",
     "NOTIFY_SERVERCHAN_ENABLED": False,
@@ -73,12 +85,42 @@ DEFAULT_CONFIG = {
     "ACFUN_COOKIES_PATH": "cookies/ac_cookies.json", # AcFun Cookie文件路径
     "BILIBILI_COOKIES_PATH": "cookies/bili_cookies.json", # bilibili Cookie 文件路径
     # 搬运中心：来源发现与目标发布
-    "TRANSFER_BILIBILI_COOKIES_PATH": "cookies/bilibili_source_cookies.txt",
+    "TRANSFER_BILIBILI_COOKIES_PATH": "cookies/bilibili_unified_cookies.txt",
     "TRANSFER_DOUYIN_COOKIES_PATH": "cookies/douyin_cookies.txt",
+    "TRANSFER_MAINTENANCE_ENABLED": True,
+    "TRANSFER_COMPLETED_MEDIA_RETENTION_DAYS": 30,
+    "TRANSFER_DB_BACKUP_RETENTION_DAYS": 14,
+    "TRANSFER_MIN_FREE_DISK_GB": 8,
+    "TRANSFER_MPT_INTERNAL_URL": "http://127.0.0.1:8080",
+    "TRANSFER_MPT_PUBLIC_URL": "http://127.0.0.1:8080/app/",
+    "TRANSFER_MPT_API_KEY": "",
+    "TRANSFER_MPT_HEALTH_TIMEOUT_SECONDS": 5,
+    "TRANSFER_MPT_RENDER_TIMEOUT_SECONDS": 3600,
+    "TRANSFER_MPT_WATCHDOG_ENABLED": True,
+    "TRANSFER_MPT_WATCHDOG_INTERVAL_SECONDS": 60,
+    # Apple Silicon 本地视觉分析：仅用于 quick/professional 二剪的镜头辅助判断。
+    # 服务必须绑定在 loopback；运行时不将抽帧、模型原始回复或本机路径持久化。
+    "TRANSFER_LOCAL_VISION_ENABLED": True,
+    "TRANSFER_LOCAL_VISION_BASE_URL": "http://127.0.0.1:49821/v1",
+    "TRANSFER_LOCAL_VISION_MODEL_NAME": "",
+    "TRANSFER_LOCAL_VISION_TIMEOUT_SECONDS": 240,
+    "TRANSFER_LOCAL_VISION_HEALTH_TIMEOUT_SECONDS": 5,
+    "TRANSFER_LOCAL_VISION_QUICK_MAX_FRAMES": 4,
+    "TRANSFER_LOCAL_VISION_PROFESSIONAL_MAX_FRAMES": 8,
+    "TRANSFER_LOCAL_VISION_FRAME_WIDTH": 512,
+    "TRANSFER_LOCAL_VISION_FRAME_TIMEOUT_SECONDS": 30,
+    "TRANSFER_LOCAL_VISION_MAX_TOKENS": 900,
     "TRANSFER_X_ACCESS_TOKEN": "",
     "TRANSFER_PUBLIC_BASE_URL": "",
     "TRANSFER_YOUTUBE_CATEGORY_ID": "22",
     "TRANSFER_YOUTUBE_PRIVACY": "public",
+    # 审核通过的最终成片自动备份到本机 OpenList 挂载的 115 网盘。
+    # 115 OAuth 凭证仍只保存在 OpenList 数据库，不复制进视频系统配置。
+    "TRANSFER_115_BACKUP_ENABLED": True,
+    "TRANSFER_OPENLIST_URL": "http://127.0.0.1:5245",
+    "TRANSFER_OPENLIST_DATA_DB": "",
+    "TRANSFER_115_BACKUP_ROOT": "/115-视频备份/视频搬运",
+    "TRANSFER_115_BACKUP_MAX_ATTEMPTS": 5,
     # CookieCloud（首版仅用于手动拉取 YouTube Cookies）
     "COOKIECLOUD_ENABLED": False,
     "COOKIECLOUD_SERVER_URL": "",
@@ -165,7 +207,7 @@ DEFAULT_CONFIG = {
     "VIDEO_CUSTOM_PARAMS": "",  # 自定义 FFmpeg 视频编码参数（启用自定义参数时使用）
     # 语音识别（无字幕转写）
     "SPEECH_RECOGNITION_ENABLED": False,  # 启用语音识别生成字幕
-    "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper（OpenAI兼容）
+    "SPEECH_RECOGNITION_PROVIDER": "whisper",  # whisper / mlx_whisper / voxtral
     # Whisper/OpenAI 兼容配置（可单独配置，未设置则回退到 OPENAI_*）
     "WHISPER_API_KEY": "",
     "WHISPER_BASE_URL": "",
