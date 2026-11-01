@@ -1,0 +1,570 @@
+{
+  "total_modules": 53,
+  "app_entry_modules": [
+    "acfun_auth",
+    "bilibili_auth",
+    "bilibili_zones",
+    "config_manager",
+    "config_snapshots",
+    "content_recreation",
+    "cookiecloud",
+    "douyin_openapi",
+    "ffmpeg_manager",
+    "health_watchdog",
+    "local_control",
+    "local_proxy",
+    "prompt_manager",
+    "quick_setup",
+    "source_login",
+    "speech_pipeline_settings",
+    "studio_overview",
+    "task_intake",
+    "task_manager",
+    "telegram_intake",
+    "transfer_center",
+    "utils",
+    "whisper_languages",
+    "wsgi_server",
+    "youtube_handler",
+    "youtube_monitor"
+  ],
+  "unreachable_from_app": [
+    "media_cutover",
+    "mlx_whisper_worker",
+    "production_automation 2"
+  ],
+  "only_test_referenced": [
+    "media_cutover"
+  ],
+  "fully_dead": [
+    "mlx_whisper_worker",
+    "production_automation 2"
+  ],
+  "reverse_deps": {
+    "acfun_auth": {
+      "modules": [],
+      "tests": [],
+      "app": true,
+      "size_kb": 9.2
+    },
+    "acfun_uploader": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 36.2
+    },
+    "ai_enhancer": {
+      "modules": [
+        "ai_segmentation",
+        "content_recreation",
+        "task_manager"
+      ],
+      "tests": [
+        "test_content_profile_ai.py"
+      ],
+      "app": false,
+      "size_kb": 82.4
+    },
+    "ai_segmentation": {
+      "modules": [
+        "speech_recognition"
+      ],
+      "tests": [
+        "test_ai_segmentation.py",
+        "test_srt_resegmentation.py"
+      ],
+      "app": false,
+      "size_kb": 69.3
+    },
+    "asr_api_client": {
+      "modules": [
+        "speech_recognition"
+      ],
+      "tests": [
+        "test_asr_api_client.py"
+      ],
+      "app": false,
+      "size_kb": 68.7
+    },
+    "bilibili_auth": {
+      "modules": [
+        "bilibili_uploader",
+        "transfer_center"
+      ],
+      "tests": [
+        "test_bilibili_runtime.py"
+      ],
+      "app": true,
+      "size_kb": 11.2
+    },
+    "bilibili_runtime": {
+      "modules": [
+        "bilibili_auth",
+        "bilibili_uploader",
+        "bilibili_zones"
+      ],
+      "tests": [
+        "test_bilibili_runtime.py"
+      ],
+      "app": false,
+      "size_kb": 0.9
+    },
+    "bilibili_uploader": {
+      "modules": [
+        "task_manager",
+        "transfer_center"
+      ],
+      "tests": [
+        "test_bilibili_uploader.py"
+      ],
+      "app": false,
+      "size_kb": 17.5
+    },
+    "bilibili_zones": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [
+        "test_bilibili_runtime.py"
+      ],
+      "app": true,
+      "size_kb": 1.0
+    },
+    "config_manager": {
+      "modules": [
+        "ffmpeg_manager",
+        "local_visual_analysis",
+        "task_manager",
+        "youtube_handler",
+        "youtube_monitor"
+      ],
+      "tests": [
+        "test_local_visual_analysis.py",
+        "test_telegram_notifications.py",
+        "test_transfer_center.py",
+        "test_video_cpu_preset_config.py"
+      ],
+      "app": true,
+      "size_kb": 26.6
+    },
+    "config_snapshots": {
+      "modules": [],
+      "tests": [
+        "test_config_snapshots.py"
+      ],
+      "app": true,
+      "size_kb": 4.5
+    },
+    "content_moderator": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 18.0
+    },
+    "content_recreation": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_content_recreation.py"
+      ],
+      "app": true,
+      "size_kb": 58.6
+    },
+    "cookiecloud": {
+      "modules": [
+        "youtube_handler"
+      ],
+      "tests": [
+        "test_cookiecloud.py"
+      ],
+      "app": true,
+      "size_kb": 20.8
+    },
+    "douyin_downloader": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_douyin_downloader.py"
+      ],
+      "app": false,
+      "size_kb": 9.2
+    },
+    "douyin_openapi": {
+      "modules": [],
+      "tests": [],
+      "app": true,
+      "size_kb": 15.5
+    },
+    "ffmpeg_manager": {
+      "modules": [
+        "final_media_qc",
+        "local_visual_analysis",
+        "speech_recognition",
+        "task_manager",
+        "vad_processor",
+        "videotoolbox_encoder",
+        "youtube_handler"
+      ],
+      "tests": [],
+      "app": true,
+      "size_kb": 16.2
+    },
+    "final_media_qc": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 25.4
+    },
+    "health_watchdog": {
+      "modules": [],
+      "tests": [
+        "test_health_watchdog.py"
+      ],
+      "app": true,
+      "size_kb": 8.8
+    },
+    "local_control": {
+      "modules": [],
+      "tests": [
+        "test_local_control.py"
+      ],
+      "app": true,
+      "size_kb": 3.7
+    },
+    "local_proxy": {
+      "modules": [],
+      "tests": [
+        "test_local_proxy.py"
+      ],
+      "app": true,
+      "size_kb": 3.2
+    },
+    "local_visual_analysis": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_local_visual_analysis.py"
+      ],
+      "app": false,
+      "size_kb": 31.1
+    },
+    "media_cutover": {
+      "modules": [],
+      "tests": [
+        "test_media_cutover.py"
+      ],
+      "app": false,
+      "size_kb": 3.0
+    },
+    "media_preflight": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_media_preflight.py",
+        "test_transfer_center.py"
+      ],
+      "app": false,
+      "size_kb": 24.9
+    },
+    "media_workspace": {
+      "modules": [
+        "utils"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 21.7
+    },
+    "mlx_whisper_worker": {
+      "modules": [],
+      "tests": [],
+      "app": false,
+      "size_kb": 2.4
+    },
+    "monetization": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_monetization.py"
+      ],
+      "app": false,
+      "size_kb": 27.2
+    },
+    "openlist_backup": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_openlist_backup.py"
+      ],
+      "app": false,
+      "size_kb": 7.5
+    },
+    "production_automation": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_production_automation.py"
+      ],
+      "app": false,
+      "size_kb": 47.9
+    },
+    "production_automation 2": {
+      "modules": [],
+      "tests": [],
+      "app": false,
+      "size_kb": 14.2
+    },
+    "prompt_manager": {
+      "modules": [
+        "ai_enhancer",
+        "ai_segmentation",
+        "config_manager",
+        "subtitle_translator"
+      ],
+      "tests": [
+        "test_prompt_manager.py"
+      ],
+      "app": true,
+      "size_kb": 25.4
+    },
+    "publication_ledger": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_production_workbench.py",
+        "test_publication_ledger.py"
+      ],
+      "app": false,
+      "size_kb": 39.4
+    },
+    "quick_setup": {
+      "modules": [],
+      "tests": [
+        "test_quick_setup.py"
+      ],
+      "app": true,
+      "size_kb": 22.8
+    },
+    "source_login": {
+      "modules": [
+        "bilibili_auth"
+      ],
+      "tests": [
+        "test_source_login.py"
+      ],
+      "app": true,
+      "size_kb": 7.3
+    },
+    "speech_pipeline_settings": {
+      "modules": [
+        "ai_segmentation",
+        "config_manager",
+        "speech_recognition"
+      ],
+      "tests": [],
+      "app": true,
+      "size_kb": 8.3
+    },
+    "speech_recognition": {
+      "modules": [
+        "task_manager",
+        "transfer_center"
+      ],
+      "tests": [
+        "test_speech_recognition_config.py"
+      ],
+      "app": false,
+      "size_kb": 28.7
+    },
+    "srt_transform_engine": {
+      "modules": [
+        "ai_segmentation",
+        "speech_recognition",
+        "task_manager",
+        "transfer_center"
+      ],
+      "tests": [
+        "test_srt_transform_engine.py"
+      ],
+      "app": false,
+      "size_kb": 33.1
+    },
+    "studio_overview": {
+      "modules": [],
+      "tests": [
+        "test_studio_overview.py"
+      ],
+      "app": true,
+      "size_kb": 10.2
+    },
+    "subtitle_pipeline_types": {
+      "modules": [
+        "ai_segmentation",
+        "asr_api_client",
+        "speech_recognition",
+        "srt_transform_engine",
+        "vad_processor"
+      ],
+      "tests": [
+        "test_ai_segmentation.py",
+        "test_asr_api_client.py",
+        "test_srt_resegmentation.py"
+      ],
+      "app": false,
+      "size_kb": 2.8
+    },
+    "subtitle_qc": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 33.5
+    },
+    "subtitle_translator": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 50.1
+    },
+    "task_intake": {
+      "modules": [],
+      "tests": [
+        "test_task_intake.py"
+      ],
+      "app": true,
+      "size_kb": 1.6
+    },
+    "task_manager": {
+      "modules": [
+        "acfun_uploader",
+        "content_moderator",
+        "subtitle_translator",
+        "youtube_monitor"
+      ],
+      "tests": [],
+      "app": true,
+      "size_kb": 351.5
+    },
+    "telegram_intake": {
+      "modules": [],
+      "tests": [
+        "test_telegram_intake.py"
+      ],
+      "app": true,
+      "size_kb": 26.3
+    },
+    "transfer_center": {
+      "modules": [],
+      "tests": [
+        "test_douyin_downloader.py",
+        "test_multilingual_delivery.py",
+        "test_openlist_backup.py",
+        "test_production_workbench.py",
+        "test_publication_completion.py",
+        "test_transfer_center.py",
+        "test_transfer_extensions.py"
+      ],
+      "app": true,
+      "size_kb": 311.1
+    },
+    "utils": {
+      "modules": [
+        "acfun_uploader",
+        "ai_enhancer",
+        "bilibili_uploader",
+        "config_manager",
+        "config_snapshots",
+        "cookiecloud",
+        "douyin_openapi",
+        "ffmpeg_manager",
+        "local_visual_analysis",
+        "speech_recognition",
+        "subtitle_qc",
+        "subtitle_translator",
+        "task_manager",
+        "transfer_center",
+        "vad_processor",
+        "youtube_handler",
+        "youtube_monitor"
+      ],
+      "tests": [],
+      "app": true,
+      "size_kb": 11.7
+    },
+    "vad_processor": {
+      "modules": [
+        "speech_recognition"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 28.3
+    },
+    "video_intelligence": {
+      "modules": [
+        "transfer_center"
+      ],
+      "tests": [
+        "test_video_intelligence.py"
+      ],
+      "app": false,
+      "size_kb": 8.3
+    },
+    "videotoolbox_encoder": {
+      "modules": [
+        "media_preflight"
+      ],
+      "tests": [],
+      "app": false,
+      "size_kb": 7.2
+    },
+    "whisper_languages": {
+      "modules": [],
+      "tests": [],
+      "app": true,
+      "size_kb": 2.5
+    },
+    "wsgi_server": {
+      "modules": [],
+      "tests": [
+        "test_wsgi_server.py"
+      ],
+      "app": true,
+      "size_kb": 0.4
+    },
+    "youtube_handler": {
+      "modules": [
+        "task_manager"
+      ],
+      "tests": [
+        "test_video_ext_detection.py"
+      ],
+      "app": true,
+      "size_kb": 53.6
+    },
+    "youtube_monitor": {
+      "modules": [],
+      "tests": [
+        "test_youtube_monitor_api_status.py",
+        "test_youtube_monitor_config_sql_dedup.py"
+      ],
+      "app": true,
+      "size_kb": 89.8
+    }
+  }
+}

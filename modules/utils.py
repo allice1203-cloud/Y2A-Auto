@@ -33,10 +33,23 @@ def get_app_subdir(subdir_name):
     Returns:
         str: 子目录的完整路径
     """
+    # Only disposable/high-volume media is eligible for external routing.
+    # Import lazily to avoid a config_manager -> utils import cycle.  When the
+    # workspace is configured but unavailable the resolver raises deliberately;
+    # falling back to the internal disk could silently fill the MacBook SSD.
+    if str(subdir_name or '').strip() in {'downloads', 'temp'}:
+        from .media_workspace import resolve_configured_media_subdir
+
+        configured = resolve_configured_media_subdir(str(subdir_name).strip())
+        if configured is not None:
+            return configured
+
     return os.path.join(get_app_root_dir(), subdir_name)
 
 import re
 import copy
+import types
+import urllib.request
 import json
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -306,6 +319,195 @@ def _is_thinking_param_unsupported_error(exc):
     return any(sig in text for sig in signals)
 
 
+def _is_stream_required_error(exc):
+    text = safe_str(exc)
+    low = text.lower()
+    return (
+        'stream_required' in low
+        or '必须 stream=true' in text
+        or ('stream=true' in low and ('必须' in text or 'required' in low))
+    )
+
+
+def _build_aggregated_chat_response(content, *, model=None, response_id=None, finish_reason='stop'):
+    message = types.SimpleNamespace(
+        content=safe_str(content),
+        role='assistant',
+        refusal=None,
+    )
+    choice = types.SimpleNamespace(
+        index=0,
+        message=message,
+        finish_reason=finish_reason or 'stop',
+    )
+    return types.SimpleNamespace(
+        id=response_id or 'stream-aggregated',
+        model=model,
+        choices=[choice],
+    )
+
+
+def _aggregate_chat_completion_stream(stream):
+    """把强制 stream 的 chat.completions 结果收齐成近似非流式响应。"""
+    pieces = []
+    finish_reason = None
+    model = None
+    response_id = None
+    for chunk in stream:
+        if getattr(chunk, 'model', None):
+            model = chunk.model
+        if getattr(chunk, 'id', None):
+            response_id = chunk.id
+        choices = getattr(chunk, 'choices', None) or []
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = getattr(choice, 'delta', None)
+        content = getattr(delta, 'content', None) if delta is not None else None
+        if content:
+            pieces.append(content)
+        reason = getattr(choice, 'finish_reason', None)
+        if reason:
+            finish_reason = reason
+    return _build_aggregated_chat_response(
+        ''.join(pieces),
+        model=model,
+        response_id=response_id,
+        finish_reason=finish_reason,
+    )
+
+
+def _model_requires_stream(model_name: str) -> bool:
+    name = safe_str(model_name).strip().lower()
+    if not name:
+        return False
+    # CPA / 福云中转上的思考型 Qwen3.8-Max 会直接吐 SSE；
+    # 非流式请求常表现为长时间挂起而不是立刻抛 STREAM_REQUIRED。
+    markers = (
+        'qwen3.8-max',
+        'qwen3.8_max',
+        'qwen-3.8-max',
+    )
+    return any(marker in name for marker in markers)
+
+
+def _chat_completions_create_via_raw_sse(client, create_kwargs, logger=None, scene_name='unknown'):
+    """绕过 OpenAI SDK 的 stream 迭代器，直接读 SSE（避免思考模型挂起）。"""
+    kwargs = copy.deepcopy(create_kwargs or {})
+    kwargs['stream'] = True
+    base_url = safe_str(getattr(client, 'base_url', '')).rstrip('/')
+    if base_url.endswith('/v1'):
+        url = base_url + '/chat/completions'
+    else:
+        url = base_url + '/v1/chat/completions'
+    api_key = None
+    try:
+        api_key = getattr(getattr(client, 'api_key', None), '__str__', lambda: None)()
+    except Exception:
+        api_key = None
+    if not api_key:
+        api_key = getattr(client, 'api_key', None)
+    api_key = safe_str(api_key)
+    timeout = getattr(client, 'timeout', None)
+    timeout_seconds = 180.0
+    try:
+        if timeout is not None:
+            timeout_seconds = float(getattr(timeout, 'read', None) or getattr(timeout, 'timeout', None) or timeout)
+    except Exception:
+        timeout_seconds = 180.0
+    body = json.dumps(kwargs, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+        },
+    )
+    if logger:
+        logger.info(
+            "%s 使用原生 SSE 收齐模型输出",
+            safe_str(scene_name, default='unknown'),
+        )
+    pieces = []
+    finish_reason = None
+    model = kwargs.get('model')
+    response_id = None
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        for raw in resp:
+            line = raw.decode('utf-8', 'ignore').strip()
+            if not line or line.startswith(':') or not line.startswith('data:'):
+                continue
+            payload = line[5:].strip()
+            if payload == '[DONE]':
+                break
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                continue
+            if obj.get('id'):
+                response_id = obj.get('id')
+            if obj.get('model'):
+                model = obj.get('model')
+            choices = obj.get('choices') or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = choice.get('delta') or {}
+            content = delta.get('content')
+            if content:
+                pieces.append(content)
+            if choice.get('finish_reason'):
+                finish_reason = choice.get('finish_reason')
+    return _build_aggregated_chat_response(
+        ''.join(pieces),
+        model=model,
+        response_id=response_id,
+        finish_reason=finish_reason,
+    )
+
+
+def _chat_completions_create_with_stream_fallback(client, create_kwargs, logger=None, scene_name='unknown'):
+    kwargs = copy.deepcopy(create_kwargs or {})
+    model_name = safe_str(kwargs.get('model'))
+    if _model_requires_stream(model_name) or kwargs.get('stream') is True:
+        if logger:
+            logger.info(
+                "%s 模型 %s 使用流式收齐",
+                safe_str(scene_name, default='unknown'),
+                model_name or 'unknown',
+            )
+        try:
+            return _chat_completions_create_via_raw_sse(
+                client, kwargs, logger=logger, scene_name=scene_name
+            )
+        except Exception as exc:
+            if logger:
+                logger.warning(
+                    "%s 原生 SSE 失败，回退 OpenAI SDK stream: %s",
+                    safe_str(scene_name, default='unknown'),
+                    exc,
+                )
+            kwargs['stream'] = True
+            stream = client.chat.completions.create(**kwargs)
+            return _aggregate_chat_completion_stream(stream)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        if not _is_stream_required_error(exc):
+            raise
+        if logger:
+            logger.warning(
+                "%s 模型要求 stream=true，已改用流式收齐",
+                safe_str(scene_name, default='unknown'),
+            )
+        return _chat_completions_create_via_raw_sse(
+            client, kwargs, logger=logger, scene_name=scene_name
+        )
+
+
 def openai_chat_create_with_thinking_control(
     client,
     create_kwargs,
@@ -315,7 +517,9 @@ def openai_chat_create_with_thinking_control(
 ):
     """统一 chat.completions 请求，支持“尝试关闭思考 + 自动降级”策略。"""
     if _coerce_bool(thinking_enabled, default=False):
-        return client.chat.completions.create(**create_kwargs)
+        return _chat_completions_create_with_stream_fallback(
+            client, create_kwargs, logger=logger, scene_name=scene_name
+        )
 
     disabled_kwargs = copy.deepcopy(create_kwargs or {})
     extra_body = disabled_kwargs.get('extra_body')
@@ -330,7 +534,9 @@ def openai_chat_create_with_thinking_control(
     disabled_kwargs['extra_body'] = extra_body
 
     try:
-        return client.chat.completions.create(**disabled_kwargs)
+        return _chat_completions_create_with_stream_fallback(
+            client, disabled_kwargs, logger=logger, scene_name=scene_name
+        )
     except Exception as exc:
         if not _is_thinking_param_unsupported_error(exc):
             raise
@@ -352,4 +558,6 @@ def openai_chat_create_with_thinking_control(
                 logger.debug(
                     "thinking 控制参数不受支持，继续普通请求"
                 )
-        return client.chat.completions.create(**create_kwargs)
+        return _chat_completions_create_with_stream_fallback(
+            client, create_kwargs, logger=logger, scene_name=scene_name
+        )

@@ -16,6 +16,7 @@ from typing import Any, List, Optional, Tuple
 
 from .ffmpeg_manager import get_ffmpeg_path
 from .subtitle_pipeline_types import DetectedSpeechWindow
+from .utils import get_app_subdir
 
 
 @dataclass
@@ -683,7 +684,9 @@ class VadProcessor:
     def _extract_audio_clip(self, wav_path: str, start_s: float, end_s: float) -> Optional[str]:
         try:
             ffmpeg_bin = get_ffmpeg_path(logger=self.logger) or 'ffmpeg'
-            out_dir = tempfile.mkdtemp(prefix='y2a_vad_clip_')
+            temp_root = get_app_subdir('temp')
+            os.makedirs(temp_root, exist_ok=True)
+            out_dir = tempfile.mkdtemp(prefix='y2a_vad_clip_', dir=temp_root)
             self._temp_dirs.append(out_dir)
             out_wav = os.path.join(out_dir, 'clip.wav')
             duration = max(0.01, float(end_s) - float(start_s))

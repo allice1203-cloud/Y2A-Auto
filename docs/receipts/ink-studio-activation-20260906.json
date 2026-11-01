@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "context_version": "2026-09-04.1",
+  "receipt_id": "ink-studio-local-activation-20260906",
+  "later_acceptance_receipt": "ink-studio-authenticated-qa-20260906.json",
+  "recorded_at": "2026-09-06T16:54:58+08:00",
+  "system_id": "video-transfer-channel",
+  "authorization": "用户明确批准：启用新版。仅批准已选墨色界面的正式本机切换和必要服务重启。",
+  "status": "deployed_pending_authenticated_visual_acceptance",
+  "git": {
+    "branch": "codex/video-transfer-channel-brand",
+    "baseline": "63ad3919d9334a6c15e76bb81370f1a248f2c0be",
+    "activated_code_commit": "c6c3de90c73ec941149f43110b7fad967b7f053e",
+    "integration": "fast_forward",
+    "remote_push": false,
+    "unrelated_untracked_file_preserved": true
+  },
+  "runtime": {
+    "machine": "MacBookPro18,2 / Apple M1 Max / 64 GiB",
+    "repository": "/Users/allice/Documents/系统开发/视频搬运通道",
+    "service": "com.sg99.video-transfer-channel.local",
+    "previous_pid": 97944,
+    "active_pid": 71173,
+    "started_at": "2026-09-06T16:52:45+08:00",
+    "listener": "127.0.0.1:15188",
+    "state": "running",
+    "launchd_runs_since_bootstrap": 1,
+    "authenticated_route_without_session": "302 to administrator login",
+    "ink_stylesheet_http_status": 200
+  },
+  "backup": {
+    "path": "/Users/allice/Library/Application Support/视频搬运通道/backups/20260906-165055-ink-activation",
+    "scope": "video system only; made after stopping its LaunchAgent",
+    "sqlite_count": 3,
+    "config_file_count": 8,
+    "sqlite_backup_method": "SQLite backup API plus row-digest comparison",
+    "quick_check": "all ok",
+    "old_code_archive": "previous-code-63ad391.tar",
+    "launch_agent_backed_up": true,
+    "private_backup_not_committed": true
+  },
+  "data_verification": {
+    "transfer_jobs": {"completed": 1, "review": 1},
+    "legacy_tasks": 0,
+    "production_queue": 0,
+    "production_enabled": false,
+    "production_auto_render": false,
+    "transfer_rules": {"count": 1, "enabled": 1, "auto_publish": 0, "require_review": 1},
+    "all_transfer_and_monitor_table_digests_unchanged": true,
+    "all_config_file_digests_unchanged": true,
+    "launch_agent_digest_unchanged": true,
+    "notification_outbox": "No new records. One existing TRANSFER_PUBLISHED record changed sending to sent, attempts +1 through the existing worker; no explicit test send performed.",
+    "review_media_references_existing": "3 of 3",
+    "completed_historical_media": "4 old paths were already absent before this activation; status preserved; not claimed recovered",
+    "preview_database_imported": false
+  },
+  "verification": {
+    "candidate_full_tests": "769 passed, 21 subtests passed in 9.71s; exact activated commit",
+    "formal_python_compile": "passed",
+    "formal_shared_js_syntax": "passed",
+    "git_diff_check": "passed",
+    "independent_static_review": "ink_state_consistency reviewed routes/auth, read-only queries, state labels and preview isolation; no activation blockers",
+    "external_browser": "Chrome extension; pre-restart quick-setup authenticated; post-restart login required",
+    "formal_visual_acceptance": "blocked pending user login; no forged session or authentication bypass",
+    "screenshot": "docs/design-captures/activation-login-20260906.png"
+  },
+  "not_performed": ["VPS operations", "real video publication", "manual Telegram send", "new download or rendering", "115 upload", "credential change", "automatic posting enablement", "Git remote push"],
+  "next_action": "用户在外部 Chrome 的 15188 正式入口使用原密码登录后，验收真实任务、媒体播放、设置与核心交互。"
+}

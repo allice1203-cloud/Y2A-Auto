@@ -1,69 +1,48 @@
-# 公网访问运维说明
+# 当前本地运行方式
 
-## 当前生产入口
+视频搬运通道已经迁移到当前 M1 Max MacBook，只提供本机回环访问：
 
-- 产品名称：视频搬运通道
-- 公网地址：`https://transfer.sg99.online`
-- 本地源站：`http://127.0.0.1:5188`
-- 传输方式：Mac mini 上的独立 Cloudflare Tunnel
-- 安全边界：源站只监听回环地址，家庭路由器和 Mac mini 均不开放公网端口
+- 视频工作台：`http://127.0.0.1:15188`
+- 超级印钞机：`http://127.0.0.1:8080/app/`
+- OpenList：`http://127.0.0.1:5245`
+- 运行方式：macOS LaunchAgent，原生 arm64
+- 公网域名：无
 
-公网入口必须同时满足：
+当前边界：
 
-1. HTTPS 由 Cloudflare 提供；
-2. 应用的 `password_protection_enabled` 已启用；
-3. `config/config.json`、Cookie、OAuth Token 和隧道凭据权限为 `600`；
-4. 密码、Cookie、OAuth Token、Tunnel ID 凭据不进入 Git。
+1. 不向香港或日本 VPS 同步代码、Cookie、数据库或视频文件；
+2. 不恢复旧 Cloudflare Tunnel、Docker 视频容器或远程 Cookie 同步；
+3. MacBook 合盖、断电或断网时，本地服务会暂停；
+4. 账号凭据继续保存在各应用自己的私有目录，不写入 Git；
+5. 115 OAuth 只由本机 OpenList 保存，视频系统只调用回环接口。
 
-## 开机恢复
+## 日常入口
 
-Cloudflare Tunnel 由当前 macOS 用户的 LaunchAgent 托管：
+登录视频工作台后优先打开“快速配置”：
 
-```text
-~/Library/LaunchAgents/com.video-transfer-channel.cloudflared.plist
-```
+1. 选择个人稳妥、热点快速或多平台增长；
+2. 运行一键体检；
+3. 只处理页面列出的必需项；
+4. 在任务中心粘贴一条或多条链接；
+5. 成片经人工确认后发布，并自动备份到 115。
 
-它使用 `RunAtLoad` 和 `KeepAlive`，用户登录后自动启动并在异常退出时自动恢复。
-Docker 容器使用 `restart: unless-stopped`，Docker Desktop 启动后自动恢复应用。
+已连接的 Telegram Bot 同时是快速收件箱：可直接发送单条或多条公开视频链接，用
+`#direct` / `#quick` / `#professional` 和平台标签覆盖本次默认值。该入口只准备任务，
+不触发自动发布，也不接收密码、Token、Cookie 或设置命令。
 
-## 无敏感信息健康检查
+## 本地服务验收
 
-```bash
-curl -I https://transfer.sg99.online/transfer-center
-```
+不能只看进程或端口。有效验收应同时满足：
 
-未登录时预期返回 `302`，并跳转到 `/login`。登录后搬运中心应返回 `200`。
+- `com.sg99.video-transfer-channel.local` 为 running，登录页 HTTP 200；
+- `com.sg99.moneyprinter-video-worker.local` 为 running，受保护 projects API HTTP 200；
+- 一键体检中的二剪制作端和 115 备份均显示可用；
+- 视频数据库完整性检查通过；
+- 可用磁盘高于系统保护线。
+- Telegram 快速入口为 running，且制作端 watchdog 正在定时检查。
 
-本机检查：
+外网请求会在启动时跟随 macOS “网络→代理”中的当前回环端口，不再写死某个代理应用端口。
 
-```bash
-docker inspect -f '{{.State.Health.Status}}' y2a-auto
-launchctl print gui/$(id -u)/com.video-transfer-channel.cloudflared
-cloudflared tunnel info video-transfer-channel
-```
+## 恢复原则
 
-## 故障定位顺序
-
-1. 确认 Docker 容器为 `healthy`；
-2. 确认 `http://127.0.0.1:5188/login` 本机可访问；
-3. 确认 LaunchAgent 为 `running`；
-4. 确认 Cloudflare Tunnel 至少有一个已连接 Connector；
-5. 最后检查 `logs/cloudflared.log` 与 `logs/cloudflared-error.log`。
-
-## 回滚
-
-需要临时关闭公网入口时，只停止 Tunnel LaunchAgent，不停止本地应用：
-
-```bash
-launchctl bootout gui/$(id -u) \
-  ~/Library/LaunchAgents/com.video-transfer-channel.cloudflared.plist
-```
-
-恢复时重新加载：
-
-```bash
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.video-transfer-channel.cloudflared.plist
-```
-
-删除 DNS 或 Tunnel 属于外部状态变更，应在确认不再使用后执行。
+设置保存前会创建不含密码、Token、Cookie 和 API Key 的本地快照；快速配置页可撤销非敏感设置。数据库、账号凭据和 OpenList 数据应进入单独的加密备份与恢复演练，不能依赖同一个 115 账号作为唯一备份。

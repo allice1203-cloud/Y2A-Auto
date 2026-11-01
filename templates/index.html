@@ -1,129 +1,46 @@
 {% extends "base.html" %}
-
-{% block title %}视频搬运通道 - 首页{% endblock %}
-
+{% block title %}工作台 · 视频搬运通道{% endblock %}
 {% block content %}
-<div class="home-page">
-    <section class="page-intro home-intro">
-        <div>
-            <h1>视频搬运通道</h1>
-            <p>把内容发现、灵活加工、人工确认与跨平台分发，收进一条清晰可控的工作流。</p>
-        </div>
-        <div class="page-actions">
-            <a href="{{ url_for('manual_review') }}" class="btn btn-secondary-premium"><i class="bi bi-patch-check"></i>人工审核</a>
-            <a href="{{ url_for('transfer_center_index') }}" class="btn btn-primary"><i class="bi bi-arrow-left-right"></i>进入搬运中心</a>
-        </div>
-    </section>
-
-    <section class="home-command">
-        <div class="home-command-copy">
-            <span>今日内容流</span>
-            <h2>让每一次分发，都经过审慎的内容判断。</h2>
-            <p>系统负责准备与编排，你保留版权判断、创作质量和最终发布权。</p>
-            <div class="home-command-actions">
-                <a href="{{ url_for('tasks') }}">查看全部任务 <i class="bi bi-arrow-right"></i></a>
-                <button data-bs-toggle="modal" data-bs-target="#quickStartModal">快速入门</button>
-            </div>
-        </div>
-        <div class="home-command-stats">
-            <div><span>今日完成</span><strong>{{ stats.completed_today }}</strong></div>
-            <div><span>今日新增</span><strong>{{ stats.created_today }}</strong></div>
-            <div><span>进行中</span><strong>{{ stats.in_progress }}</strong></div>
-            <div class="is-danger"><span>今日失败</span><strong>{{ stats.failed_today }}</strong></div>
-        </div>
-    </section>
-
-    <section class="metric-rail home-queue-rail" aria-label="队列状态">
-        <div class="metric-cell metric-warning"><span>待审核</span><strong>{{ stats.awaiting_review }}</strong></div>
-        <div class="metric-cell"><span>等待处理</span><strong>{{ stats.pending_total }}</strong></div>
-        <div class="metric-cell metric-primary"><span>准备上传</span><strong>{{ stats.ready_total }}</strong></div>
-        <div class="metric-cell metric-danger"><span>失败总数</span><strong>{{ stats.failed_total }}</strong></div>
-    </section>
-
-    <section class="workspace-panel recent-activity">
-        <div class="workspace-panel-head">
-            <div>
-                <h2>最近动态</h2>
-                <p>最新任务状态与发布结果</p>
-            </div>
-            <a class="workspace-link" href="{{ url_for('tasks') }}">前往任务 <i class="bi bi-arrow-right"></i></a>
-        </div>
-        <div class="workspace-panel-body">
-            {% if recent_tasks %}
-            <div class="table-responsive">
-                <table class="table align-middle mb-0 premium-table">
-                    <thead>
-                        <tr>
-                            <th class="col-narrow">#</th>
-                            <th>标题</th>
-                            <th class="text-center">状态</th>
-                            <th class="text-center">更新时间</th>
-                            <th class="text-end">结果</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for t in recent_tasks %}
-                        <tr>
-                            <td class="text-monospace">{{ t.id[:6] }}…</td>
-                            <td class="title-clamp title-clamp-2">{{ t.title }}</td>
-                            <td class="text-center"><span class="badge bg-{{ task_status_color(t.status) }}">{{ task_status_display(t.status) }}</span></td>
-                            <td class="text-center"><span class="task-datetime" data-datetime="{{ t.updated_at }}">{{ t.updated_at }}</span></td>
-                            <td class="text-end">
-                                {% if t.upload_id %}
-                                    {% if (t.upload_target or 'acfun') == 'both' %}
-                                        <span class="badge bg-success">{{ t.upload_id }}</span>
-                                    {% elif (t.upload_target or 'acfun') == 'bilibili' %}
-                                        <a href="https://www.bilibili.com/video/{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">{{ t.upload_id }}</a>
-                                    {% else %}
-                                        <a href="https://www.acfun.cn/v/ac{{ t.upload_id }}" target="_blank" rel="noopener" class="badge bg-success text-decoration-none">AC{{ t.upload_id }}</a>
-                                    {% endif %}
-                                {% else %}
-                                    <span class="badge bg-secondary">—</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <div class="premium-empty premium-empty-jobs">
-                <span class="empty-frame" aria-hidden="true"></span>
-                <div><strong>暂无最近动态</strong><span>新的处理与发布记录会显示在这里</span></div>
-            </div>
-            {% endif %}
-        </div>
-        <div class="workspace-panel-foot">总任务数 {{ stats.total_tasks }}</div>
-    </section>
+{% set overview = studio_overview|default({}) %}
+<section class="page-intro">
+<div><h1>把下一条视频做好。</h1><p>从素材到成片，再到发布。这里告诉你现在在哪、下一步做什么。</p></div>
+<div class="page-actions"><a class="btn btn-primary" href="{{ url_for('tasks') }}"><i class="bi bi-plus-lg"></i> 开始做一条视频</a></div>
+</section>
+<section class="metric-rail studio-home-metrics" aria-label="全部任务概览">
+{% for label,key,tone in [('全部任务','total',''),('等你检查','review','metric-warning'),('处理中','active','metric-primary'),('已完成','completed','metric-success'),('需要处理','failed','metric-danger')] %}
+<div class="metric-cell {{ tone }}"><span>{{ label }}</span><strong>{{ overview.get(key,0) }}</strong></div>
+{% endfor %}
+</section>
+<div class="studio-home-layout">
+<section>
+<div class="d-flex justify-content-between align-items-center mb-2"><h2 class="h4">继续手上的制作</h2><a href="{{ url_for('tasks') }}">全部任务 <i class="bi bi-arrow-right"></i></a></div>
+<div class="studio-home-list">
+{% for item in overview.get('recent_tasks',[]) %}
+<article class="studio-home-row">
+<span class="studio-home-thumb" data-studio-thumbnail>
+{% if item.thumbnail_url %}<img src="{{ item.thumbnail_url }}" alt="" loading="lazy" data-studio-thumbnail-image>{% endif %}
+<span class="studio-home-thumb-fallback" data-studio-thumbnail-fallback{% if item.thumbnail_url %} hidden{% endif %}><i class="bi bi-film" aria-hidden="true"></i><span>封面暂不可用</span></span>
+</span>
+<div><h3><a href="{{ item.detail_url }}">{{ item.title }}</a></h3><p>{{ item.status_label }} · {{ '搬运任务' if item.source == 'transfer' else 'YouTube 同步任务' }}</p></div>
+<a class="btn btn-outline-primary" href="{{ item.next_action_url }}">{{ item.next_action_label }}</a>
+</article>
+{% else %}
+<div class="studio-media-empty"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>从一条视频开始</h2><p>粘贴视频链接、选择目标平台，下载完成后进入制作。</p><a href="{{ url_for('tasks') }}">新建第一条任务 <i class="bi bi-arrow-right"></i></a></div>
+{% endfor %}
 </div>
-
-<div class="modal fade" id="quickStartModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">视频搬运通道快速入门</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-            </div>
-            <div class="modal-body quick-start-grid">
-                <section><span>01</span><div><h3>连接来源</h3><p>在搬运中心连接 B站、抖音及发布平台。</p></div></section>
-                <section><span>02</span><div><h3>建立发现规则</h3><p>按账号或关键词发现你有权使用的内容。</p></div></section>
-                <section><span>03</span><div><h3>确认处理方式</h3><p>直接转发，或按需要选择简单加工与专业加工。</p></div></section>
-                <section><span>04</span><div><h3>人工确认发布</h3><p>核对成片与文案后，再发布到 X 或 YouTube。</p></div></section>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">开始使用</button>
-            </div>
-        </div>
-    </div>
+</section>
+<aside class="studio-home-guide"><h2>第一次使用？按这三步来</h2>
+<ol><li>在「制作任务」添加视频链接。</li><li>生成二剪成片，试听画面、配音和字幕。</li><li>确认目标平台与文案，再提交发布。</li></ol>
+<p class="text-muted small">自动工坊管理选题和制作；设置里的 YouTube 同步自动投稿是另一条流程。开启前请核对各自范围。</p>
+<a href="{{ url_for('quick_setup') }}">检查账号和制作条件 <i class="bi bi-arrow-right"></i></a>
+</aside>
 </div>
-{% endblock %}
-
-{% block extra_js %}
-<script>
-    function formatLocal(dt){
-        try{const d=new Date(dt);if(isNaN(d.getTime()))return dt;const n=new Date();const ms=n-d;const m=Math.floor(ms/60000);const h=Math.floor(ms/3600000);const days=Math.floor(ms/86400000);if(m<5)return '刚刚';if(m<60)return m+'分钟前';if(h<24&&d.toDateString()===n.toDateString())return h+'小时前';if(days===1)return '昨天 '+d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});if(days<7)return days+'天前';if(d.getFullYear()===n.getFullYear())return d.toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});return d.toLocaleDateString('zh-CN');}catch(e){return dt}
-    }
-    function updateTimes(){document.querySelectorAll('.task-datetime').forEach(el=>{const v=el.getAttribute('data-datetime');if(v){el.textContent=formatLocal(v);el.title=new Date(v).toLocaleString('zh-CN')}})}
-    document.addEventListener('DOMContentLoaded',()=>{updateTimes();setInterval(updateTimes,60000)});
-</script>
+<div class="studio-home-links">
+<a href="{{ url_for('manual_review') }}"><i class="bi bi-headphones"></i> 待我检查</a>
+{% if production_navigation_enabled|default(false) %}
+<a href="{{ url_for('production_workbench',tab='queue') }}"><i class="bi bi-magic"></i> 找下一条选题</a>
+<a href="{{ url_for('production_workbench',tab='receipts') }}"><i class="bi bi-send-check"></i> 核对平台发布状态</a>
+<a href="{{ url_for('production_workbench',tab='income') }}"><i class="bi bi-wallet2"></i> 记录实际收益</a>
+{% endif %}
+</div>
 {% endblock %}

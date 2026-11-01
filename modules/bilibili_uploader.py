@@ -269,7 +269,7 @@ class BilibiliUploader:
                 safe_desc_limit,
             )
             safe_tags = [str(t).strip()[:20] for t in (tags or []) if str(t).strip()]
-            safe_tags = safe_tags[:12]
+            safe_tags = safe_tags[:10]
 
             if not safe_title:
                 return False, "标题为空，无法上传到bilibili"

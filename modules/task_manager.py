@@ -6062,7 +6062,9 @@ class TaskProcessor:
             if subtitle_ext not in ('.srt', '.ass', '.ssa', '.vtt'):
                 task_logger.warning(f"未知字幕扩展名 {subtitle_ext}，默认按srt处理")
                 subtitle_ext = '.srt'
-            temp_dir = tempfile.mkdtemp(prefix='subtitle_embed_')
+            temp_root = get_app_subdir('temp')
+            os.makedirs(temp_root, exist_ok=True)
+            temp_dir = tempfile.mkdtemp(prefix='subtitle_embed_', dir=temp_root)
             simple_video = os.path.abspath(video_path)
             simple_output = os.path.join(video_dir, f".{video_name}_with_subtitle.tmp.mp4")
             # 字体目录（在临时目录内放置一份，避免Windows路径转义问题）

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "context_version": "2026-09-04.1",
+  "receipt_id": "video-media-local-cutover-20260906",
+  "created_at": "2026-09-06T06:58:00Z",
+  "system_id": "video-transfer-channel",
+  "task": "按用户明确批准，在保留原件与备份的前提下，将视频与制作端媒体切到外置4T专用目录，并在本机启用新版；存储、服务与数据验收通过，正式登录后的页面验收待用户登录。",
+  "agent": "Codex / root; independent read-only acceptance by media_cutover_audit",
+  "machine_profile": "macbook; live MacBookPro18,2, Apple M1 Max, 68719476736 bytes RAM",
+  "status": "partial",
+  "git": {
+    "repository": "git@github.com:allice1203-cloud/Y2A-Auto.git",
+    "branch": "codex/video-transfer-channel-brand",
+    "commit": "2b441c2098da3c201723dd1bb0f1efabf671fdf0",
+    "working_tree": "dirty"
+  },
+  "changed_files": [
+    "modules/media_workspace.py",
+    "modules/media_cutover.py",
+    "modules/task_manager.py",
+    "modules/speech_recognition.py",
+    "modules/vad_processor.py",
+    "modules/local_visual_analysis.py",
+    "scripts/prepare_mpt_media_release.py",
+    "scripts/perform_local_media_cutover.py",
+    "tests/test_media_cutover.py",
+    "tests/test_media_temp_routing.py",
+    "tests/test_media_cutover_inventory.py",
+    "docs/production-automation.md",
+    "docs/receipts/media-cutover-20260906.json"
+  ],
+  "verification": [
+    "Authority: user agreed to back up and retain originals, move media to the 4T Video Transfer folder, and enable the local new version. Scope excludes real publication, paid model calls, credentials changes, VPS operations, remote Git push and 115 cloud writes.",
+    "Before stopping: no active video download/render/publication or MPT durable jobs. Existing transfer jobs completed=1, review=1; existing rule enabled=1, auto_publish=0, require_review=1. Preserved those business states.",
+    "Backup: /Users/allice/Library/Application Support/视频搬运通道/backups/20260906-external-media-cutover. 23 pre-cutover consistent SQLite snapshots, both LaunchAgents, private local configs, old b9acff6 and candidate 20d0bc5 code archives. Original media and old MPT release retained.",
+    "Audit found two auxiliary video databases missing from the initial backup inventory. tasks.db and youtube_monitor.db were consistently backed up at 2026-09-06T06:54:17Z under supplemental-video-db-after-restart, explicitly post-restart, not pre-cutover. All 25 current databases and all backups pass quick_check. Script now includes all video database files, with regression coverage.",
+    "External APFS /Volumes/资料盘4T, UUID DE6F13E2-6341-4ECB-93AD-BF41EFDB2E6B, writable. Media root /Volumes/资料盘4T/视频搬运; video downloads and temp routed there; MPT media under moneyprinter-storage.",
+    "Copy and independent recalc: 21 files, 48592795 bytes, each source/target SHA-256 identical, zero newly missing files, no source deletions. Only seven media subdirectories from MPT shared storage copied; no .db or WAL files present under the external MPT media root.",
+    "Activated MPT runtime/current -> runtime/releases/20260906-external-media-local-r3, derived from the exact prior active immutable release. 22 database constructors use separate internal database_dir; databases remain at /Users/allice/Library/Application Support/超级印钞机/runtime/shared/storage. Dirty MPT developer worktree left untouched.",
+    "Video LaunchAgent and MPT LaunchAgent bootstrapped at 2026-09-06 14:50:29 +08:00. Current PIDs 97944 and 97943 listen only on 127.0.0.1:15188 and 127.0.0.1:8080 respectively. /login and /app/ return 200; protected /production redirects to administrator login. Both actual browser sessions require login; authenticated page/media preview acceptance remains pending.",
+    "Actual MPT /api/v1/desktop/capabilities reports four durable workers, storage.ready=true, free_gb=2453, min_free_gb=96, auto_cleanup=false. Historical worker traces predate the 2026-08-31 start; no new errors after this cutover start.",
+    "New MPT runtime parser in isolated process with wrong volume UUID raises MediaWorkspaceIdentityError instead of falling back. Video temporary ASR/VAD/visual paths use guarded external temp; escaping/dangling symlink regression tests pass. No physical unplug test performed on the shared external drive.",
+    "Eight video config files and MPT config remain byte-identical to the backup. New workbench live settings enabled=false, auto_render=false, topics empty, daily_limit=2; production queue empty. No random unattended selection or real posting activated.",
+    "Current review task has three main media references, all exist on the external drive. MPT seven asset storage references all exist there. One completed historical task 7837145a has four old /app/downloads paths already absent before the cutover; unchanged, not claimed recovered and not reset to pending.",
+    "Full video regression: 723 passed, 21 subtests passed in 8.63s. Relevant Python compile and diff whitespace checks pass. New MPT runtime 88 Python sources syntax-compiled; no production rendering test suite or paid model call run.",
+    "Two inactive failed intermediate build copies moved recoverably to /Users/allice/.Trash/video-media-cutover-build-attempts-20260906. Active r3 release, original old release and source media preserved.",
+    "Untracked modules/production_automation 2.py was preserved and excluded from commits. No VPS connection/probe/change, public exposure, real video posting, 115 upload, credential change or Git push occurred. Earlier synthetic hardware-encoding acceptance is not a new post-cutover bilingual sample acceptance."
+  ],
+  "next_action": "用户在 http://127.0.0.1:15188/production 用原管理员密码登录后，完成正式页面与媒体预览验收。再确定内容方向、中文或英文声线并试听一条样片；自动选题、自动成片和真实作品投稿按相应设置与确认继续。回退步骤和备份边界见 docs/production-automation.md。",
+  "authorization": "本轮用户“同意”明确批准此前提出的备份并保留原件、切换4T《视频搬运》媒体目录和本机新版启用。该批准已用于受控停写、SQLite路径迁移、运行配置和本机重启；不扩张到VPS、外部平台投稿、付费模型、115上传、凭据变更或远程Git推送。"
+}

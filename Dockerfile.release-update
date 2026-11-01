@@ -11,14 +11,19 @@ WORKDIR /app
 
 # Small production releases reuse the already validated runtime dependencies
 # and replace only version-controlled application files. Runtime data and
-# credentials are excluded by .dockerignore and remain mounted from winmini.
+# credentials are excluded by .dockerignore and remain mounted from the host.
 COPY --chown=y2a:y2a . .
 
-RUN python -m py_compile \
+RUN pip install --no-cache-dir "waitress==3.0.2" \
+    && python -m py_compile \
         app.py \
         modules/content_recreation.py \
+        modules/douyin_downloader.py \
         modules/media_preflight.py \
+        modules/douyin_openapi.py \
         modules/transfer_center.py \
+        modules/video_intelligence.py \
+        modules/wsgi_server.py \
     && chown -R y2a:y2a /app
 
 USER y2a

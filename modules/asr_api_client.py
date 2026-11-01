@@ -5,6 +5,11 @@ import logging
 import math
 import os
 import re
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +31,7 @@ _LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?")
 _CJK_CHAR_RE = re.compile(r'[\u3400-\u9fff]')
 _VISIBLE_TEXT_RE = re.compile(r'[\w\u3400-\u9fff]', re.UNICODE)
 _INVALID_DURATION_FALLBACK = 0.5
+_MLX_WHISPER_PROCESS_LOCK = threading.Lock()
 
 
 def _compute_synth_word_offsets(segment_text: str, words: List[AsrWordTiming]) -> None:
@@ -173,6 +179,23 @@ class AsrApiClient:
         self._language_hint = normalized
 
     def _init_client(self):
+        if self.config.provider == 'mlx_whisper':
+            model_path = str(self.config.model_name or '').strip()
+            if not model_path or not os.path.isdir(model_path):
+                self.logger.error("Missing local MLX Whisper model directory - ASR client not initialised")
+                return
+            try:
+                import importlib.util
+
+                if importlib.util.find_spec('mlx_whisper') is None:
+                    self.logger.error("Missing mlx-whisper runtime - ASR client not initialised")
+                    return
+                self.client = True
+                self.logger.info("Local MLX Whisper worker initialised successfully")
+            except Exception as exc:
+                self.logger.error("Failed to initialise local MLX Whisper worker: %s", exc)
+            return
+
         if not self.config.api_key:
             self.logger.error("Missing ASR API key - ASR client not initialised")
             return
@@ -302,6 +325,8 @@ class AsrApiClient:
             self._logged_capability_signature = None
 
     def _needs_serial_format_probe(self) -> bool:
+        if self.config.provider == 'mlx_whisper':
+            return False
         with self._capability_probe_condition:
             return not self._capability_cache.transcription_format and not self._capability_probe_incompatible
 
@@ -632,6 +657,12 @@ class AsrApiClient:
         window: Optional[DetectedSpeechWindow] = None,
         segment_info: Optional[str] = None,
     ) -> AsrTranscriptionResult:
+        if self.config.provider == 'mlx_whisper':
+            return self._transcribe_segment_mlx_whisper(
+                wav_path,
+                window=window,
+                segment_info=segment_info,
+            )
         if self.config.provider == 'voxtral':
             return self._transcribe_segment_voxtral(wav_path, window=window, segment_info=segment_info)
 
@@ -693,6 +724,85 @@ class AsrApiClient:
 
         return AsrTranscriptionResult(
             provider=self.config.provider,
+            response_format='',
+            timestamp_mode='none',
+            window=window,
+            failure_token='asr_failed',
+        )
+
+    def _transcribe_segment_mlx_whisper(
+        self,
+        wav_path: str,
+        *,
+        window: Optional[DetectedSpeechWindow],
+        segment_info: Optional[str] = None,
+    ) -> AsrTranscriptionResult:
+        if not self.client:
+            return AsrTranscriptionResult(
+                provider='mlx_whisper',
+                response_format='',
+                timestamp_mode='none',
+                window=window,
+                failure_token='asr_failed',
+            )
+
+        worker_request = {
+            'audio_path': os.path.abspath(wav_path),
+            'model_path': os.path.abspath(str(self.config.model_name or '')),
+            'language': self._language_hint or self._normalize_language_code(self.config.language),
+            'prompt': str(self.config.prompt or ''),
+            'translate': bool(self.config.translate),
+        }
+        last_error: Optional[Exception] = None
+        for attempt in range(max(1, int(self.config.max_retries or 1))):
+            output_dir = tempfile.mkdtemp(prefix='video-asr-mlx-')
+            output_path = os.path.join(output_dir, 'result.json')
+            worker_request['output_path'] = output_path
+            try:
+                with _MLX_WHISPER_PROCESS_LOCK:
+                    completed = subprocess.run(
+                        [sys.executable, '-m', 'modules.mlx_whisper_worker'],
+                        input=json.dumps(worker_request, ensure_ascii=False),
+                        text=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=max(30.0, float(self.config.request_timeout_s or 300.0)),
+                        check=False,
+                    )
+                if completed.returncode != 0:
+                    raise RuntimeError(
+                        f"MLX Whisper worker exited with code {completed.returncode}"
+                    )
+                with open(output_path, 'r', encoding='utf-8') as file_obj:
+                    payload = json.load(file_obj)
+                if not isinstance(payload, dict):
+                    raise RuntimeError("MLX Whisper worker returned an invalid result")
+                return self._payload_to_transcription_result(
+                    payload,
+                    provider='mlx_whisper',
+                    response_format='verbose_json',
+                    timestamp_mode='word' if self._payload_has_words(payload) else 'segment',
+                    window=window,
+                    granularities=('segment', 'word'),
+                )
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    "Local MLX Whisper failed for [%s] with %s (attempt %d/%d)",
+                    segment_info or 'audio',
+                    type(exc).__name__,
+                    attempt + 1,
+                    max(1, int(self.config.max_retries or 1)),
+                )
+            finally:
+                shutil.rmtree(output_dir, ignore_errors=True)
+            if attempt < max(1, int(self.config.max_retries or 1)) - 1:
+                time.sleep(min(self.config.retry_delay_s * (2 ** attempt), 30.0))
+
+        if last_error:
+            self.logger.warning("Local MLX Whisper exhausted retries: %s", type(last_error).__name__)
+        return AsrTranscriptionResult(
+            provider='mlx_whisper',
             response_format='',
             timestamp_mode='none',
             window=window,
@@ -982,6 +1092,10 @@ class AsrApiClient:
         return ordered
 
     def detect_language(self, wav_path: str) -> str:
+        if self.config.provider == 'mlx_whisper':
+            # The isolated worker auto-detects language during the actual
+            # transcription. Avoid a second model load solely for probing.
+            return self._normalize_language_code(self.config.language)
         if self.config.provider == 'voxtral':
             return self._detect_language_voxtral(wav_path)
         last_error: Optional[Exception] = None
@@ -1224,7 +1338,11 @@ class AsrApiClient:
         # proportionally so they fill the window duration.  This preserves
         # relative ordering while ensuring subtitles are visible for the
         # correct amount of time.
-        if window is not None and window.duration_s > 0 and segments:
+        # MLX Whisper sees the complete audio and returns native timestamps.
+        # Its last speech segment can legitimately end well before a long
+        # silent/music tail, so the backend-specific compression heuristic
+        # must not stretch those timestamps to the media duration.
+        if provider != 'mlx_whisper' and window is not None and window.duration_s > 0 and segments:
             max_ts = max(seg.end_s for seg in segments)
             if max_ts > 0 and max_ts < window.duration_s * 0.4:
                 scale = window.duration_s / max_ts

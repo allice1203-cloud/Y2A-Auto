@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sg99.video-vision.local</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/allice/Library/Application Support/视频搬运通道/vision/.venv/bin/python</string>
+        <string>-m</string>
+        <string>mlx_vlm.server</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>49821</string>
+        <string>--model</string>
+        <string>/Users/allice/Library/Application Support/视频搬运通道/vision/models/Qwen3-VL-2B-Instruct-4bit</string>
+        <string>--vision-cache-size</string>
+        <string>12</string>
+        <string>--max-tokens</string>
+        <string>1000</string>
+        <string>--max-num-seqs</string>
+        <string>1</string>
+        <string>--log-progress-interval</string>
+        <string>0</string>
+        <string>--log-level</string>
+        <string>WARNING</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/allice/Library/Application Support/视频搬运通道/vision</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HF_HUB_OFFLINE</key>
+        <string>1</string>
+        <key>TRANSFORMERS_OFFLINE</key>
+        <string>1</string>
+        <key>NO_PROXY</key>
+        <string>127.0.0.1,localhost,::1</string>
+        <key>no_proxy</key>
+        <string>127.0.0.1,localhost,::1</string>
+        <key>TOKENIZERS_PARALLELISM</key>
+        <string>false</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/allice/Library/Logs/视频搬运通道/local-vision.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/allice/Library/Logs/视频搬运通道/local-vision.err.log</string>
+</dict>
+</plist>

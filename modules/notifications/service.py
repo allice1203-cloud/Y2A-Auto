@@ -7,8 +7,9 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterator
 
 from ..utils import get_app_subdir
 from .adapters import (
@@ -27,11 +28,16 @@ logger = logging.getLogger("notifications")
 DB_CONNECT_TIMEOUT_SECONDS = 10
 DB_BUSY_TIMEOUT_MS = 30000
 DEFAULT_RETRY_SCHEDULE_SECONDS = (30, 120, 600, 1800, 3600)
+# 通知在队列里最多允许滞留多久。超过这个年龄就不再补发：发送渠道长时间不可用时，
+# 旧告警会在恢复瞬间成批涌入，用户既用不上（事态早已变化）又被刷屏。
+DEFAULT_MAX_QUEUE_AGE_SECONDS = 1800
+MAX_QUEUE_AGE_CONFIG_KEY = "NOTIFY_MAX_QUEUE_AGE_SECONDS"
 
 OUTBOX_STATUS_PENDING = "pending"
 OUTBOX_STATUS_SENDING = "sending"
 OUTBOX_STATUS_SENT = "sent"
 OUTBOX_STATUS_FAILED = "failed"
+OUTBOX_STATUS_EXPIRED = "expired"
 
 _global_notification_service = None
 _global_notification_lock = threading.Lock()
@@ -39,6 +45,18 @@ _global_notification_lock = threading.Lock()
 
 def _current_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_ts(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _as_bool(value: Any) -> bool:
@@ -82,6 +100,7 @@ class NotificationService:
         self.db_path = db_path or _notification_db_path()
         self.retry_schedule_seconds = tuple(retry_schedule_seconds or DEFAULT_RETRY_SCHEDULE_SECONDS)
         self.max_attempts = len(self.retry_schedule_seconds)
+        self.max_queue_age_seconds = self._resolve_max_queue_age(self.config)
         self._registry = build_notifier_registry()
         self._db_lock = threading.Lock()
         self._wake_event = threading.Event()
@@ -91,6 +110,15 @@ class NotificationService:
         self.init_db()
         if start_worker:
             self._start_worker()
+
+    @staticmethod
+    def _resolve_max_queue_age(config: dict[str, Any]) -> int:
+        raw = config.get(MAX_QUEUE_AGE_CONFIG_KEY)
+        try:
+            value = int(raw) if raw is not None else DEFAULT_MAX_QUEUE_AGE_SECONDS
+        except (TypeError, ValueError):
+            value = DEFAULT_MAX_QUEUE_AGE_SECONDS
+        return max(0, value)
 
     def init_db(self) -> None:
         with self._get_connection() as conn:
@@ -122,9 +150,18 @@ class NotificationService:
 
     def refresh_config(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.max_queue_age_seconds = self._resolve_max_queue_age(self.config)
         self._wake_event.set()
 
-    def _get_connection(self):
+    @contextmanager
+    def _get_connection(self) -> Iterator[sqlite3.Connection]:
+        """退出时提交/回滚，并**始终关闭**连接。
+
+        注意：sqlite3.Connection 直接用于 ``with`` 时只处理事务、**不关闭连接**
+        （Python 官方语义）。历史实现返回裸连接，7 处
+        ``with self._get_connection()`` 每次调用泄漏文件描述符，累积到进程
+        上限后报 "unable to open database file"。2026-09-12 修复。
+        """
         conn = sqlite3.connect(self.db_path, timeout=DB_CONNECT_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
         try:
@@ -133,7 +170,14 @@ class NotificationService:
             conn.execute("PRAGMA synchronous = NORMAL")
         except Exception:
             pass
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def emit(self, event: NotificationEvent) -> int:
         config = dict(self.config or {})
@@ -267,36 +311,71 @@ class NotificationService:
         return max(1.0, min(30.0, delay))
 
     def _claim_next_due_row(self):
+        """领取一条到期通知；顺手淘汰滞留过久的行，避免恢复后成批补发旧告警。"""
         now_text = _current_ts()
         with self._db_lock:
-            with self._get_connection() as conn:
-                row = conn.execute(
-                    """
-                    SELECT *
-                    FROM notification_outbox
-                    WHERE status = ?
-                      AND (next_retry_at IS NULL OR next_retry_at <= ?)
-                    ORDER BY COALESCE(next_retry_at, created_at) ASC, created_at ASC
-                    LIMIT 1
-                    """,
-                    (OUTBOX_STATUS_PENDING, now_text),
-                ).fetchone()
-                if row is None:
-                    return None
+            # 每轮最多淘汰 50 条过期行，防止极端积压时长时间占锁。
+            for _ in range(50):
+                with self._get_connection() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT *
+                        FROM notification_outbox
+                        WHERE status = ?
+                          AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                        ORDER BY COALESCE(next_retry_at, created_at) ASC, created_at ASC
+                        LIMIT 1
+                        """,
+                        (OUTBOX_STATUS_PENDING, now_text),
+                    ).fetchone()
+                    if row is None:
+                        return None
 
-                updated_at = _current_ts()
-                cursor = conn.execute(
-                    """
-                    UPDATE notification_outbox
-                    SET status = ?, updated_at = ?
-                    WHERE id = ? AND status = ?
-                    """,
-                    (OUTBOX_STATUS_SENDING, updated_at, row["id"], OUTBOX_STATUS_PENDING),
-                )
-                conn.commit()
-                if cursor.rowcount != 1:
-                    return None
-                return dict(row)
+                    if self._is_stale(row):
+                        conn.execute(
+                            """
+                            UPDATE notification_outbox
+                            SET status = ?, last_error = ?, updated_at = ?
+                            WHERE id = ? AND status = ?
+                            """,
+                            (
+                                OUTBOX_STATUS_EXPIRED,
+                                f"队列滞留超过 {self.max_queue_age_seconds} 秒，不再补发过期告警",
+                                _current_ts(),
+                                row["id"],
+                                OUTBOX_STATUS_PENDING,
+                            ),
+                        )
+                        conn.commit()
+                        continue
+
+                    updated_at = _current_ts()
+                    cursor = conn.execute(
+                        """
+                        UPDATE notification_outbox
+                        SET status = ?, updated_at = ?
+                        WHERE id = ? AND status = ?
+                        """,
+                        (OUTBOX_STATUS_SENDING, updated_at, row["id"], OUTBOX_STATUS_PENDING),
+                    )
+                    conn.commit()
+                    if cursor.rowcount != 1:
+                        return None
+                    return dict(row)
+        return None
+
+    def _is_stale(self, row: Any) -> bool:
+        """队列中滞留过久的通知不再补发（0 表示不设上限）。"""
+        if self.max_queue_age_seconds <= 0:
+            return False
+        try:
+            created_text = str(row["created_at"] or "")
+        except (KeyError, IndexError, TypeError):
+            return False
+        created_at = _parse_ts(created_text)
+        if created_at is None:
+            return False
+        return (datetime.now() - created_at).total_seconds() > self.max_queue_age_seconds
 
     def _deliver_row(self, row: dict[str, Any]) -> None:
         channel_id = str(row.get("channel") or "").strip()

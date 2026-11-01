@@ -20,7 +20,7 @@
         <string>--secret-file</string>
         <string>__REPO_ROOT__/config/source_login_helper_secret</string>
         <string>--success-url</string>
-        <string>https://transfer.sg99.online/transfer-center</string>
+        <string>http://127.0.0.1:15188/transfer-center</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__REPO_ROOT__</string>

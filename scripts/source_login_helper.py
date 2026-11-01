@@ -161,8 +161,8 @@ class SourceLoginApplication:
         if self.success_url:
             parsed_success = urlparse(self.success_url)
             if (
-                parsed_success.scheme != "https"
-                or parsed_success.hostname != "transfer.sg99.online"
+                parsed_success.scheme not in {"http", "https"}
+                or parsed_success.hostname not in {"127.0.0.1", "localhost"}
                 or parsed_success.username
                 or parsed_success.password
             ):

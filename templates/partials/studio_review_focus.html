@@ -1,0 +1,55 @@
+{% set published = job.status == 'completed' %}
+{% set submitted = job.status in ['submitted', 'publishing'] %}
+{% set approved = job.recreation_status == 'approved' %}
+{% set cleaned = published and job.media_cleaned_at %}
+{% set design_preview_active = design_preview|default(false) %}
+{% set local_media_available = (local_media_available|default(false)) or (design_preview_active and job.local_video_path) %}
+{% set playable_media_versions = playable_media_versions|default({}) %}
+<section class="studio-review-focus" aria-label="成片预览与下一步">
+    <div class="studio-screen">
+        <header class="studio-heading">
+            <h1>{{ '这条视频已完成发布' if published else ('已提交平台，等待发布结果' if submitted else ('先看成片，再决定发布' if job.recreation_completed else '先做好这条视频')) }}</h1>
+            <p>{{ '保留已有发布记录；这里查看成片与制作详情。' if published else ('请先核对各平台状态，不要重复提交。' if submitted else ('画面、配音和字幕都确认后，才会提交到平台。' if job.recreation_completed else '当前是原片。完成二剪后，再试听并确认发布。')) }}</p>
+        </header>
+        <div class="studio-video-title"><span>{{ job.title or '等待获取视频标题' }}</span><small>{{ '预览示例' if design_preview|default(false) else ('加工成片' if job.recreation_completed else '当前原片') }}</small></div>
+        {% if local_media_available %}
+        <video class="studio-video" data-studio-video controls preload="metadata" tabindex="0" aria-label="{{ '加工成片' if job.recreation_completed else '当前原片' }}预览" {% if design_preview|default(false) %}poster="{{ url_for('static', filename='img/ink-demo-sunset.png') }}"{% endif %}>
+            <source src="{{ url_for('transfer_center_review_media', job_id=job.id) }}">
+            当前浏览器不支持内嵌视频，请使用下方链接打开媒体。
+        </video>
+        <p class="studio-inline-notice" id="studioMediaNotice" role="status" hidden>视频暂时无法播放，请核对媒体文件或外接硬盘。发布记录不会因此改变。</p>
+        <div class="studio-media-tabs" role="group" aria-label="选择预览版本">
+            <button type="button" class="active" data-preview-src="{{ url_for('transfer_center_review_media', job_id=job.id) }}" aria-pressed="true">{{ '当前成片' if job.recreation_completed else '原片' }}</button>
+            {% for platform,variant in (platform_variants or {}).items() %}
+            {% if variant.status == 'ready' and (playable_media_versions.get(platform) or design_preview_active) %}<button type="button" data-preview-src="{{ url_for('transfer_center_review_media', job_id=job.id, platform=platform) }}" aria-pressed="false">{{ {'bilibili':'B站','douyin':'抖音','youtube':'YouTube','x':'X','tiktok':'TikTok'}.get(platform,platform) }} · {{ '英文' if (variant.locale or '').startswith('en') else '中文' }}成片</button>{% endif %}
+            {% endfor %}
+            <a href="{{ url_for('transfer_center_review_media', job_id=job.id) }}" target="_blank" rel="noopener" aria-label="在新标签页打开视频"><i class="bi bi-box-arrow-up-right"></i></a>
+        </div>
+        {% else %}
+        <div class="studio-media-empty"><i class="bi bi-film" aria-hidden="true"></i><h2>{{ '本地成片已清理' if cleaned else ('本地媒体不可用' if job.local_video_path else '还没有可预览的视频') }}</h2><p>{{ '发布记录仍然保留；如需再次查看成片，请核对网盘备份。' if cleaned else ('记录的本地文件已不存在或不在允许的媒体目录；发布记录不会因此改变。' if job.local_video_path else '可以先编写脚本、分镜和素材清单。') }}</p><a href="#studioEditor" data-open-editor>打开制作详情 <i class="bi bi-arrow-right"></i></a></div>
+        {% endif %}
+    </div>
+    <aside class="studio-progress">
+        <h2>本条进度</h2>
+        <ol class="studio-step-list">
+            <li><i class="bi bi-download" aria-hidden="true"></i><span>下载素材</span><strong class="{{ 'is-done' if local_media_available or cleaned }}">{{ '本地已清理' if cleaned else ('已就绪' if local_media_available else ('本地不可用' if job.local_video_path else '尚未就绪')) }}</strong></li>
+            <li><i class="bi bi-scissors" aria-hidden="true"></i><span>二剪制作</span><strong class="{{ 'is-done' if job.recreation_completed }}">{{ '已完成' if job.recreation_completed else ('原片分发' if current_mode == 'direct' else '待制作') }}</strong></li>
+            <li><i class="bi bi-headphones" aria-hidden="true"></i><span>试听确认</span><strong class="{{ 'is-done' if approved or published else 'is-current' }}">{{ '已确认' if approved or published else ('等你检查' if job.recreation_completed else '制作后检查') }}</strong></li>
+            <li><i class="bi bi-send" aria-hidden="true"></i><span>发布作品</span><strong class="{{ 'is-done' if published }}">{{ '已完成' if published else ('平台处理中' if submitted else '尚未完成') }}</strong></li>
+        </ol>
+        {% if local_media_available %}<button class="btn btn-primary studio-primary-action" type="button" data-play-preview><i class="bi bi-play-circle"></i>{{ '查看已发布成片' if published else ('试听并检查成片' if job.recreation_completed else '预览原片') }}</button>{% endif %}
+        <a href="#studioEditor" class="studio-editor-link" data-open-editor><i class="bi bi-pencil-square"></i> {{ '查看制作与发布详情' if published else '查看脚本与字幕' }}</a>
+        <div class="studio-context-note">
+            <i class="bi bi-info-circle" aria-hidden="true"></i>
+            {% if not published and not app_settings.get('TRANSFER_MPT_VOICE_NAME_EN_US') %}<p>英文配音还未配置<br><span>中文成片可以先检查</span></p><a href="{{ url_for('settings', section='voice') }}">去配置 <i class="bi bi-chevron-right"></i></a>
+            {% else %}<p>成片准备不等于已发布<br><span>以各平台发布结果为准</span></p><a href="{{ url_for('tasks') }}">查看状态</a>{% endif %}
+        </div>
+    </aside>
+    <div class="studio-next-strip">
+        <span><i class="bi bi-signpost-split"></i>下一步</span>
+        <span><i class="bi bi-collection-play"></i>目标平台　{% for p in ['bilibili','douyin','youtube','x','tiktok'] %}{% if ('"' ~ p ~ '"') in job.target_platforms %}{{ {'bilibili':'B站','douyin':'抖音','youtube':'YouTube','x':'X','tiktok':'TikTok'}[p] }} {% endif %}{% endfor %}</span>
+        <a href="{{ url_for('settings', section='backup') }}"><i class="bi bi-cloud-check"></i>115 备份：{{ {'completed':'备份完成','failed':'需要处理','uploading':'上传中','skipped':'已跳过','pending':'等待备份','disabled':'未启用','unavailable':'无本地成片'}.get(job.backup_status, '状态待核对') }}</a>
+        <small>{{ '已完成任务不会自动重复发布' if published else '在制作详情中完成最终确认' }}</small>
+    </div>
+</section>
+<div class="studio-source-link"><a href="{{ job.source_url }}" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> 查看原视频</a></div>

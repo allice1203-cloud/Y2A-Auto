@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "context_version": "2026-09-04.1",
+  "receipt_id": "video-ink-studio-preview-20260906",
+  "created_at": "2026-09-06T08:10:14.790Z",
+  "system_id": "video-transfer-channel",
+  "task": "按用户选定的第二个 Product Design 方向实现独立墨色界面候选，保留既有功能并完善真实状态、渐进提示与响应式布局；不切换正式服务。",
+  "agent": "Codex root; native ink_state_consistency and ink_preview_guard collaborators; no user-owned task created",
+  "machine_profile": "macbook; M1 Max 64GiB local development; candidate worktree; loopback preview only",
+  "status": "completed",
+  "git": {
+    "repository": "git@github.com:allice1203-cloud/Y2A-Auto.git",
+    "branch": "codex/ink-studio-design-20260906",
+    "commit": "63ad3919d9334a6c15e76bb81370f1a248f2c0be",
+    "working_tree": "dirty"
+  },
+  "changed_files": [
+    "app.py",
+    "modules/studio_overview.py",
+    "templates/base.html",
+    "templates/index.html",
+    "templates/manual_review.html",
+    "templates/settings.html",
+    "templates/tasks.html",
+    "templates/transfer_review.html",
+    "templates/partials/studio_review_focus.html",
+    "static/css/ink-studio.css",
+    "static/js/ink-studio.js",
+    "static/img/ink-demo-sunset.png",
+    "static/img/ink-demo.mp4",
+    "scripts/preview_ink_studio.py",
+    "tests/test_studio_overview.py",
+    "tests/test_ink_studio.py",
+    "tests/test_ink_preview.py",
+    "docs/design-captures",
+    "docs/ink-studio-preview.md",
+    "design-qa.md",
+    "docs/receipts/ink-studio-preview-20260906.json"
+  ],
+  "verification": [
+    "Product Design image-to-code used with selected option 2, existing Flask/Jinja/Bootstrap retained. Reference and final browser screenshot opened together; design-qa.md final result passed for isolated preview.",
+    "769 tests and 21 subtests passed. Python compileall, JavaScript syntax and diff checks passed. New tests cover unified task aggregation, review/publication/backup state presentation and preview isolation.",
+    "Actual external Chrome checks: playable 8-second silent demonstration, platform version selection, expanded six existing forms, saved demo script, saved ordinary settings, saved production topics, navigation, task filtering, modal open/close and responsive menu.",
+    "Desktop CSS viewport 1536x1024 DPR1; mobile390x844 and tablet820x1180 do not overflow viewport. Browser-returned screenshot scaling documented honestly in design-qa.md.",
+    "Preview runner uses disposable demonstration databases and in-memory default settings; rejects non-loopback Host and cross-origin requests, blocks Python outbound TCP/UDP/DNS and external-effect routes. This is application-level isolation, not an OS sandbox.",
+    "Actual preview listener PID40327:127.0.0.1:15190. During development an initial wildcard binding was found and immediately stopped; current runner explicitly binds loopback.",
+    "Formal application still PID97944:127.0.0.1:15188, no restart. Original repository unrelated modules/production_automation 2.py remains untouched.",
+    "Git commit field is the candidate's pre-change baseline; the local commit containing this receipt records the candidate implementation. No push, PR, deployment, account modification, actual download, model call, platform post, Telegram send or 115 upload."
+  ],
+  "next_action": "用户打开本机15190独立候选体验；正式启用须另行批准，再对照真实任务、认证和平台状态做切换验收。需要分享时另选安全范围，当前预览不得直接暴露到网络。",
+  "authorization": "用户选择第二个设计方向，授权该范围内可逆界面实现和验证。既有任务明确要求保留系统能力；未将第二个或此前继续视为正式切换、外部发布或配置真实账号的批准。"
+}
